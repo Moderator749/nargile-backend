@@ -90,3 +90,23 @@ async def test_invalid_token_rejected(client: AsyncClient):
         headers={"Authorization": "Bearer this.is.garbage"},
     )
     assert resp.status_code == 401
+
+
+# ── /auth/me ─────────────────────────────────────────────────────────────────
+
+
+async def test_me_requires_auth(client: AsyncClient):
+    resp = await client.get("/api/v1/auth/me")
+    assert resp.status_code in (401, 403)
+
+
+async def test_me_returns_profile_with_segment_code(
+    client: AsyncClient, customer_user: User
+):
+    resp = await client.get("/api/v1/auth/me", headers=auth_header(customer_user))
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == str(customer_user.id)
+    assert data["email"] == customer_user.email
+    assert data["segment_code"] == "RETAIL"
+    assert "hashed_password" not in data

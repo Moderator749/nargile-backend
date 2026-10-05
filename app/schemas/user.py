@@ -25,6 +25,12 @@ class UserRead(BaseModel):
     created_at: datetime
 
 
+class UserMe(UserRead):
+    """Authenticated user's own profile, including their pricing segment."""
+
+    segment_code: SegmentType | None = None
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

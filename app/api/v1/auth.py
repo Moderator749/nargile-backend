@@ -2,10 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.user import CustomerSegment, User
-from app.schemas.user import LoginRequest, Token, UserCreate, UserRead
+from app.schemas.user import LoginRequest, Token, UserCreate, UserMe, UserRead
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -49,3 +50,17 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
 
     token = create_access_token(data={"sub": str(user.id), "role": user.role})
     return Token(access_token=token)
+
+
+@router.get("/me", response_model=UserMe)
+async def read_me(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Fetch the code explicitly: lazy-loading user.segment fails under AsyncSession.
+    segment_code = None
+    if user.segment_id is not None:
+        segment_code = await db.scalar(
+            select(CustomerSegment.code).where(CustomerSegment.id == user.segment_id)
+        )
+    return UserMe.model_validate(user).model_copy(update={"segment_code": segment_code})
