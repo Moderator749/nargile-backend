@@ -3,6 +3,7 @@
 Business rules:
 - Bank transfer discount: 5% for 1-29999.99 TRY, 7% for >=30000 TRY
 - ParaPuan loyalty: 10% earned when cart is 20000-29999.99 TRY
+- ParaPuan redemption: 1 point = 1.00 TRY, capped at discounted subtotal
 - Anti-fraud cargo: free shipping at 3000 TRY, but HEAVY_CARGO items
   cannot exceed 50% of cart value to qualify
 """
@@ -22,8 +23,10 @@ from app.models.catalog import (
     VariantPrice,
     WarehouseType,
 )
+from app.models.loyalty import LoyaltyLedger, TransactionType
 from app.models.order import Order, OrderItem, OrderStatus, PaymentMethod
 from app.models.user import SegmentType, User
+from app.services.loyalty_service import get_user_loyalty_balance
 from app.services.pricing_engine import calculate_line_total
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -41,6 +44,8 @@ BANK_TRANSFER_HIGH_RATE = Decimal("0.07")
 LOYALTY_MIN_THRESHOLD = Decimal("20000.00")
 LOYALTY_MAX_THRESHOLD = Decimal("29999.99")
 LOYALTY_EARN_RATE = Decimal("0.10")
+
+POINTS_TO_TRY = Decimal("1.00")  # 1 ParaPuan = 1.00 TRY
 
 
 # ── Resolved cart item (after DB lookup) ─────────────────────────────────────
@@ -68,8 +73,10 @@ class CartResult:
     cargo_cost: Decimal
     discount_rate: Decimal
     discount_amount: Decimal
+    points_discount: Decimal
     net_total: Decimal
     loyalty_points_to_earn: int
+    points_redeemed: int
     payment_method: PaymentMethod
 
 
@@ -86,6 +93,7 @@ class CheckoutEngine:
         user: User,
         variant_quantities: dict[uuid.UUID, int],
         payment_method: PaymentMethod,
+        points_to_redeem: int = 0,
     ) -> CartResult:
         """Resolve raw cart items into a full calculation with all business rules."""
         segment_id = user.segment_id or 1  # default to RETAIL
@@ -96,7 +104,25 @@ class CheckoutEngine:
         discount_rate, discount_amount = self.calculate_discounts(subtotal, payment_method)
         loyalty_points = self.calculate_loyalty_earnings(subtotal)
 
-        net_total = (subtotal + cargo_cost - discount_amount).quantize(Decimal("0.01"))
+        # Points redemption: validate and cap
+        points_discount = Decimal("0.00")
+        actual_redeemed = 0
+        if points_to_redeem > 0:
+            balance = await get_user_loyalty_balance(self._db, user.id)
+            if points_to_redeem > balance:
+                raise ValueError(
+                    f"Insufficient ParaPuan: requested {points_to_redeem}, "
+                    f"available {balance}"
+                )
+            # 1 point = 1.00 TRY, but cannot exceed (subtotal - bank discount)
+            max_redeemable = subtotal - discount_amount
+            points_as_try = Decimal(points_to_redeem) * POINTS_TO_TRY
+            points_discount = min(points_as_try, max_redeemable).quantize(Decimal("0.01"))
+            actual_redeemed = int(points_discount / POINTS_TO_TRY)
+
+        net_total = (
+            subtotal + cargo_cost - discount_amount - points_discount
+        ).quantize(Decimal("0.01"))
 
         return CartResult(
             items=items,
@@ -104,8 +130,10 @@ class CheckoutEngine:
             cargo_cost=cargo_cost,
             discount_rate=discount_rate,
             discount_amount=discount_amount,
+            points_discount=points_discount,
             net_total=net_total,
             loyalty_points_to_earn=loyalty_points,
+            points_redeemed=actual_redeemed,
             payment_method=payment_method,
         )
 
@@ -115,9 +143,12 @@ class CheckoutEngine:
         variant_quantities: dict[uuid.UUID, int],
         payment_method: PaymentMethod,
         order_number: str,
+        points_to_redeem: int = 0,
     ) -> Order:
         """Execute the full checkout: calculate, create order, deduct inventory."""
-        cart = await self.resolve_cart(user, variant_quantities, payment_method)
+        cart = await self.resolve_cart(
+            user, variant_quantities, payment_method, points_to_redeem
+        )
 
         # Determine warehouse type from user segment
         warehouse = self._warehouse_for_segment(user)
@@ -125,7 +156,8 @@ class CheckoutEngine:
         # Validate inventory and deduct
         await self._deduct_inventory(cart.items, warehouse)
 
-        # Build order
+        # Build order — discount_amount includes both bank transfer + points
+        total_discount = cart.discount_amount + cart.points_discount
         order_items = [
             OrderItem(
                 variant_id=item.variant.id,
@@ -141,14 +173,24 @@ class CheckoutEngine:
             user_id=user.id,
             total_amount=cart.subtotal,
             shipping_cost=cart.cargo_cost,
-            discount_amount=cart.discount_amount,
+            discount_amount=total_discount,
             payment_method=payment_method,
             status=OrderStatus.PENDING_APPROVAL,
             items=order_items,
         )
         self._db.add(order)
+        await self._db.flush()
 
-        # NOTE: Loyalty ledger entries are NOT written here. ParaPuan is
+        # Write SPENT ledger entry if points were redeemed
+        if cart.points_redeemed > 0:
+            self._db.add(LoyaltyLedger(
+                user_id=user.id,
+                order_id=order.id,
+                amount=cart.points_redeemed,
+                transaction_type=TransactionType.SPENT,
+            ))
+
+        # NOTE: EARNED ledger entries are NOT written here. ParaPuan is
         # awarded only when an admin approves the order (see admin_orders.py).
 
         await self._db.commit()

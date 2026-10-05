@@ -47,7 +47,10 @@ async def calculate_cart(
 
     engine = CheckoutEngine(db)
     try:
-        cart = await engine.resolve_cart(user, variant_quantities, payload.payment_method)
+        cart = await engine.resolve_cart(
+            user, variant_quantities, payload.payment_method,
+            points_to_redeem=payload.points_to_redeem,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -56,6 +59,7 @@ async def calculate_cart(
         cargo_cost=cart.cargo_cost,
         discount_rate=cart.discount_rate,
         discount_amount=cart.discount_amount,
+        points_discount=cart.points_discount,
         net_total=cart.net_total,
         loyalty_points_to_earn=cart.loyalty_points_to_earn,
         payment_method=cart.payment_method,
@@ -90,6 +94,7 @@ async def checkout(
             variant_quantities=variant_quantities,
             payment_method=payload.payment_method,
             order_number=_generate_order_number(),
+            points_to_redeem=payload.points_to_redeem,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

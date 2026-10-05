@@ -32,6 +32,7 @@ class CartCalculateResponse(BaseModel):
     cargo_cost: Decimal
     discount_rate: Decimal
     discount_amount: Decimal
+    points_discount: Decimal
     net_total: Decimal
     loyalty_points_to_earn: int
     payment_method: PaymentMethod

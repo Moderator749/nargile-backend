@@ -28,6 +28,7 @@ class CheckoutRequest(BaseModel):
     user_id: uuid.UUID
     payment_method: PaymentMethod
     items: list[CartItemInput]
+    points_to_redeem: int = 0
 
 
 class OrderItemRead(BaseModel):
