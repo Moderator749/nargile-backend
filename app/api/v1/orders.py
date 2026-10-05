@@ -1,16 +1,17 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.order import Order
 from app.models.user import User
 from app.schemas.cart import CartCalculateResponse, CartItemBreakdown
-from app.schemas.order import CheckoutRequest, OrderRead
+from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
 from app.services.checkout_engine import CheckoutEngine
 
 router = APIRouter(prefix="/orders", tags=["orders"])
@@ -22,28 +23,32 @@ def _generate_order_number() -> str:
     return f"ORD-{ts}-{short}"
 
 
-async def _get_user(db: AsyncSession, user_id: uuid.UUID) -> User:
+async def _with_segment(db: AsyncSession, user: User) -> User:
+    """Reload the authenticated user with its segment eager-loaded (the checkout
+    engine reads user.segment, which cannot lazy-load under AsyncSession)."""
     result = await db.execute(
-        select(User)
-        .where(User.id == user_id)
-        .options(selectinload(User.segment))
+        select(User).where(User.id == user.id).options(selectinload(User.segment))
     )
-    user = result.scalar_one_or_none()
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-    if not user.is_active:
-        raise HTTPException(status_code=403, detail="Account disabled")
-    return user
+    return result.scalar_one()
+
+
+def _quantities(items: list[CartItemInput]) -> dict[uuid.UUID, int]:
+    # Sum duplicate lines instead of letting the last one silently win.
+    totals: dict[uuid.UUID, int] = {}
+    for item in items:
+        totals[item.variant_id] = totals.get(item.variant_id, 0) + item.quantity
+    return totals
 
 
 @router.post("/calculate-cart", response_model=CartCalculateResponse)
 async def calculate_cart(
     payload: CheckoutRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Preview mode — returns a full price breakdown without saving anything."""
-    user = await _get_user(db, payload.user_id)
-    variant_quantities = {item.variant_id: item.quantity for item in payload.items}
+    user = await _with_segment(db, current_user)
+    variant_quantities = _quantities(payload.items)
 
     engine = CheckoutEngine(db)
     try:
@@ -81,11 +86,12 @@ async def calculate_cart(
 @router.post("/checkout", response_model=OrderRead, status_code=status.HTTP_201_CREATED)
 async def checkout(
     payload: CheckoutRequest,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Execute the full checkout: validate, calculate, persist order, deduct inventory."""
-    user = await _get_user(db, payload.user_id)
-    variant_quantities = {item.variant_id: item.quantity for item in payload.items}
+    user = await _with_segment(db, current_user)
+    variant_quantities = _quantities(payload.items)
 
     engine = CheckoutEngine(db)
     try:
@@ -104,12 +110,15 @@ async def checkout(
 
 @router.get("/", response_model=list[OrderRead])
 async def list_orders(
-    skip: int = 0,
-    limit: int = 50,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """The authenticated user's own orders, newest first."""
     result = await db.execute(
         select(Order)
+        .where(Order.user_id == current_user.id)
         .options(selectinload(Order.items))
         .order_by(Order.created_at.desc())
         .offset(skip)
@@ -119,9 +128,16 @@ async def list_orders(
 
 
 @router.get("/{order_id}", response_model=OrderRead)
-async def get_order(order_id: str, db: AsyncSession = Depends(get_db)):
+async def get_order(
+    order_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    # Another user's order is reported as 404, not 403, to avoid confirming it exists.
     result = await db.execute(
-        select(Order).where(Order.id == order_id).options(selectinload(Order.items))
+        select(Order)
+        .where(Order.id == order_id, Order.user_id == current_user.id)
+        .options(selectinload(Order.items))
     )
     order = result.scalar_one_or_none()
     if not order:

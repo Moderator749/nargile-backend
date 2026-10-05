@@ -7,6 +7,7 @@ from app.core.database import get_db
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.user import LoginRequest, Token, UserCreate, UserMe, UserRead
+from app.services.loyalty_service import get_user_loyalty_balance
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -63,4 +64,9 @@ async def read_me(
         segment_code = await db.scalar(
             select(CustomerSegment.code).where(CustomerSegment.id == user.segment_id)
         )
-    return UserMe.model_validate(user).model_copy(update={"segment_code": segment_code})
+    return UserMe.model_validate(user).model_copy(
+        update={
+            "segment_code": segment_code,
+            "loyalty_balance": await get_user_loyalty_balance(db, user.id),
+        }
+    )

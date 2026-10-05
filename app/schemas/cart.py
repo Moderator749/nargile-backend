@@ -1,20 +1,21 @@
 import uuid
 from decimal import Decimal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.order import PaymentMethod
 
 
 class CartItem(BaseModel):
     variant_id: uuid.UUID
-    quantity: int
+    quantity: int = Field(gt=0)
 
 
 class CartCalculateRequest(BaseModel):
-    user_id: uuid.UUID
+    """The customer is always the authenticated user — never taken from the body."""
+
     payment_method: PaymentMethod
-    items: list[CartItem]
+    items: list[CartItem] = Field(min_length=1)
 
 
 class CartItemBreakdown(BaseModel):

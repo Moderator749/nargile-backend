@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -11,12 +11,10 @@ from app.schemas.catalog import (
     CatalogPrice,
     CatalogProductRead,
     CatalogVariantRead,
-    ProductCreate,
     ProductRead,
-    VariantCreate,
-    VariantRead,
 )
 
+# Read-only. Catalog writes live in admin_catalog.py behind admin auth.
 router = APIRouter(prefix="/products", tags=["products"])
 
 
@@ -68,15 +66,6 @@ async def list_products(
     ]
 
 
-@router.post("/", response_model=ProductRead, status_code=status.HTTP_201_CREATED)
-async def create_product(payload: ProductCreate, db: AsyncSession = Depends(get_db)):
-    product = Product(**payload.model_dump())
-    db.add(product)
-    await db.commit()
-    await db.refresh(product)
-    return product
-
-
 @router.get("/{product_id}", response_model=ProductRead)
 async def get_product(product_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(
@@ -88,20 +77,3 @@ async def get_product(product_id: str, db: AsyncSession = Depends(get_db)):
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
     return product
-
-
-@router.post(
-    "/{product_id}/variants",
-    response_model=VariantRead,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_variant(
-    product_id: str,
-    payload: VariantCreate,
-    db: AsyncSession = Depends(get_db),
-):
-    variant = ProductVariant(product_id=product_id, **payload.model_dump())
-    db.add(variant)
-    await db.commit()
-    await db.refresh(variant)
-    return variant

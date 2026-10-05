@@ -154,8 +154,7 @@ async def test_redeem_points_reduces_net_total(
     await _credit_points(db_session, user.id, 500)
 
     # Calculate cart WITH 500 points
-    resp = await client.post("/api/v1/orders/calculate-cart", json={
-        "user_id": str(user.id),
+    resp = await client.post("/api/v1/orders/calculate-cart", headers=auth_header(user), json={
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": 1}],
         "points_to_redeem": 500,
@@ -180,8 +179,7 @@ async def test_checkout_with_points_writes_spent_ledger(
 
     await _credit_points(db_session, user.id, 300)
 
-    resp = await client.post("/api/v1/orders/checkout", json={
-        "user_id": str(user.id),
+    resp = await client.post("/api/v1/orders/checkout", headers=auth_header(user), json={
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": 1}],
         "points_to_redeem": 300,
@@ -217,8 +215,7 @@ async def test_overspend_rejected(
 
     await _credit_points(db_session, user.id, 100)
 
-    resp = await client.post("/api/v1/orders/calculate-cart", json={
-        "user_id": str(user.id),
+    resp = await client.post("/api/v1/orders/calculate-cart", headers=auth_header(user), json={
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": 1}],
         "points_to_redeem": 999,
@@ -241,8 +238,7 @@ async def test_points_discount_capped_at_subtotal(
     # Give user 5000 points but product only costs 100
     await _credit_points(db_session, user.id, 5000)
 
-    resp = await client.post("/api/v1/orders/calculate-cart", json={
-        "user_id": str(user.id),
+    resp = await client.post("/api/v1/orders/calculate-cart", headers=auth_header(user), json={
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": 1}],
         "points_to_redeem": 5000,
@@ -265,8 +261,7 @@ async def test_zero_points_works_normally(
     user = await _seed_user(db_session, retail_seg.id)
     variant = await _seed_variant(db_session, retail_seg.id, Decimal("5000.00"))
 
-    resp = await client.post("/api/v1/orders/calculate-cart", json={
-        "user_id": str(user.id),
+    resp = await client.post("/api/v1/orders/calculate-cart", headers=auth_header(user), json={
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": 1}],
     })

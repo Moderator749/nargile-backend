@@ -167,8 +167,8 @@ async def test_calculate_cart_bank_transfer_5pct(
     normal_v, _ = catalog
     resp = await client.post(
         "/api/v1/orders/calculate-cart",
+        headers=auth_header(admin_user),
         json={
-            "user_id": str(admin_user.id),
             "payment_method": "BANK_TRANSFER",
             "items": [{"variant_id": str(normal_v.id), "quantity": 4}],
         },
@@ -191,8 +191,8 @@ async def test_calculate_cart_heavy_antifraud(
     normal_v, heavy_v = catalog
     resp = await client.post(
         "/api/v1/orders/calculate-cart",
+        headers=auth_header(admin_user),
         json={
-            "user_id": str(admin_user.id),
             "payment_method": "CREDIT_CARD",
             "items": [
                 {"variant_id": str(normal_v.id), "quantity": 1},
