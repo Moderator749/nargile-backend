@@ -1,12 +1,44 @@
+import logging
+from contextlib import asynccontextmanager
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.database import async_session
+from app.services.order_tasks import cancel_expired_pending_orders
+
+logger = logging.getLogger(__name__)
+
+
+async def _run_sla_check() -> None:
+    """Scheduled job: cancel expired bank-transfer orders."""
+    async with async_session() as db:
+        try:
+            count = await cancel_expired_pending_orders(db)
+            if count:
+                logger.info("SLA job: cancelled %d expired order(s).", count)
+        except Exception:
+            logger.exception("SLA job failed")
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(_run_sla_check, "interval", hours=1, id="sla_check")
+    scheduler.start()
+    logger.info("SLA scheduler started (every 1 hour).")
+    yield
+    scheduler.shutdown()
+    logger.info("SLA scheduler stopped.")
+
 
 app = FastAPI(
     title="Nargile SaaS Backend",
     version="0.1.0",
     debug=settings.DEBUG,
+    lifespan=lifespan,
 )
 
 app.include_router(api_router)
