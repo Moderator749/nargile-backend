@@ -42,6 +42,27 @@ class ProductRead(BaseModel):
     tags: list | None
 
 
+class CatalogPrice(BaseModel):
+    currency: CurrencyType
+    price_excl_tax: Decimal
+    price_incl_tax: Decimal
+    vat_rate: Decimal
+
+
+class CatalogVariantRead(BaseModel):
+    """A variant priced for one segment only — never the full price matrix."""
+
+    id: uuid.UUID
+    sku: str
+    attributes: dict | None
+    price: CatalogPrice | None  # caller's segment; None = not sold to this segment
+    list_price: CatalogPrice | None  # public RETAIL price, for "was/now" display
+
+
+class CatalogProductRead(ProductRead):
+    variants: list[CatalogVariantRead] = []
+
+
 class VariantCreate(BaseModel):
     sku: str
     barcode: str | None = None

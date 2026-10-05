@@ -1,16 +1,18 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.user import SegmentType, UserRole
 
 
 class UserCreate(BaseModel):
+    """Public sign-up payload. Segment is never client-controlled (always RETAIL)."""
+
     email: str
     password: str
+    full_name: str | None = Field(default=None, max_length=150)
     phone: str | None = None
-    segment_code: SegmentType | None = None
 
 
 class UserRead(BaseModel):
@@ -18,6 +20,7 @@ class UserRead(BaseModel):
 
     id: uuid.UUID
     email: str
+    full_name: str | None = None
     phone: str | None
     role: UserRole
     is_active: bool

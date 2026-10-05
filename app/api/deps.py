@@ -12,13 +12,11 @@ from app.core.security import decode_access_token
 from app.models.user import User, UserRole
 
 _bearer = HTTPBearer()
+_optional_bearer = HTTPBearer(auto_error=False)
 
 
-async def get_current_user(
-    creds: HTTPAuthorizationCredentials = Depends(_bearer),
-    db: AsyncSession = Depends(get_db),
-) -> User:
-    payload = decode_access_token(creds.credentials)
+async def _user_from_token(token: str, db: AsyncSession) -> User:
+    payload = decode_access_token(token)
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -40,6 +38,24 @@ async def get_current_user(
             detail="User not found or inactive",
         )
     return user
+
+
+async def get_current_user(
+    creds: HTTPAuthorizationCredentials = Depends(_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> User:
+    return await _user_from_token(creds.credentials, db)
+
+
+async def get_optional_user(
+    creds: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
+    db: AsyncSession = Depends(get_db),
+) -> User | None:
+    """Anonymous callers get None. A token that *is* sent must be valid (401 otherwise),
+    so a client never silently receives anonymous data while believing it is logged in."""
+    if creds is None:
+        return None
+    return await _user_from_token(creds.credentials, db)
 
 
 async def get_current_admin_user(

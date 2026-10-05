@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password, verify_password
-from app.models.user import CustomerSegment, User
+from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.user import LoginRequest, Token, UserCreate, UserMe, UserRead
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -17,21 +17,21 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    segment_id = None
-    if payload.segment_code:
-        seg = await db.execute(
-            select(CustomerSegment).where(CustomerSegment.code == payload.segment_code)
-        )
-        segment = seg.scalar_one_or_none()
-        if not segment:
-            raise HTTPException(status_code=400, detail="Invalid segment")
-        segment_id = segment.id
+    # Self-service sign-ups are always RETAIL. B2B segments (CAFE/WHOLESALE/DEALER)
+    # unlock lower prices and are assigned by admins only.
+    retail_id = await db.scalar(
+        select(CustomerSegment.id).where(CustomerSegment.code == SegmentType.RETAIL)
+    )
+    if retail_id is None:
+        raise HTTPException(status_code=500, detail="Default segment not configured")
 
+    full_name = payload.full_name.strip() if payload.full_name else None
     user = User(
         email=payload.email,
         hashed_password=hash_password(payload.password),
+        full_name=full_name or None,
         phone=payload.phone,
-        segment_id=segment_id,
+        segment_id=retail_id,
     )
     db.add(user)
     await db.commit()
