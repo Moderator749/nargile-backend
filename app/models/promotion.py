@@ -13,7 +13,8 @@ from app.models.catalog import ProductVariant
 class FlashSale(Base):
     """Time-boxed sale price for one variant ("Fırsat Ürünleri").
 
-    Live while is_active and starts_at <= now < ends_at. Checkout charges
+    Live while is_active and starts_at <= now, until ends_at (or forever, when it
+    is null). Checkout charges
     min(segment price, sale price), so a sale never raises anyone's price, and
     the price reverts on its own once ends_at passes.
     """
@@ -21,7 +22,8 @@ class FlashSale(Base):
     __tablename__ = "flash_sales"
     __table_args__ = (
         CheckConstraint("sale_price_incl_tax > 0", name="ck_flash_sales_price_positive"),
-        CheckConstraint("ends_at > starts_at", name="ck_flash_sales_window"),
+        # A null end runs until the admin (or the opportunity stock) stops it.
+        CheckConstraint("ends_at IS NULL OR ends_at > starts_at", name="ck_flash_sales_window"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -31,7 +33,8 @@ class FlashSale(Base):
     )
     sale_price_incl_tax: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    ends_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Null: the deal has no deadline (it ends when its stock or the admin ends it).
+    ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
@@ -40,4 +43,4 @@ class FlashSale(Base):
     variant: Mapped[ProductVariant] = relationship()
 
     def is_live(self, now: datetime) -> bool:
-        return self.is_active and self.starts_at <= now < self.ends_at
+        return self.is_active and self.starts_at <= now and (self.ends_at is None or now < self.ends_at)

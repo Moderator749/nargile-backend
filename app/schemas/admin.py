@@ -1,5 +1,6 @@
 """Pydantic schemas for admin-only operations."""
 
+import enum
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -165,6 +166,48 @@ class AdminVariantPrice(BaseModel):
     vat_rate: Decimal
 
 
+class ProductSort(str, enum.Enum):
+    """Sortable columns of the admin products table."""
+
+    CODE = "code"
+    NAME = "name"
+    STOCK = "stock"
+    PRICE = "price"
+
+
+class SortDirection(str, enum.Enum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+class ProductIds(BaseModel):
+    """The rows an admin ticked in the products table."""
+
+    product_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)
+
+
+class ProductDeleteResult(BaseModel):
+    """What a bulk delete managed. A product that appears in an order is kept:
+    removing it would take order lines — and the accounts — with it."""
+
+    deleted: list[uuid.UUID] = []
+    # id → why it was kept.
+    refused: dict[uuid.UUID, str] = {}
+
+
+class ProductPublishUpdate(BaseModel):
+    """The row toggle in the admin products list."""
+
+    is_published: bool
+
+
+class ProductPublishRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    is_published: bool
+
+
 class AdminProductDetail(BaseModel):
     id: uuid.UUID
     base_code: str
@@ -173,6 +216,7 @@ class AdminProductDetail(BaseModel):
     category_id: int | None
     tags: list | None
     image_url: str | None
+    is_published: bool = True
     variants: list[AdminVariantDetail]
 
 

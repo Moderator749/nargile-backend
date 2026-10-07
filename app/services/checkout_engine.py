@@ -20,6 +20,7 @@ Business rules (all tiers are judged on the merchandise subtotal):
 """
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -30,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.catalog import (
+    CurrencyType,
     Inventory,
     Product,
     ProductVariant,
@@ -40,10 +42,11 @@ from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
 from app.models.order import Order, OrderItem, OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer
 from app.models.user import SegmentType, User
 from app.services.categories import COAL_CATEGORY_SLUG, category_subtree
+from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.flash_sales import discounted_price, live_flash_sales
 from app.services.loyalty_service import get_user_loyalty_balance
 from app.services.wallet import parapuan_for
-from app.services.pricing_engine import calculate_line_total
+from app.services.pricing_engine import calculate_line_total, pick_price_row, to_try
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -64,15 +67,18 @@ BANK_TRANSFER_HIGH_RATE = Decimal("0.07")
 POINTS_TO_TRY = Decimal("1.00")  # 1 ParaPuan = 1.00 TRY
 
 
-def warehouse_for_segment(code: SegmentType | None) -> WarehouseType:
-    """Map a segment to the warehouse it buys from.
+# One quota per segment, as the product sheet defines them (Bayi / Toptan / Kafe
+# / Perakende). B2B_STOCK is the Toptan quota, named before the split.
+WAREHOUSE_BY_SEGMENT = {
+    SegmentType.CAFE: WarehouseType.CAFE_STOCK,
+    SegmentType.WHOLESALE: WarehouseType.B2B_STOCK,
+    SegmentType.DEALER: WarehouseType.DEALER_STOCK,
+}
 
-    WHOLESALE / DEALER → B2B_STOCK
-    RETAIL / CAFE (or no segment) → RETAIL_STOCK
-    """
-    if code in (SegmentType.WHOLESALE, SegmentType.DEALER):
-        return WarehouseType.B2B_STOCK
-    return WarehouseType.RETAIL_STOCK
+
+def warehouse_for_segment(code: SegmentType | None) -> WarehouseType:
+    """The stock quota a segment buys from; RETAIL_STOCK when it has no segment."""
+    return WAREHOUSE_BY_SEGMENT.get(code, WarehouseType.RETAIL_STOCK)
 
 
 # ── Resolved cart item (after DB lookup) ─────────────────────────────────────
@@ -87,6 +93,8 @@ class ResolvedCartItem:
     tags: list[str] = field(init=False)
     # In the Kömürler category (or a subcategory).
     is_coal: bool = False
+    # Charged at the product's "Fırsat" price, so the deal's stock is spent.
+    offer_applied: bool = False
     # kg per unit; None = not recorded.
     unit_weight_kg: Decimal | None = None
 
@@ -245,6 +253,7 @@ class CheckoutEngine:
 
         # Validate inventory and deduct
         await self._deduct_inventory(cart.items, warehouse)
+        self._spend_offer_stock(cart.items)
 
         # Build order: discount_amount is volume + bank transfer + points
         total_discount = cart.volume_discount_amount + cart.discount_amount + cart.points_discount
@@ -393,6 +402,37 @@ class CheckoutEngine:
 
     # ── Private helpers ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _spend_offer_stock(items: list[ResolvedCartItem]) -> None:
+        """Draw down the "Fırsat stoğu" of every line bought at its offer price.
+
+        At zero the offer stops being claimable (see `live_flash_sales`) while the
+        product stays on the Fırsat list as "Fırsat Kaçtı". A product with no quota
+        (null) runs until its deadline or the admin. Cancelling an order does not
+        give the quota back: an order does not record which lines were on offer,
+        so topping it up is the admin's call.
+        """
+        for item in items:
+            quota = item.product.opportunity_stock
+            if item.offer_applied and quota is not None:
+                item.product.opportunity_stock = max(0, quota - item.quantity)
+
+    @staticmethod
+    async def _rates_for(variants: Iterable[ProductVariant], segment_id: int) -> Rates | None:
+        """TCMB rates, fetched only when a price in this cart is in a foreign currency."""
+        foreign = any(
+            CurrencyType(p.currency) != CurrencyType.TRY
+            for v in variants
+            for p in v.prices
+            if p.segment_id == segment_id
+        )
+        if not foreign:
+            return None
+        try:
+            return await get_rates()
+        except RatesUnavailable:
+            return None
+
     async def _load_items(
         self,
         variant_quantities: dict[uuid.UUID, int],
@@ -412,6 +452,7 @@ class CheckoutEngine:
         variants = {v.id: v for v in result.scalars().all()}
         sales = await live_flash_sales(self._db, variant_ids, datetime.now(timezone.utc))
         coal_categories = set((await self._db.execute(category_subtree(COAL_CATEGORY_SLUG))).scalars())
+        rates = await self._rates_for(variants.values(), segment_id)
 
         items: list[ResolvedCartItem] = []
         for vid, qty in variant_quantities.items():
@@ -419,27 +460,23 @@ class CheckoutEngine:
             if variant is None:
                 raise ValueError(f"Variant {vid} not found")
 
-            # Find the segment-specific TRY price
-            price_row = next(
-                (
-                    p
-                    for p in variant.prices
-                    if p.segment_id == segment_id and p.currency == "TRY"
-                ),
-                None,
-            )
+            price_row = pick_price_row(variant.prices, segment_id)
             if price_row is None:
-                raise ValueError(
-                    f"No TRY price for variant {variant.sku} in segment {segment_id}"
-                )
+                raise ValueError(f"{variant.sku} bu müşteri grubuna satılmıyor")
+            # The cart is always TRY: a price entered in USD/EUR is converted at
+            # the day's TCMB rate and locked in here.
+            unit_price = to_try(price_row.price_incl_tax, price_row.currency, rates)
+            if unit_price is None:
+                raise ValueError(f"{variant.sku} için güncel döviz kuru alınamadı, lütfen sonra deneyin")
 
-            sale_price = discounted_price(price_row.price_incl_tax, sales.get(vid))
+            sale_price = discounted_price(unit_price, sales.get(vid))
             items.append(
                 ResolvedCartItem(
                     variant=variant,
                     product=variant.product,
-                    unit_price=sale_price if sale_price is not None else price_row.price_incl_tax,
+                    unit_price=sale_price if sale_price is not None else unit_price,
                     quantity=qty,
+                    offer_applied=sale_price is not None,
                     is_coal=variant.product.category_id in coal_categories,
                     unit_weight_kg=variant.weight_kg,
                 )

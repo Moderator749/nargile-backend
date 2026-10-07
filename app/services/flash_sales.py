@@ -5,25 +5,37 @@ from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.catalog import Product, ProductVariant
 from app.models.promotion import FlashSale
 
 
 async def live_flash_sales(
     db: AsyncSession, variant_ids: Iterable[uuid.UUID], now: datetime
 ) -> dict[uuid.UUID, FlashSale]:
-    """Sales live at `now` for the given variants, keyed by variant id."""
+    """Claimable offers at `now` for the given variants, keyed by variant id.
+
+    An offer is claimable while its product's "Fırsat" switch is on, its deal
+    stock has not run out (null = no quota) and it is inside its window — and a
+    null `ends_at` means there is no deadline. Everything else (deadline passed,
+    quota exhausted) is a "Fırsat Kaçtı": still listed, no longer priced.
+    """
     ids = list(variant_ids)
     if not ids:
         return {}
     result = await db.execute(
-        select(FlashSale).where(
+        select(FlashSale)
+        .join(ProductVariant, ProductVariant.id == FlashSale.variant_id)
+        .join(Product, Product.id == ProductVariant.product_id)
+        .where(
             FlashSale.variant_id.in_(ids),
             FlashSale.is_active.is_(True),
             FlashSale.starts_at <= now,
-            FlashSale.ends_at > now,
+            or_(FlashSale.ends_at.is_(None), FlashSale.ends_at > now),
+            Product.is_opportunity.is_(True),
+            or_(Product.opportunity_stock.is_(None), Product.opportunity_stock > 0),
         )
     )
     return {sale.variant_id: sale for sale in result.scalars()}

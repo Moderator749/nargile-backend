@@ -5,14 +5,14 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.catalog import Inventory
+from app.models.catalog import Inventory, Product
 from app.models.promotion import FlashSale
 from app.models.user import User
 from app.services.flash_sales import discounted_price
-from tests.conftest import auth_header
+from tests.conftest import ADDRESS, auth_header
 
 
 def _now() -> datetime:
@@ -26,21 +26,35 @@ async def sales(db_session: AsyncSession, catalog):
     normal_v, heavy_v = catalog
     variant_ids = [normal_v.id, heavy_v.id]  # read now: attributes expire on rollback
 
-    async def make(variant=normal_v, price="3990.00", start=timedelta(hours=-1), end=timedelta(hours=1), active=True):
+    product_ids = [normal_v.product_id, heavy_v.product_id]
+
+    async def make(
+        variant=normal_v, price="3990.00", start=timedelta(hours=-1), end=timedelta(hours=1), active=True, stock=None
+    ):
+        """A sale as the product sheet writes it: the row plus the product's
+        Fırsat block, which is what decides whether the offer is claimable."""
         sale = FlashSale(
             variant_id=variant.id,
             sale_price_incl_tax=Decimal(price),
             starts_at=_now() + start,
-            ends_at=_now() + end,
+            ends_at=None if end is None else _now() + end,
             is_active=active,
         )
         db_session.add(sale)
+        product = await db_session.get(Product, variant.product_id)
+        product.is_opportunity = True
+        product.opportunity_price = Decimal(price)
+        product.opportunity_end_date = sale.ends_at
+        product.opportunity_stock = stock
         await db_session.commit()
         return sale
 
     yield make
     await db_session.rollback()
     await db_session.execute(delete(FlashSale).where(FlashSale.variant_id.in_(variant_ids)))
+    await db_session.execute(
+        update(Product).where(Product.id.in_(product_ids)).values(is_opportunity=False, opportunity_price=None)
+    )
     await db_session.commit()
 
 
@@ -138,16 +152,72 @@ async def test_in_stock_flag_follows_retail_inventory(
     assert (await _catalog_variant(client, normal_v))["in_stock"] is False
 
 
-async def test_flash_sales_endpoint_lists_only_live_sales(client: AsyncClient, catalog, sales):
+async def test_flash_sales_endpoint_keeps_a_missed_offer_on_the_list(client: AsyncClient, catalog, sales):
+    """A deal whose deadline has passed stays listed, without a claimable price
+    ("Fırsat Kaçtı"); only switching the opportunity off removes it."""
     normal_v, heavy_v = catalog
     await sales(variant=normal_v)
     await sales(variant=heavy_v, price="900.00", start=timedelta(hours=-2), end=timedelta(seconds=-1))
 
     resp = await client.get("/api/v1/products/flash-sales", params={"limit": 50})
     assert resp.status_code == 200
-    ids = {v["id"] for p in resp.json() for v in p["variants"]}
-    assert str(normal_v.id) in ids
-    assert str(heavy_v.id) not in ids
+    variants = {v["id"]: v for p in resp.json() for v in p["variants"]}
+    assert variants[str(normal_v.id)]["flash_sale"] is not None  # claimable
+    assert variants[str(heavy_v.id)]["flash_sale"] is None  # missed, still listed
+
+
+async def test_offer_without_a_deadline_runs_until_its_stock_runs_out(
+    client: AsyncClient, customer_user: User, db_session: AsyncSession, catalog, sales
+):
+    normal_v, _ = catalog
+    await sales(end=None, stock=5)  # no deadline, five to be had
+    assert await _unit_price(client, customer_user, normal_v) == Decimal("3990.00")
+    v = await _catalog_variant(client, normal_v)
+    assert v["flash_sale"]["ends_at"] is None  # nothing to count down to
+
+    product = await db_session.get(Product, normal_v.product_id)
+    product.opportunity_stock = 0
+    await db_session.commit()
+    # Out of deal stock: the regular price applies, but the product stays listed.
+    assert await _unit_price(client, customer_user, normal_v) == Decimal("5000.00")
+    listed = (await client.get("/api/v1/products/flash-sales", params={"limit": 50})).json()
+    assert str(normal_v.id) in {v["id"] for p in listed for v in p["variants"]}
+
+
+async def test_buying_on_offer_spends_the_offer_stock(
+    client: AsyncClient, customer_user: User, db_session: AsyncSession, catalog, sales
+):
+    """"Fırsat stoğu" runs down as the deal sells, and the deal ends at zero."""
+    normal_v, _ = catalog
+    product_id = normal_v.product_id  # read now: attributes expire on commit elsewhere
+    await sales(end=None, stock=2)
+    body = {
+        "payment_method": "CREDIT_CARD",
+        "items": [{"variant_id": str(normal_v.id), "quantity": 2}],
+        "shipping_address": ADDRESS,
+        "shipping_consent": True,
+    }
+    placed = await client.post("/api/v1/orders/checkout", headers=auth_header(customer_user), json=body)
+    assert placed.status_code == 201, placed.text
+    assert Decimal(placed.json()["total_amount"]) == Decimal("7980.00")  # 2 × the offer price
+
+    # populate_existing: the API's own session wrote the quota down, so re-read it.
+    product = await db_session.get(Product, product_id, populate_existing=True)
+    assert product.opportunity_stock == 0
+    # Spent: the next buyer pays the regular price, the product stays listed.
+    assert await _unit_price(client, customer_user, normal_v) == Decimal("5000.00")
+
+
+async def test_switching_the_opportunity_off_removes_it_from_the_list(
+    client: AsyncClient, db_session: AsyncSession, catalog, sales
+):
+    normal_v, _ = catalog
+    await sales()
+    product = await db_session.get(Product, normal_v.product_id)
+    product.is_opportunity = False
+    await db_session.commit()
+    listed = (await client.get("/api/v1/products/flash-sales", params={"limit": 50})).json()
+    assert str(normal_v.id) not in {v["id"] for p in listed for v in p["variants"]}
 
 
 # ── Admin API ────────────────────────────────────────────────────────────────

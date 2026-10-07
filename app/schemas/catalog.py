@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.catalog import CurrencyType, WarehouseType
 
@@ -47,7 +47,29 @@ class ProductRead(BaseModel):
     description: str | None
     category_id: int | None
     tags: list | None
+    # The cover; `image_urls` is the whole gallery, cover first.
     image_url: str | None = None
+    image_urls: list[str] | None = None
+    youtube_video_url: str | None = None
+    color_names: list[str] | None = None
+    # On the "Fırsat Ürünleri" list while this is true, whether or not the offer
+    # is still claimable; `variants[].flash_sale` says whether it is.
+    is_opportunity: bool = False
+    # Badge colour for a product on offer ("Fırsat rengi"), "#rrggbb".
+    opportunity_color: str | None = None
+
+    @model_validator(mode="after")
+    def _gallery_always_has_the_cover(self) -> "ProductRead":
+        """A list, never null, and never empty while the product has a photo.
+
+        Products written before galleries existed — or through the plain create
+        endpoint — have only `image_url`.
+        """
+        if not self.image_urls and self.image_url:
+            self.image_urls = [self.image_url]
+        if self.color_names is None:
+            self.color_names = []
+        return self
 
 
 class CatalogPrice(BaseModel):
@@ -58,10 +80,14 @@ class CatalogPrice(BaseModel):
 
 
 class FlashSaleInfo(BaseModel):
-    """A live flash sale: checkout charges `price` until `ends_at`, then `price` of the variant."""
+    """A claimable offer: checkout charges `price` until `ends_at`.
+
+    `ends_at` is null for an offer with no deadline; it then runs until its deal
+    stock runs out or the admin turns the opportunity off.
+    """
 
     price: CatalogPrice
-    ends_at: datetime
+    ends_at: datetime | None = None
 
 
 class CatalogVariantRead(BaseModel):
@@ -70,7 +96,12 @@ class CatalogVariantRead(BaseModel):
     id: uuid.UUID
     sku: str
     attributes: dict | None
-    price: CatalogPrice | None  # caller's segment; None = not sold to this segment
+    # Always TRY, because that is what the cart charges. None = not sold to this
+    # segment (or its foreign price could not be converted today).
+    price: CatalogPrice | None
+    # Set only when the admin priced this segment in USD/EUR: the amount as they
+    # typed it, to show beside the TRY figure. `price` is this, converted.
+    origin_price: CatalogPrice | None = None
     list_price: CatalogPrice | None  # public RETAIL price, for "was/now" display
     # Live sale that beats `price` for this caller; None when there is none.
     flash_sale: FlashSaleInfo | None = None
@@ -80,6 +111,16 @@ class CatalogVariantRead(BaseModel):
 
 class CatalogProductRead(ProductRead):
     variants: list[CatalogVariantRead] = []
+
+
+class CatalogProductDetail(CatalogProductRead):
+    """The product page: the product plus what is sold with it.
+
+    Only the detail endpoint carries the cross-sells — a list page would repeat
+    them for every row — and they are plain products, so the nesting stops here.
+    """
+
+    cross_sells: list[CatalogProductRead] = []
 
 
 class VariantCreate(BaseModel):

@@ -127,7 +127,9 @@ async def test_catalog_dealer_gets_dealer_price(
 
 async def test_catalog_never_exposes_other_segment_prices(client: AsyncClient, priced_variant):
     v = await _find_variant(client, priced_variant.id)
-    assert set(v) == {"id", "sku", "attributes", "price", "list_price", "flash_sale", "in_stock"}
+    # origin_price is the caller's own price in the currency it was entered in,
+    # never another segment's.
+    assert set(v) == {"id", "sku", "attributes", "price", "origin_price", "list_price", "flash_sale", "in_stock"}
     assert "800.00" not in json.dumps(v)
 
 

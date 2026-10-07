@@ -6,6 +6,7 @@ from pathlib import Path
 from app.core.config import settings
 
 MAX_IMAGE_BYTES = 1024 * 1024  # 1 MB: logos are small
+MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB: product photography is not
 
 # Raster only, identified by magic bytes (never the client's filename or
 # Content-Type). SVG is refused: it can carry script when opened directly.
@@ -28,12 +29,12 @@ def image_extension(data: bytes) -> str:
     raise InvalidImage("Only PNG, JPEG or WebP images are accepted")
 
 
-def save_image(data: bytes, folder: str) -> str:
+def save_image(data: bytes, folder: str, max_bytes: int = MAX_IMAGE_BYTES) -> str:
     """Store an image under MEDIA_ROOT/folder with a random name; returns its relative path."""
     if not data:
         raise InvalidImage("Empty file")
-    if len(data) > MAX_IMAGE_BYTES:
-        raise InvalidImage("Image is larger than 1 MB")
+    if len(data) > max_bytes:
+        raise InvalidImage(f"Görsel en fazla {max_bytes // (1024 * 1024)} MB olabilir")
     rel = f"{folder}/{uuid.uuid4().hex}{image_extension(data)}"
     target = settings.MEDIA_ROOT / rel
     target.parent.mkdir(parents=True, exist_ok=True)

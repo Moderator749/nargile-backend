@@ -12,6 +12,7 @@ from app.api.v1.admin_dashboard import router as admin_dashboard_router
 from app.api.v1.admin_orders import router as admin_orders_router
 from app.api.v1.admin_promotions import router as admin_promotions_router
 from app.api.v1.admin_taxonomy import router as admin_taxonomy_router
+from app.api.v1.admin_uploads import router as admin_uploads_router
 from app.api.v1.brands import router as brands_router
 from app.api.v1.home_content import admin as admin_home_content_router
 from app.api.v1.home_content import router as home_content_router
@@ -34,3 +35,4 @@ api_router.include_router(admin_home_content_router)
 api_router.include_router(account_router)
 api_router.include_router(admin_customers_router)
 api_router.include_router(admin_dashboard_router)
+api_router.include_router(admin_uploads_router)

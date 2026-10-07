@@ -1,5 +1,12 @@
 from app.models.user import User, CustomerSegment, CompanyProfile  # noqa: F401
-from app.models.catalog import Category, Product, ProductVariant, VariantPrice, Inventory  # noqa: F401
+from app.models.catalog import (  # noqa: F401
+    Category,
+    Inventory,
+    Product,
+    ProductCrossSell,
+    ProductVariant,
+    VariantPrice,
+)
 from app.models.loyalty import LoyaltyLedger  # noqa: F401
 from app.models.order import Order, OrderItem  # noqa: F401
 from app.models.site import SiteAnnouncement  # noqa: F401
