@@ -10,9 +10,15 @@ from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.models.order import Order
 from app.models.user import User
-from app.schemas.cart import CartCalculateResponse, CartItemBreakdown
+from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingBreakdown, VolumeTier
 from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
-from app.services.checkout_engine import CheckoutEngine
+from app.services.checkout_engine import (
+    COAL_MAX_RATIO,
+    COAL_MIN_FREE_KG,
+    FREE_SHIPPING_THRESHOLD,
+    VOLUME_TIERS,
+    CheckoutEngine,
+)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -55,13 +61,32 @@ async def calculate_cart(
         cart = await engine.resolve_cart(
             user, variant_quantities, payload.payment_method,
             points_to_redeem=payload.points_to_redeem,
+            shipping_method=payload.shipping_method,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    s = cart.shipping
     return CartCalculateResponse(
         subtotal=cart.subtotal,
         cargo_cost=cart.cargo_cost,
+        shipping=ShippingBreakdown(
+            free=s.free,
+            receiver_pays=s.receiver_pays,
+            reason=s.reason,
+            free_threshold=FREE_SHIPPING_THRESHOLD,
+            coal_total=s.coal_total,
+            coal_ratio=s.coal_ratio,
+            coal_max_ratio=COAL_MAX_RATIO,
+            coal_weight_kg=s.coal_weight_kg,
+            coal_min_kg=COAL_MIN_FREE_KG,
+            coal_weight_unknown=s.coal_weight_unknown,
+        ),
+        volume_discount_rate=cart.volume_discount_rate,
+        volume_discount_amount=cart.volume_discount_amount,
+        volume_next_tier=next(
+            (VolumeTier(threshold=t, rate=r) for t, r in VOLUME_TIERS if cart.subtotal < t), None
+        ),
         discount_rate=cart.discount_rate,
         discount_amount=cart.discount_amount,
         points_discount=cart.points_discount,
@@ -71,12 +96,14 @@ async def calculate_cart(
         items=[
             CartItemBreakdown(
                 variant_id=i.variant.id,
+                product_id=i.product.id,
                 sku=i.variant.sku,
                 product_name=i.product.name,
                 quantity=i.quantity,
                 unit_price=i.unit_price,
                 line_total=i.line_total,
                 tags=i.tags,
+                image_url=i.product.image_url,
             )
             for i in cart.items
         ],
@@ -90,6 +117,8 @@ async def checkout(
     db: AsyncSession = Depends(get_db),
 ):
     """Execute the full checkout: validate, calculate, persist order, deduct inventory."""
+    if payload.shipping_address is None:
+        raise HTTPException(status_code=422, detail="Teslimat adresi gerekli")
     user = await _with_segment(db, current_user)
     variant_quantities = _quantities(payload.items)
 
@@ -101,6 +130,9 @@ async def checkout(
             payment_method=payload.payment_method,
             order_number=_generate_order_number(),
             points_to_redeem=payload.points_to_redeem,
+            shipping_method=payload.shipping_method,
+            shipping_address=payload.shipping_address.model_dump(),
+            shipping_consent=payload.shipping_consent,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

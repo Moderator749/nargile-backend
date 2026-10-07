@@ -1,8 +1,8 @@
 """Background tasks for order lifecycle enforcement.
 
-48-hour SLA: Bank-transfer orders still in PENDING_APPROVAL after 48 hours
-are automatically cancelled and their reserved stock is released back to
-the correct warehouse (RETAIL_STOCK or B2B_STOCK based on user segment).
+48-hour SLA: bank-transfer orders still awaiting the transfer after 48 hours
+are cancelled; their reserved stock goes back to the warehouse it came from
+and any points spent on them return (see order_lifecycle.cancel).
 """
 
 import logging
@@ -12,23 +12,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.catalog import Inventory, WarehouseType
 from app.models.order import Order, OrderStatus, PaymentMethod
-from app.models.user import SegmentType, User
+from app.models.user import User
+from app.services import order_lifecycle
 
 logger = logging.getLogger(__name__)
 
 SLA_HOURS = 48
-
-
-def _warehouse_for_user(user: User) -> WarehouseType:
-    """Determine which warehouse a user's stock was deducted from."""
-    if user.segment and user.segment.code in (
-        SegmentType.WHOLESALE,
-        SegmentType.DEALER,
-    ):
-        return WarehouseType.B2B_STOCK
-    return WarehouseType.RETAIL_STOCK
 
 
 async def cancel_expired_pending_orders(db: AsyncSession) -> int:
@@ -36,12 +26,13 @@ async def cancel_expired_pending_orders(db: AsyncSession) -> int:
 
     Returns the number of orders cancelled.
     """
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=SLA_HOURS)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=SLA_HOURS)
 
     result = await db.execute(
         select(Order)
         .where(
-            Order.status == OrderStatus.PENDING_APPROVAL,
+            Order.status.in_((OrderStatus.AWAITING_TRANSFER, OrderStatus.PENDING_APPROVAL)),
             Order.payment_method == PaymentMethod.BANK_TRANSFER,
             Order.created_at <= cutoff,
         )
@@ -73,34 +64,11 @@ async def cancel_expired_pending_orders(db: AsyncSession) -> int:
             )
             continue
 
-        warehouse = _warehouse_for_user(user)
-
-        # Restore inventory for each line item
-        for item in order.items:
-            inv_result = await db.execute(
-                select(Inventory).where(
-                    Inventory.variant_id == item.variant_id,
-                    Inventory.warehouse_type == warehouse,
-                )
-            )
-            inv = inv_result.scalar_one_or_none()
-
-            if inv is not None:
-                inv.quantity += item.quantity
-            else:
-                # Inventory row was deleted — recreate it
-                db.add(Inventory(
-                    variant_id=item.variant_id,
-                    warehouse_type=warehouse,
-                    quantity=item.quantity,
-                ))
-
-        order.status = OrderStatus.CANCELLED
+        await order_lifecycle.cancel(db, order, user, "48 saat içinde havale alınmadı (otomatik iptal)", now)
         cancelled_count += 1
 
         logger.info(
-            "SLA: cancelled order %s (created %s, user %s, warehouse %s)",
-            order.order_number, order.created_at, user.email, warehouse.value,
+            "SLA: cancelled order %s (created %s, user %s)", order.order_number, order.created_at, user.email
         )
 
     await db.commit()

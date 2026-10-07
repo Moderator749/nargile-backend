@@ -127,7 +127,7 @@ async def test_catalog_dealer_gets_dealer_price(
 
 async def test_catalog_never_exposes_other_segment_prices(client: AsyncClient, priced_variant):
     v = await _find_variant(client, priced_variant.id)
-    assert set(v) == {"id", "sku", "attributes", "price", "list_price"}
+    assert set(v) == {"id", "sku", "attributes", "price", "list_price", "flash_sale", "in_stock"}
     assert "800.00" not in json.dumps(v)
 
 
@@ -141,3 +141,25 @@ async def test_catalog_rejects_invalid_token(client: AsyncClient):
 async def test_catalog_limit_is_capped(client: AsyncClient):
     resp = await client.get("/api/v1/products/", params={"limit": 1000})
     assert resp.status_code == 422
+
+
+# ── Product detail ───────────────────────────────────────────────────────────
+
+
+async def test_product_detail_is_priced_for_the_caller(client: AsyncClient, priced_variant, dealer_user: User):
+    listing = (await client.get("/api/v1/products/", params={"q": priced_variant.sku})).json()
+    product_id = listing[0]["id"]
+
+    public = (await client.get(f"/api/v1/products/{product_id}")).json()
+    v = next(v for v in public["variants"] if v["id"] == str(priced_variant.id))
+    assert v["price"]["price_incl_tax"] == "1200.00" and v["in_stock"] in (True, False)
+
+    dealer = (await client.get(f"/api/v1/products/{product_id}", headers=auth_header(dealer_user))).json()
+    v = next(v for v in dealer["variants"] if v["id"] == str(priced_variant.id))
+    assert v["price"]["price_incl_tax"] == "800.00"
+    assert v["list_price"]["price_incl_tax"] == "1200.00"
+
+
+async def test_product_detail_404s(client: AsyncClient):
+    assert (await client.get(f"/api/v1/products/{uuid.uuid4()}")).status_code == 404
+    assert (await client.get("/api/v1/products/not-a-uuid")).status_code == 422

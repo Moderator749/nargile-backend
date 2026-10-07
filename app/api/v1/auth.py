@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_user
 from app.core.database import get_db
 from app.core.security import create_access_token, hash_password, verify_password
+from app.models.b2b import B2BApplication
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.user import LoginRequest, Token, UserCreate, UserMe, UserRead
 from app.services.loyalty_service import get_user_loyalty_balance
@@ -35,6 +36,16 @@ async def register(payload: UserCreate, db: AsyncSession = Depends(get_db)):
         segment_id=retail_id,
     )
     db.add(user)
+    if payload.b2b_application is not None:
+        await db.flush()  # user.id for the application
+        a = payload.b2b_application
+        db.add(B2BApplication(
+            user_id=user.id,
+            requested_segment=a.segment,
+            company_title=a.company_title,
+            tax_number=a.tax_number,
+            tax_office=a.tax_office,
+        ))
     await db.commit()
     await db.refresh(user)
     return user

@@ -23,7 +23,7 @@ from app.models.loyalty import LoyaltyLedger, TransactionType
 from app.models.order import Order, OrderStatus, PaymentMethod
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
 from app.services.loyalty_service import get_user_loyalty_balance
-from tests.conftest import auth_header
+from tests.conftest import ADDRESS, auth_header
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -183,6 +183,7 @@ async def test_checkout_with_points_writes_spent_ledger(
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": 1}],
         "points_to_redeem": 300,
+        "shipping_address": ADDRESS,
     })
     assert resp.status_code == 201
     order_id = resp.json()["id"]
@@ -247,8 +248,9 @@ async def test_points_discount_capped_at_subtotal(
     data = resp.json()
     # Points discount capped at subtotal (100), not 5000
     assert Decimal(data["points_discount"]) == Decimal("100.00")
-    # net = 100 + 49.90 cargo - 0 - 100 points = 49.90
-    assert Decimal(data["net_total"]) == Decimal("49.90")
+    # net = 100 - 100 points = 0; carriage is never added (the receiver pays it)
+    assert Decimal(data["net_total"]) == Decimal("0.00")
+    assert (Decimal(data["cargo_cost"]), data["shipping"]["receiver_pays"]) == (Decimal("0.00"), True)
 
 
 async def test_zero_points_works_normally(

@@ -1,9 +1,14 @@
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.catalog import CurrencyType, WarehouseType
+
+# Absolute http(s) URL with no quotes, brackets or whitespace, so the frontend can
+# safely drop it into an <img src> or a CSS url().
+IMAGE_URL_PATTERN = r"^https?://[^\s\"'()<>\\]+$"
 
 
 class CategoryCreate(BaseModel):
@@ -19,6 +24,7 @@ class CategoryRead(BaseModel):
     name: str
     slug: str
     parent_id: int | None
+    sort_order: int = 0
 
 
 class ProductCreate(BaseModel):
@@ -28,6 +34,7 @@ class ProductCreate(BaseModel):
     description: str | None = None
     category_id: int | None = None
     tags: list[str] | None = None
+    image_url: str | None = Field(default=None, max_length=500, pattern=IMAGE_URL_PATTERN)
 
 
 class ProductRead(BaseModel):
@@ -40,6 +47,7 @@ class ProductRead(BaseModel):
     description: str | None
     category_id: int | None
     tags: list | None
+    image_url: str | None = None
 
 
 class CatalogPrice(BaseModel):
@@ -47,6 +55,13 @@ class CatalogPrice(BaseModel):
     price_excl_tax: Decimal
     price_incl_tax: Decimal
     vat_rate: Decimal
+
+
+class FlashSaleInfo(BaseModel):
+    """A live flash sale: checkout charges `price` until `ends_at`, then `price` of the variant."""
+
+    price: CatalogPrice
+    ends_at: datetime
 
 
 class CatalogVariantRead(BaseModel):
@@ -57,6 +72,10 @@ class CatalogVariantRead(BaseModel):
     attributes: dict | None
     price: CatalogPrice | None  # caller's segment; None = not sold to this segment
     list_price: CatalogPrice | None  # public RETAIL price, for "was/now" display
+    # Live sale that beats `price` for this caller; None when there is none.
+    flash_sale: FlashSaleInfo | None = None
+    # Stock in the caller's warehouse (a flag only: quantities stay private).
+    in_stock: bool = True
 
 
 class CatalogProductRead(ProductRead):

@@ -1,28 +1,106 @@
 """Shared fixtures for integration tests.
 
+Tests run against their own PostgreSQL database (``<dev db>_test``, or
+TEST_DATABASE_URL), rebuilt from the Alembic migrations at the start of every
+session. They never touch the dev/prod database.
+
 Each test gets a fresh engine + session to avoid asyncio event loop conflicts.
 """
 
+import asyncio
+import os
+import subprocess
+import sys
 import uuid
 from decimal import Decimal
+from pathlib import Path
 
+import asyncpg
 import pytest
-from httpx import ASGITransport, AsyncClient
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.engine import make_url
 
 from app.core.config import settings
-from app.core.database import get_db
-from app.core.security import create_access_token
-from app.main import app
-from app.models.catalog import (
+
+# ── Point everything at the test database BEFORE anything creates an engine ──
+_DEV_URL = make_url(settings.DATABASE_URL)
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or _DEV_URL.set(
+    database=f"{_DEV_URL.database}_test"
+).render_as_string(hide_password=False)
+if make_url(TEST_DATABASE_URL).database == _DEV_URL.database:
+    raise RuntimeError("TEST_DATABASE_URL must not point at the dev/prod database")
+settings.DATABASE_URL = TEST_DATABASE_URL
+
+from httpx import ASGITransport, AsyncClient  # noqa: E402
+from sqlalchemy import select  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
+
+from app.core.database import get_db  # noqa: E402
+from app.core.security import create_access_token  # noqa: E402
+from app.main import app  # noqa: E402
+from app.models.catalog import (  # noqa: E402
+    Category,
     Inventory,
     Product,
     ProductVariant,
     VariantPrice,
     WarehouseType,
 )
-from app.models.user import CustomerSegment, SegmentType, User, UserRole
+from app.models.user import CustomerSegment, SegmentType, User, UserRole  # noqa: E402
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+# A valid delivery address for checkout calls (required to place an order).
+ADDRESS = {
+    "full_name": "Test Müşteri",
+    "phone": "0532 000 00 00",
+    "city": "Ankara",
+    "district": "Çankaya",
+    "line": "Atatürk Bulvarı No: 1",
+}
+SEGMENTS = (
+    (SegmentType.RETAIL, "Perakende"),
+    (SegmentType.CAFE, "Kafe"),
+    (SegmentType.WHOLESALE, "Toptan"),
+    (SegmentType.DEALER, "Bayi"),
+)
+
+
+async def _recreate_test_database() -> None:
+    url = make_url(TEST_DATABASE_URL)
+    admin = await asyncpg.connect(
+        user=url.username, password=url.password, host=url.host, port=url.port or 5432, database="postgres"
+    )
+    try:
+        # Identifier comes from our own config, not user input; quote it anyway.
+        name = url.database.replace('"', '""')
+        await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        await admin.execute(f'CREATE DATABASE "{name}"')
+    finally:
+        await admin.close()
+
+
+async def _seed_segments() -> None:
+    engine = create_async_engine(TEST_DATABASE_URL)
+    async with async_sessionmaker(engine)() as session:
+        for code, label in SEGMENTS:
+            session.add(CustomerSegment(code=code, label=label))
+        await session.commit()
+    await engine.dispose()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def test_database():
+    """Fresh schema every session: drop/create the test DB, migrate, seed segments."""
+    asyncio.run(_recreate_test_database())
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        cwd=BACKEND_DIR,
+        env={**os.environ, "DATABASE_URL": TEST_DATABASE_URL},
+        check=True,
+        capture_output=True,
+    )
+    asyncio.run(_seed_segments())
+    yield
 
 # ---------------------------------------------------------------------------
 # Fresh engine + session per test (avoids event-loop contamination)
@@ -138,7 +216,11 @@ async def catalog(
         warehouse_type=WarehouseType.RETAIL_STOCK, quantity=500,
     ))
 
-    heavy_prod = Product(base_code=f"HVY-{suffix}", name="Odun Komuru", tags=["HEAVY_CARGO"])
+    # Coal: in the Kömürler category (created by the migrations), so the coal cargo rules apply.
+    coal_category_id = await db_session.scalar(select(Category.id).where(Category.slug == "komurler"))
+    heavy_prod = Product(
+        base_code=f"HVY-{suffix}", name="Odun Komuru", tags=["HEAVY_CARGO"], category_id=coal_category_id
+    )
     db_session.add(heavy_prod)
     await db_session.flush()
 

@@ -127,7 +127,7 @@ async def test_approve_order_below_threshold_no_parapuan(
     assert resp.status_code == 200
     data = resp.json()
     assert data["loyalty_points_awarded"] == 0
-    assert "No ParaPuan" in data["message"]
+    assert "No points" in data["message"]
 
     # Verify NO ledger entry
     result = await db_session.execute(

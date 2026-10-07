@@ -4,20 +4,26 @@ Fetches real products across key categories, creates the 4-tier pricing
 matrix (RETAIL / CAFE / WHOLESALE / DEALER), and seeds dual-warehouse
 inventory (RETAIL_STOCK + B2B_STOCK).
 
-Idempotent: skips products whose base_code (site product code) already exists.
+Idempotent: products whose base_code (site product code) already exists are not
+re-created, but their image_url is refreshed from the live site.
+
+    python scripts/scrape_live_catalog.py                # import new + backfill images
+    python scripts/scrape_live_catalog.py --images-only  # only backfill image_url
 """
 
 import asyncio
+import argparse
 import re
 import sys
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from urllib.parse import urljoin
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import httpx
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 from sqlalchemy import select
 
 from app.core.database import async_session
@@ -83,6 +89,7 @@ class ScrapedProduct:
     category_slug: str
     price_excl_tax: Decimal = Decimal("0")
     tags: list[str] = field(default_factory=list)
+    image_url: str | None = None
 
 
 # ── Parsing helpers ──────────────────────────────────────────────────────────
@@ -103,6 +110,39 @@ def incl_tax(excl: Decimal) -> Decimal:
 def make_sku(base_code: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9]+", "-", base_code).strip("-").upper()
     return slug[:45] if slug else f"SKU-{id(base_code)}"
+
+
+# Lazy-load placeholder the site puts in <img src> before JS swaps the real image in.
+PLACEHOLDER_IMAGE = re.compile(r"/transparent-\d+x\d+\.", re.IGNORECASE)
+IMAGE_URL_MAX = 500
+
+
+def extract_image_url(card: Tag) -> str | None:
+    """Highest-resolution product image on a listing card, as an absolute URL.
+
+    Cards lazy-load: the real URLs sit in data-srcset ("<400px> 1x, <800px> 2x")
+    and data-src, while src holds a transparent placeholder.
+    """
+    img = card.select_one(".image img")
+    if img is None:
+        return None
+    candidates: list[str] = []
+    srcset = img.get("data-srcset") or img.get("srcset") or ""
+    # Last srcset entry is the largest (2x).
+    candidates += [part.split()[0] for part in reversed(srcset.split(",")) if part.strip()]
+    candidates += [img.get("data-src") or "", img.get("src") or ""]
+    for raw in candidates:
+        if not raw.strip():
+            continue
+        url = urljoin(BASE_URL + "/", raw.strip())
+        if (
+            url.startswith("https://")
+            and not PLACEHOLDER_IMAGE.search(url)
+            and len(url) <= IMAGE_URL_MAX
+            and not re.search(r"[\s\"'()<>\\]", url)
+        ):
+            return url
+    return None
 
 
 def detect_tags(name: str) -> list[str]:
@@ -153,6 +193,7 @@ async def scrape_category_page(
             category_slug=category_slug,
             price_excl_tax=price_excl,
             tags=detect_tags(name),
+            image_url=extract_image_url(card),
         ))
 
     return products
@@ -183,7 +224,32 @@ async def scrape_all() -> list[ScrapedProduct]:
 
 # ── Database seeder ──────────────────────────────────────────────────────────
 
-async def seed(products: list[ScrapedProduct]) -> None:
+async def backfill_images(products: list[ScrapedProduct]) -> dict[str, int]:
+    """Set image_url on products that already exist, matched by base_code."""
+    stats = {"updated": 0, "unchanged": 0, "missing": 0, "no_image": 0}
+    by_code = {p.base_code: p for p in products}
+    async with async_session() as session:
+        result = await session.execute(
+            select(Product).where(Product.base_code.in_(list(by_code)))
+        )
+        found = {p.base_code: p for p in result.scalars().all()}
+        for code, sp in by_code.items():
+            product = found.get(code)
+            if product is None:
+                stats["missing"] += 1
+            elif not sp.image_url:
+                stats["no_image"] += 1
+            elif product.image_url == sp.image_url:
+                stats["unchanged"] += 1
+            else:
+                product.image_url = sp.image_url
+                stats["updated"] += 1
+                print(f"  ~ {code:<20s} {sp.image_url}")
+        await session.commit()
+    return stats
+
+
+async def seed(products: list[ScrapedProduct]) -> dict[str, int] | None:
     async with async_session() as session:
         # Load segments
         result = await session.execute(select(CustomerSegment))
@@ -229,6 +295,7 @@ async def seed(products: list[ScrapedProduct]) -> None:
                 description=None,
                 category_id=cat_map.get(sp.category_slug),
                 tags=sp.tags,
+                image_url=sp.image_url,
             )
             session.add(product)
             await session.flush()
@@ -283,7 +350,7 @@ async def seed(products: list[ScrapedProduct]) -> None:
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
-async def main():
+async def main(images_only: bool = False):
     print("═══ Nargile Live Catalog Scraper ═══\n")
 
     print("1. Scraping nargilemalzemesi.com ...")
@@ -294,8 +361,25 @@ async def main():
         print("   No products found. Exiting.")
         return
 
+    with_image = sum(1 for p in products if p.image_url)
+    print(f"   {with_image}/{len(products)} have a product image\n")
+
+    if images_only:
+        print("2. Backfilling product images ...\n")
+        img = await backfill_images(products)
+        print("\n═══ Image Summary ═══")
+        print(f"  Updated:           {img['updated']}")
+        print(f"  Already current:   {img['unchanged']}")
+        print(f"  Not in database:   {img['missing']}")
+        print(f"  No image on site:  {img['no_image']}")
+        print("═══ Done ═══")
+        return
+
     print("2. Seeding database ...\n")
     stats = await seed(products)
+    if stats is None:
+        return
+    img = await backfill_images(products)
 
     print(f"\n═══ Import Summary ═══")
     print(f"  Products created:  {stats['products']}")
@@ -303,8 +387,14 @@ async def main():
     print(f"  Price records:     {stats['prices']}")
     print(f"  Skipped (exists):  {stats['skipped']}")
     print(f"  Inventory rows:    {stats['variants'] * 2}")
+    print(f"  Images refreshed:  {img['updated']}")
     print(f"═══ Done ═══")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--images-only", action="store_true",
+        help="only set image_url on existing products; create nothing",
+    )
+    asyncio.run(main(images_only=parser.parse_args().images_only))

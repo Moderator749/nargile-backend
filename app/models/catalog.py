@@ -28,6 +28,8 @@ class Category(Base):
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     slug: Mapped[str] = mapped_column(String(180), nullable=False)
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
+    # Menu order among siblings (ascending; ties by name).
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     parent: Mapped["Category | None"] = relationship(
         remote_side="Category.id", back_populates="children"
@@ -48,6 +50,7 @@ class Product(Base):
     description: Mapped[str | None] = mapped_column(Text)
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     tags: Mapped[list | None] = mapped_column(JSONB, default=list)
+    image_url: Mapped[str | None] = mapped_column(String(500))
 
     category: Mapped[Category | None] = relationship(back_populates="products")
     variants: Mapped[list["ProductVariant"]] = relationship(back_populates="product")
@@ -67,6 +70,8 @@ class ProductVariant(Base):
     barcode: Mapped[str | None] = mapped_column(String(50))
     attributes: Mapped[dict | None] = mapped_column(JSONB)
     cost_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    # Weight of one unit in kg (coal's 20 kg free-shipping minimum); None = unknown.
+    weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
 
     product: Mapped[Product] = relationship(back_populates="variants")
     prices: Mapped[list["VariantPrice"]] = relationship(back_populates="variant")

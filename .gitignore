@@ -9,3 +9,6 @@ build/
 .vscode/
 .DS_Store
 .claude/
+
+# Uploaded media (brand logos)
+media/

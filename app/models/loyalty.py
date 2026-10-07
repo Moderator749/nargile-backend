@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -16,7 +16,18 @@ class TransactionType(str, enum.Enum):
     ADJUSTMENT = "ADJUSTMENT"
 
 
+class PointSource(str, enum.Enum):
+    PARAPUAN = "PARAPUAN"  # 10% on a single paid order of 20,000–29,999.99 TRY
+    KUMBARA = "KUMBARA"  # 5% once smaller paid orders add up to 20,000 TRY
+    CHECKOUT = "CHECKOUT"  # redeemed in the cart
+    ADMIN = "ADMIN"  # manual adjustment by an admin
+
+
 class LoyaltyLedger(Base):
+    """Append-only point ledger. Balance = unexpired earned lots minus spending,
+    consumed first-expiring-first (see app.services.wallet). A SPENT row whose
+    order was cancelled no longer counts, so the points return automatically."""
+
     __tablename__ = "loyalty_ledger"
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -36,3 +47,7 @@ class LoyaltyLedger(Base):
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    source: Mapped[str | None] = mapped_column(Enum(PointSource))
+    note: Mapped[str | None] = mapped_column(String(300))
+    # Admin who made a manual adjustment.
+    created_by: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))

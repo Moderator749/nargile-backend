@@ -2,9 +2,10 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.models.order import OrderStatus, PaymentMethod
+from app.models.order import OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer
+from app.schemas.address import ISTANBUL, ShippingAddress
 
 
 class OrderItemCreate(BaseModel):
@@ -33,6 +34,23 @@ class CheckoutRequest(BaseModel):
     payment_method: PaymentMethod
     items: list[CartItemInput] = Field(min_length=1)
     points_to_redeem: int = Field(default=0, ge=0)
+    shipping_method: ShippingMethod = ShippingMethod.CARGO
+    # Optional for price previews; required to place an order.
+    shipping_address: ShippingAddress | None = None
+    # "Gönderim ücreti teslimat sırasında alıcı tarafından ödenecektir. Okudum,
+    # onayladım." Required to check out whenever the shop does not cover carriage;
+    # ignored on price previews.
+    shipping_consent: bool = False
+
+    @model_validator(mode="after")
+    def _courier_is_istanbul_only(self) -> "CheckoutRequest":
+        if (
+            self.shipping_method == ShippingMethod.COURIER_ISTANBUL
+            and self.shipping_address is not None
+            and self.shipping_address.city != ISTANBUL
+        ):
+            raise ValueError("İstanbul içi kurye yalnızca İstanbul adreslerine gönderilir")
+        return self
 
 
 class OrderItemRead(BaseModel):
@@ -57,5 +75,12 @@ class OrderRead(BaseModel):
     payment_method: PaymentMethod
     status: OrderStatus
     tracking_code: str | None
+    shipping_method: ShippingMethod = ShippingMethod.CARGO
+    shipping_payer: ShippingPayer = ShippingPayer.SHOP
+    shipping_consent_at: datetime | None = None
+    shipping_address: dict | None = None
+    paid_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    cancel_reason: str | None = None
     created_at: datetime
     items: list[OrderItemRead] = []

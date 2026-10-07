@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
 from app.core.config import settings
@@ -36,7 +37,7 @@ async def lifespan(application: FastAPI):
 
 
 app = FastAPI(
-    title="Nargile SaaS Backend",
+    title="Nargile Malzemesi API",
     version="0.1.0",
     debug=settings.DEBUG,
     lifespan=lifespan,
@@ -47,9 +48,15 @@ app.add_middleware(
     allow_origins=settings.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Paginated admin lists report their total here.
+    expose_headers=["X-Total-Count"],
 )
 
 app.include_router(api_router)
+
+# Uploaded media (brand logos). Only validated raster images are ever written here.
+settings.MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=settings.MEDIA_ROOT), name="media")
 
 
 @app.get("/health")

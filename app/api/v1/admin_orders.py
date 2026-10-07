@@ -1,46 +1,147 @@
 """Admin-only order management and approval endpoints."""
 
-from datetime import datetime, timedelta, timezone
+import uuid
+from collections.abc import Sequence
+from datetime import datetime, timezone
+from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
-from app.models.loyalty import LoyaltyLedger, TransactionType
-from app.models.order import Order, OrderStatus
+from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
+from app.models.order import PENDING_STATUSES, Order, OrderItem, OrderStatus, ShippingMethod
 from app.models.user import User
-from app.schemas.admin import OrderApproveResponse
-from app.schemas.order import OrderRead
-from app.services.checkout_engine import CheckoutEngine
+from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse
+from app.schemas.order import OrderItemRead, OrderRead
+from app.services import mailer, order_emails, order_lifecycle
 
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 
 
-@router.get("/orders", response_model=list[OrderRead])
+@router.get("/orders", response_model=list[AdminOrderListItem])
 async def list_orders(
+    response: Response,
     status_filter: OrderStatus | None = Query(None, alias="status"),
+    shipping_method: ShippingMethod | None = Query(None),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
-    skip: int = 0,
-    limit: int = 50,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(Order).options(selectinload(Order.items))
+    stmt = (
+        select(Order, User)
+        .join(User, Order.user_id == User.id)
+        .options(selectinload(Order.items), selectinload(User.company_profile))
+    )
+    filters = []
 
     if status_filter is not None:
-        stmt = stmt.where(Order.status == status_filter)
+        filters.append(Order.status == status_filter)
+    if shipping_method is not None:
+        filters.append(Order.shipping_method == shipping_method)
     if date_from is not None:
-        stmt = stmt.where(Order.created_at >= date_from)
+        filters.append(Order.created_at >= date_from)
     if date_to is not None:
-        stmt = stmt.where(Order.created_at <= date_to)
+        filters.append(Order.created_at <= date_to)
+    stmt = stmt.where(*filters)
+    # Total matches, for page controls.
+    response.headers["X-Total-Count"] = str(await db.scalar(select(func.count()).select_from(Order).where(*filters)))
 
     stmt = stmt.order_by(Order.created_at.desc()).offset(skip).limit(limit)
-    result = await db.execute(stmt)
-    return result.scalars().all()
+    rows = (await db.execute(stmt)).all()
+    catalog = await _line_catalog(db, [order for order, _ in rows])
+    return [_list_item(order, user, catalog) for order, user in rows]
+
+
+# Per ordered variant: (sku, product code, product name, VAT rate).
+LineCatalog = dict[uuid.UUID, tuple[str, str, str, Decimal | None]]
+
+
+async def _line_catalog(db: AsyncSession, orders: Sequence[Order]) -> LineCatalog:
+    """Catalogue data for the ordered variants, in one query, for the detail sheet.
+
+    The order lines store only ids and prices, but the order sheet prints the
+    product code, the name and the VAT the price includes.
+    """
+    variant_ids = {item.variant_id for order in orders for item in order.items}
+    if not variant_ids:
+        return {}
+    stmt = (
+        select(
+            ProductVariant.id,
+            ProductVariant.sku,
+            Product.base_code,
+            Product.name,
+            # The rate belongs to the product, so it is the same in every
+            # segment's price row; max() just collapses them to one.
+            func.max(VariantPrice.vat_rate),
+        )
+        .join(Product, ProductVariant.product_id == Product.id)
+        .outerjoin(
+            VariantPrice,
+            (VariantPrice.variant_id == ProductVariant.id) & (VariantPrice.currency == CurrencyType.TRY),
+        )
+        .where(ProductVariant.id.in_(variant_ids))
+        .group_by(ProductVariant.id, ProductVariant.sku, Product.base_code, Product.name)
+    )
+    return {row[0]: (row[1], row[2], row[3], row[4]) for row in (await db.execute(stmt)).all()}
+
+
+def _line(item: OrderItem, catalog: LineCatalog) -> AdminOrderItemDetail:
+    sku, product_code, product_name, vat_rate = catalog.get(item.variant_id, (None, None, None, None))
+    return AdminOrderItemDetail(
+        **OrderItemRead.model_validate(item).model_dump(),
+        sku=sku,
+        product_code=product_code,
+        product_name=product_name,
+        vat_rate=vat_rate,
+    )
+
+
+def _list_item(order: Order, user: User, catalog: LineCatalog) -> AdminOrderListItem:
+    profile = user.company_profile
+    return AdminOrderListItem(
+        **OrderRead.model_validate(order).model_dump(exclude={"items"}),
+        customer_email=user.email,
+        customer_name=user.full_name,
+        customer_phone=user.phone,
+        company_title=profile.company_title if profile else None,
+        billing_address=profile.billing_address if profile else None,
+        items=[_line(item, catalog) for item in order.items],
+    )
+
+
+# Pending orders, plus a paid one the shop decides not to ship after all.
+CANCELLABLE_STATUSES = (*PENDING_STATUSES, OrderStatus.APPROVED)
+
+
+class CancelOrderRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=300)
+
+
+class ShipOrderRequest(BaseModel):
+    """Carrier tracking code, if the shipment has one (courier runs do not)."""
+
+    tracking_code: str | None = Field(default=None, max_length=100)
+
+
+async def _order_with_user(db: AsyncSession, order_id: uuid.UUID) -> tuple[Order, User]:
+    order = await db.scalar(select(Order).where(Order.id == order_id).options(selectinload(Order.items)))
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    user = await db.scalar(
+        select(User)
+        .where(User.id == order.user_id)
+        .options(selectinload(User.segment), selectinload(User.company_profile))
+    )
+    return order, user
 
 
 @router.post(
@@ -48,65 +149,83 @@ async def list_orders(
     response_model=OrderApproveResponse,
 )
 async def approve_order(
-    order_id: str,
+    order_id: uuid.UUID,
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Approve a PENDING_APPROVAL order.
-
-    If the order total qualifies for ParaPuan, the EARNED ledger entry is
-    written here — not at checkout — ensuring points are only granted for
-    approved orders.
-    """
-    result = await db.execute(
-        select(Order)
-        .where(Order.id == order_id)
-        .options(selectinload(Order.items))
-    )
-    order = result.scalar_one_or_none()
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    if order.status != OrderStatus.PENDING_APPROVAL:
+    """Approve / mark paid a pending order (incl. "Havale Bekliyor" once the money
+    has arrived). Points are granted here, never at checkout: ParaPuan for a
+    20,000–29,999.99 order, Kumbarapuan once smaller paid orders reach 20,000."""
+    order, _user = await _order_with_user(db, order_id)
+    if order.status not in PENDING_STATUSES:
         raise HTTPException(
             status_code=409,
             detail=f"Order cannot be approved — current status is {order.status.value}",
         )
 
-    # Transition status
-    order.status = OrderStatus.APPROVED
-
-    # Calculate loyalty eligibility from the order's subtotal (total_amount)
-    loyalty_points = CheckoutEngine.calculate_loyalty_earnings(order.total_amount)
-
-    if loyalty_points > 0:
-        # Check idempotency — don't double-award if re-called
-        existing = await db.execute(
-            select(LoyaltyLedger).where(
-                LoyaltyLedger.order_id == order.id,
-                LoyaltyLedger.transaction_type == TransactionType.EARNED,
-            )
-        )
-        if existing.scalar_one_or_none() is None:
-            ledger_entry = LoyaltyLedger(
-                user_id=order.user_id,
-                order_id=order.id,
-                amount=loyalty_points,
-                transaction_type=TransactionType.EARNED,
-                expires_at=datetime.now(timezone.utc) + timedelta(days=365),
-            )
-            db.add(ledger_entry)
-
+    parapuan, kumbara = await order_lifecycle.mark_paid(db, order, datetime.now(timezone.utc))
     await db.commit()
 
+    parts = [f"{parapuan} ParaPuan" if parapuan else "", f"{kumbara} Kumbarapuan" if kumbara else ""]
+    awarded = " + ".join(p for p in parts if p)
     return OrderApproveResponse(
         order_id=order.id,
         order_number=order.order_number,
         new_status=OrderStatus.APPROVED.value,
-        loyalty_points_awarded=loyalty_points,
-        message=(
-            f"Order approved. {loyalty_points} ParaPuan awarded."
-            if loyalty_points > 0
-            else "Order approved. No ParaPuan earned for this order total."
-        ),
+        loyalty_points_awarded=parapuan + kumbara,
+        message=f"Order approved. {awarded} awarded." if awarded else "Order approved. No points earned for this order.",
+        paid_at=order.paid_at,
     )
+
+
+@router.post("/orders/{order_id}/ship", response_model=AdminOrderListItem)
+async def ship_order(
+    order_id: uuid.UUID,
+    payload: ShipOrderRequest,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hand a paid order to the carrier and tell the customer it is on its way.
+
+    The dispatch e-mail is best-effort: with no SMTP server configured the mailer
+    logs the message, and a send failure never undoes the dispatch.
+    """
+    order, user = await _order_with_user(db, order_id)
+    if order.status != OrderStatus.APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only approved orders can be shipped — current status is {order.status.value}",
+        )
+    await order_lifecycle.mark_shipped(db, order, payload.tracking_code)
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+
+    catalog = await _line_catalog(db, [order])
+    lines = [
+        (catalog.get(item.variant_id, (None, None, None, None))[2] or "Ürün", item.quantity)
+        for item in order.items
+    ]
+    await mailer.send(order_emails.order_shipped(order, user.full_name, user.email, lines))
+    return _list_item(order, user, catalog)
+
+
+@router.post("/orders/{order_id}/cancel", response_model=AdminOrderListItem)
+async def cancel_order(
+    order_id: uuid.UUID,
+    payload: CancelOrderRequest,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reject / cancel an order that has not shipped: stock goes back, spent
+    points return and points earned on it (if it was already paid) are void."""
+    order, user = await _order_with_user(db, order_id)
+    if order.status not in CANCELLABLE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only orders that have not shipped can be cancelled — current status is {order.status.value}",
+        )
+    await order_lifecycle.cancel(db, order, user, payload.reason.strip(), datetime.now(timezone.utc))
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    # Same shape as the list, so the admin's open order sheet can replace the row.
+    return _list_item(order, user, await _line_catalog(db, [order]))

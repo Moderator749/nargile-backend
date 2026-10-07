@@ -7,13 +7,14 @@ from httpx import AsyncClient
 
 from app.models.catalog import ProductVariant
 from app.models.user import User
-from tests.conftest import auth_header
+from tests.conftest import ADDRESS, auth_header
 
 
 def _body(variant: ProductVariant, quantity: int = 1, **extra) -> dict:
     return {
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": quantity}],
+        "shipping_address": ADDRESS,
         **extra,
     }
 

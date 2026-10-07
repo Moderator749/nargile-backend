@@ -4,6 +4,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.user import SegmentType, UserRole
+from app.schemas.b2b import B2BApplicationCreate
 
 
 class UserCreate(BaseModel):
@@ -13,6 +14,8 @@ class UserCreate(BaseModel):
     password: str
     full_name: str | None = Field(default=None, max_length=150)
     phone: str | None = None
+    # Optional Kafe / Toptan / Bayi application: reviewed by an admin, never self-granted.
+    b2b_application: B2BApplicationCreate | None = None
 
 
 class UserRead(BaseModel):

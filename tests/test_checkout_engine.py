@@ -1,34 +1,43 @@
 """Tests for checkout engine business rules.
 
 Covers:
-- Bank transfer discount tiers (5% / 7%)
-- Credit card = no discount
-- HEAVY_CARGO anti-fraud cargo algorithm (>50% threshold)
+- Volume ("ciro") discount tiers (5% / 8%)
+- Bank transfer discount tiers (5% / 7%), applied after the volume discount
+- Credit card = no transfer discount
+- Cargo: 3,000 TRY free shipping; 20 kg coal minimum only for coal-dominant carts (>50%)
 - ParaPuan loyalty earning calculation
 - Full calculate-cart HTTP endpoint integration
 """
 
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from httpx import AsyncClient
 
 from app.models.catalog import ProductVariant
-from app.models.order import PaymentMethod
+from app.models.order import PaymentMethod, ShippingMethod
 from app.models.user import User
 from app.services.checkout_engine import CheckoutEngine, ResolvedCartItem
-from tests.conftest import auth_header
+from tests.conftest import ADDRESS, auth_header
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-def _mock_item(line_total: str, tags: list[str]) -> ResolvedCartItem:
-    item = MagicMock(spec=ResolvedCartItem)
-    item.line_total = Decimal(line_total)
-    item.tags = tags
-    return item
+def _item(
+    line_total: str, *, coal: bool = False, kg: str | None = None, qty: int = 1, tags: list[str] | None = None
+) -> ResolvedCartItem:
+    """A real cart line: `line_total` spread over `qty` units of `kg` each."""
+    return ResolvedCartItem(
+        variant=MagicMock(),
+        product=SimpleNamespace(tags=tags or []),
+        unit_price=Decimal(line_total) / qty,
+        quantity=qty,
+        is_coal=coal,
+        unit_weight_kg=Decimal(kg) if kg is not None else None,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -81,51 +90,110 @@ class TestBankTransferDiscount:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# ANTI-FRAUD CARGO ALGORITHM
+# VOLUME ("CIRO") DISCOUNT
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
-class TestCargoAntifraud:
-    def test_free_shipping_above_threshold_no_heavy(self):
-        items = [_mock_item("4000", [])]
-        cost = CheckoutEngine.calculate_cargo(Decimal("4000"), items)
-        assert cost == Decimal("0.00")
+@pytest.mark.parametrize(
+    ("subtotal", "rate", "amount"),
+    [
+        ("29999.99", "0.00", "0.00"),
+        ("30000.00", "0.05", "1500.00"),
+        ("49999.99", "0.05", "2500.00"),
+        ("50000.00", "0.08", "4000.00"),
+        ("100000.00", "0.08", "8000.00"),
+    ],
+)
+def test_volume_discount_tiers(subtotal: str, rate: str, amount: str):
+    assert CheckoutEngine.calculate_volume_discount(Decimal(subtotal)) == (Decimal(rate), Decimal(amount))
 
-    def test_flat_rate_below_threshold_no_heavy(self):
-        items = [_mock_item("1000", [])]
-        cost = CheckoutEngine.calculate_cargo(Decimal("1000"), items)
-        assert cost == Decimal("49.90")
 
-    def test_heavy_below_50_pct_above_threshold_gets_surcharge(self):
-        """Heavy cargo present but <= 50% of cart → heavy surcharge, not flat."""
-        items = [_mock_item("2800", []), _mock_item("500", ["HEAVY_CARGO"])]
-        cost = CheckoutEngine.calculate_cargo(Decimal("3300"), items)
-        assert cost == Decimal("89.90")
+def test_transfer_discount_is_sequential_after_volume():
+    """35,000 by transfer: ciro 5% = 1,750, then 7% of the remaining 33,250 = 2,327.50."""
+    rate, volume = CheckoutEngine.calculate_volume_discount(Decimal("35000"))
+    t_rate, transfer = CheckoutEngine.calculate_discounts(
+        Decimal("35000"), PaymentMethod.BANK_TRANSFER, base=Decimal("35000") - volume
+    )
+    assert (rate, volume) == (Decimal("0.05"), Decimal("1750.00"))
+    assert (t_rate, transfer) == (Decimal("0.07"), Decimal("2327.50"))
 
-    def test_heavy_above_50_pct_triggers_antifraud(self):
-        """HEAVY_CARGO > 50% of cart value → always surcharge, even above 3k."""
-        items = [_mock_item("1000", []), _mock_item("4000", ["HEAVY_CARGO"])]
-        cost = CheckoutEngine.calculate_cargo(Decimal("5000"), items)
-        assert cost == Decimal("89.90")
 
-    def test_heavy_exactly_50_pct_is_not_antifraud(self):
-        """Exactly 50% should NOT trigger anti-fraud (strictly >50%)."""
-        items = [_mock_item("2000", []), _mock_item("2000", ["HEAVY_CARGO"])]
-        cost = CheckoutEngine.calculate_cargo(Decimal("4000"), items)
-        # Not anti-fraud, but above threshold + has heavy → heavy surcharge
-        assert cost == Decimal("89.90")
+def test_transfer_tier_is_judged_on_the_subtotal():
+    """31,000: the volume discount brings the base under 30k, but the 7% tier still applies."""
+    _, volume = CheckoutEngine.calculate_volume_discount(Decimal("31000"))
+    rate, amount = CheckoutEngine.calculate_discounts(
+        Decimal("31000"), PaymentMethod.BANK_TRANSFER, base=Decimal("31000") - volume
+    )
+    assert rate == Decimal("0.07")
+    assert amount == Decimal("2061.50")  # 7% of 29,450
 
-    def test_100_pct_heavy_always_surcharge(self):
-        """Cart entirely heavy cargo → always surcharge."""
-        items = [_mock_item("10000", ["HEAVY_CARGO"])]
-        cost = CheckoutEngine.calculate_cargo(Decimal("10000"), items)
-        assert cost == Decimal("89.90")
 
-    def test_heavy_below_threshold_still_surcharge(self):
-        """Heavy cargo below 3k → always surcharge regardless."""
-        items = [_mock_item("500", ["HEAVY_CARGO"])]
-        cost = CheckoutEngine.calculate_cargo(Decimal("500"), items)
-        assert cost == Decimal("89.90")
+# ═══════════════════════════════════════════════════════════════════════════════
+# CARGO & COAL RULES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+class TestCargo:
+    def quote(self, *items: ResolvedCartItem):
+        return CheckoutEngine.quote_shipping(sum((i.line_total for i in items), Decimal("0")), list(items))
+
+    def test_free_from_threshold_without_coal(self):
+        q = self.quote(_item("3000"))
+        assert (q.cost, q.reason, q.free) == (Decimal("0.00"), "free", True)
+
+    def test_below_threshold_is_never_charged_but_the_receiver_pays(self):
+        q = self.quote(_item("2999.99"))
+        assert (q.cost, q.reason) == (Decimal("0.00"), "below_threshold")
+        assert q.receiver_pays and not q.free
+
+    def test_heavy_cargo_below_threshold_is_not_charged_either(self):
+        """Carriage is never added to the order, whatever the freight class."""
+        q = self.quote(_item("500", tags=["HEAVY_CARGO"]))
+        assert (q.cost, q.reason, q.receiver_pays) == (Decimal("0.00"), "below_threshold", True)
+
+    def test_coal_below_threshold_is_the_receivers_to_pay(self):
+        q = self.quote(_item("2000", coal=True, kg="1", qty=40))
+        assert (q.cost, q.reason, q.receiver_pays) == (Decimal("0.00"), "below_threshold", True)
+
+    def test_courier_is_paid_to_the_courier(self):
+        q = CheckoutEngine.quote_shipping(
+            Decimal("5000"), [_item("5000")], ShippingMethod.COURIER_ISTANBUL
+        )
+        assert (q.cost, q.reason, q.receiver_pays) == (Decimal("0.00"), "courier", True)
+
+    # Scenario A: hardware/mixed dominant (coal ≤ 50%) → the 20 kg rule doesn't apply.
+
+    def test_steel_set_with_two_boxes_of_coal_ships_free(self):
+        """The reported case: ~₺10,000 set + 2 boxes of coal (~8%) → free, no 20 kg needed."""
+        q = self.quote(_item("9990"), _item("880", coal=True, kg="1", qty=2))
+        assert (q.cost, q.reason) == (Decimal("0.00"), "free")
+
+    def test_coal_exactly_half_ships_free_regardless_of_weight(self):
+        q = self.quote(_item("2000"), _item("2000", coal=True, kg="1", qty=5))
+        assert q.reason == "free"
+
+    def test_coal_unknown_weight_is_irrelevant_when_not_dominant(self):
+        q = self.quote(_item("3000"), _item("1000", coal=True, kg=None, qty=50))
+        assert q.reason == "free"
+
+    # Scenario B: coal dominant (> 50%) → free only from 20 kg.
+
+    def test_coal_dominant_under_20kg_is_the_receivers_to_pay(self):
+        q = self.quote(_item("1000"), _item("4000", coal=True, kg="1", qty=19))
+        assert (q.cost, q.reason, q.receiver_pays) == (Decimal("0.00"), "coal_weight", True)
+        assert q.coal_ratio == Decimal("0.8000")
+
+    def test_coal_dominant_from_20kg_ships_free(self):
+        q = self.quote(_item("1000"), _item("4000", coal=True, kg="1", qty=20))
+        assert (q.cost, q.reason) == (Decimal("0.00"), "free")
+
+    def test_coal_only_order_from_20kg_ships_free(self):
+        q = self.quote(_item("4400", coal=True, kg="1", qty=20))
+        assert q.reason == "free"
+
+    def test_coal_dominant_unknown_weight_counts_as_zero(self):
+        q = self.quote(_item("5000", coal=True, kg=None, qty=50))
+        assert (q.reason, q.coal_weight_kg, q.coal_weight_unknown) == ("coal_weight", Decimal("0.000"), True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -180,29 +248,102 @@ async def test_calculate_cart_bank_transfer_5pct(
     assert Decimal(data["discount_amount"]) == Decimal("1000.00")
     assert Decimal(data["cargo_cost"]) == Decimal("0.00")
     assert data["loyalty_points_to_earn"] == 2000
+    assert "image_url" in data["items"][0]  # the cart shows product photos
 
 
-async def test_calculate_cart_heavy_antifraud(
+async def test_calculate_cart_coal_dominant_needs_20kg(
+    client: AsyncClient,
+    admin_user: User,
+    db_session,
+    catalog: tuple[ProductVariant, ProductVariant],
+):
+    """1 normal (5k) + coal at 1k/kg: 19 kg (79% coal) pays, 20 kg ships free."""
+    normal_v, coal_v = catalog
+    coal_v.weight_kg = Decimal("1")
+    await db_session.commit()
+
+    async def quote(kg: int):
+        resp = await client.post(
+            "/api/v1/orders/calculate-cart",
+            headers=auth_header(admin_user),
+            json={
+                "payment_method": "CREDIT_CARD",
+                "items": [
+                    {"variant_id": str(normal_v.id), "quantity": 1},
+                    {"variant_id": str(coal_v.id), "quantity": kg},
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    short = await quote(19)
+    assert (Decimal(short["cargo_cost"]), short["shipping"]["reason"]) == (Decimal("0.00"), "coal_weight")
+    assert short["shipping"]["receiver_pays"] is True
+    assert Decimal(short["shipping"]["coal_ratio"]) > Decimal("0.5")
+    enough = await quote(20)
+    assert (Decimal(enough["cargo_cost"]), enough["shipping"]["reason"]) == (Decimal("0.00"), "free")
+
+
+async def test_calculate_cart_hardware_dominant_ignores_coal_weight(
     client: AsyncClient,
     admin_user: User,
     catalog: tuple[ProductVariant, ProductVariant],
 ):
-    """1 normal (5k) + 20 heavy (20k) = 25k → heavy 80% > 50% → surcharge."""
-    normal_v, heavy_v = catalog
+    """5 normal (25k) + 2 coal (2k, no weight recorded) → 7% coal → free shipping."""
+    normal_v, coal_v = catalog
     resp = await client.post(
         "/api/v1/orders/calculate-cart",
         headers=auth_header(admin_user),
         json={
             "payment_method": "CREDIT_CARD",
             "items": [
-                {"variant_id": str(normal_v.id), "quantity": 1},
-                {"variant_id": str(heavy_v.id), "quantity": 20},
+                {"variant_id": str(normal_v.id), "quantity": 5},
+                {"variant_id": str(coal_v.id), "quantity": 2},
             ],
         },
     )
-    assert resp.status_code == 200
     data = resp.json()
-    assert Decimal(data["subtotal"]) == Decimal("25000.00")
-    assert Decimal(data["cargo_cost"]) == Decimal("89.90")
-    assert Decimal(data["discount_amount"]) == Decimal("0.00")
-    assert data["loyalty_points_to_earn"] == 2500
+    assert (Decimal(data["cargo_cost"]), data["shipping"]["reason"]) == (Decimal("0.00"), "free")
+
+
+async def test_calculate_cart_volume_and_transfer_discounts(
+    client: AsyncClient,
+    admin_user: User,
+    catalog: tuple[ProductVariant, ProductVariant],
+):
+    """7 x 5,000 = 35,000 by transfer: −1,750 ciro, −2,327.50 havale."""
+    normal_v, _ = catalog
+    resp = await client.post(
+        "/api/v1/orders/calculate-cart",
+        headers=auth_header(admin_user),
+        json={"payment_method": "BANK_TRANSFER", "items": [{"variant_id": str(normal_v.id), "quantity": 7}]},
+    )
+    data = resp.json()
+    assert Decimal(data["volume_discount_rate"]) == Decimal("0.05")
+    assert Decimal(data["volume_discount_amount"]) == Decimal("1750.00")
+    assert Decimal(data["discount_amount"]) == Decimal("2327.50")
+    assert Decimal(data["net_total"]) == Decimal("30922.50")
+    assert data["volume_next_tier"] == {"threshold": "50000.00", "rate": "0.08"}
+
+
+async def test_checkout_records_all_discounts(
+    client: AsyncClient,
+    admin_user: User,
+    catalog: tuple[ProductVariant, ProductVariant],
+):
+    """The stored order's discount covers volume + transfer (55,000 → 8% then 7%)."""
+    normal_v, _ = catalog
+    resp = await client.post(
+        "/api/v1/orders/checkout",
+        headers=auth_header(admin_user),
+        json={
+            "payment_method": "BANK_TRANSFER",
+            "items": [{"variant_id": str(normal_v.id), "quantity": 11}],
+            "shipping_address": ADDRESS,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    order = resp.json()
+    # 55,000: ciro 8% = 4,400; havale 7% of 50,600 = 3,542 → 7,942
+    assert Decimal(order["discount_amount"]) == Decimal("7942.00")

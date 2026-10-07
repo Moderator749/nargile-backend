@@ -1,7 +1,9 @@
 """Admin-only catalog and inventory management endpoints."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,14 +16,22 @@ from app.models.catalog import (
     VariantPrice,
     WarehouseType,
 )
-from app.models.user import User
+from app.api.v1.products import apply_catalog_filters
+from app.models.user import CustomerSegment, User
 from app.schemas.admin import (
+    AdminInventoryRead,
     AdminProductCreate,
+    AdminProductDetail,
+    AdminVariantDetail,
+    AdminVariantPrice,
+    SegmentRead,
     AdminVariantCreate,
     AdminVariantRead,
     PricingMatrixRead,
     PricingMatrixUpdate,
     SegmentPriceRow,
+    VariantWeightRead,
+    VariantWeightUpdate,
 )
 from app.schemas.catalog import ProductRead
 
@@ -45,6 +55,67 @@ async def create_product(
     await db.commit()
     await db.refresh(product)
     return product
+
+
+@router.get("/products", response_model=list[AdminProductDetail])
+async def list_products_admin(
+    response: Response,
+    skip: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    q: str | None = Query(None, max_length=100),
+    category: str | None = Query(None, max_length=180),
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Products with every segment price and both stock pools, for the admin panel.
+    The X-Total-Count header carries the number of matches, for page controls."""
+    total = await db.scalar(
+        select(func.count()).select_from(apply_catalog_filters(select(Product.id), category=category, q=q).subquery())
+    )
+    response.headers["X-Total-Count"] = str(total)
+    stmt = apply_catalog_filters(select(Product), category=category, q=q)
+    result = await db.execute(
+        stmt.options(
+            selectinload(Product.variants).selectinload(ProductVariant.prices),
+            selectinload(Product.variants).selectinload(ProductVariant.inventory),
+        )
+        .order_by(Product.name, Product.id)
+        .offset(skip)
+        .limit(limit)
+    )
+    return [
+        AdminProductDetail(
+            id=p.id,
+            base_code=p.base_code,
+            name=p.name,
+            brand=p.brand,
+            category_id=p.category_id,
+            tags=p.tags,
+            image_url=p.image_url,
+            variants=[
+                AdminVariantDetail(
+                    id=v.id,
+                    sku=v.sku,
+                    attributes=v.attributes,
+                    cost_price=v.cost_price,
+                    weight_kg=v.weight_kg,
+                    prices=[AdminVariantPrice.model_validate(pr) for pr in v.prices],
+                    inventory=[AdminInventoryRead.model_validate(inv) for inv in v.inventory],
+                )
+                for v in sorted(p.variants, key=lambda v: v.sku)
+            ],
+        )
+        for p in result.scalars().all()
+    ]
+
+
+@router.get("/segments", response_model=list[SegmentRead])
+async def list_segments(
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(CustomerSegment).order_by(CustomerSegment.id))
+    return result.scalars().all()
 
 
 # ── Variants + initial inventory ─────────────────────────────────────────────
@@ -180,3 +251,19 @@ async def update_pricing_matrix(
             for p in upserted
         ],
     )
+
+
+@router.patch("/variants/{variant_id}", response_model=VariantWeightRead)
+async def update_variant_weight(
+    variant_id: uuid.UUID,
+    payload: VariantWeightUpdate,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set a variant's unit weight (used by the coal free-shipping rule)."""
+    variant = await db.get(ProductVariant, variant_id)
+    if variant is None:
+        raise HTTPException(status_code=404, detail="Variant not found")
+    variant.weight_kg = payload.weight_kg
+    await db.commit()
+    return VariantWeightRead(id=variant.id, sku=variant.sku, weight_kg=variant.weight_kg)
