@@ -28,6 +28,9 @@ class FlashSaleRead(BaseModel):
     variant_id: uuid.UUID
     sku: str
     product_name: str
+    # Which colour of it is on offer; null on a colourless product. A coloured
+    # product has one sale row per colour, so this is what tells the rows apart.
+    color_name: str | None = None
     sale_price_incl_tax: Decimal
     # Public RETAIL price, for the admin's "was/now" check; None if unpriced.
     regular_price_incl_tax: Decimal | None

@@ -1,4 +1,9 @@
-"""B2B applications and the admin dashboard (Genel Bakış) KPIs."""
+"""B2B applications and the admin dashboard (Genel Bakış) KPIs.
+
+An application is made from the account page, by a customer who is already
+signed in — sign-up itself never asks for a price group, so there is nothing
+here about registering with one.
+"""
 
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -13,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.v1.admin_dashboard import period_starts
 from app.models.b2b import B2BApplication
 from app.models.order import Order, OrderStatus, PaymentMethod
-from app.models.user import CompanyProfile, CustomerSegment, SegmentType, User
+from app.models.user import CustomerProfile, CustomerSegment, SegmentType, User
 from tests.conftest import auth_header
 
 TR = ZoneInfo("Europe/Istanbul")
@@ -21,20 +26,27 @@ APPLICATION = {"segment": "CAFE", "company_title": "Köşe Kafe Ltd.", "tax_numb
 
 
 def _register_body(**extra):
-    return {"email": f"b2b-{uuid.uuid4().hex[:8]}@test.com", "password": "Gizli-Parola-123", "full_name": "Kafe Sahibi", **extra}
+    return {
+        "email": f"b2b-{uuid.uuid4().hex[:8]}@test.com",
+        "password": "Gizli-Parola-123",
+        "full_name": "Kafe Sahibi",
+        "phone": "0532 111 22 33",
+        **extra,
+    }
 
 
 # ── B2B applications ─────────────────────────────────────────────────────────
 
 
-async def test_signup_with_application_stays_retail_and_is_pending(client: AsyncClient, db_session: AsyncSession):
-    resp = await client.post("/api/v1/auth/register", json=_register_body(b2b_application=APPLICATION))
+async def test_an_application_waits_for_an_admin_and_grants_nothing_itself(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User
+):
+    resp = await client.post("/api/v1/me/b2b-application", headers=auth_header(customer_user), json=APPLICATION)
     assert resp.status_code == 201, resp.text
-    user = await db_session.scalar(select(User).where(User.id == uuid.UUID(resp.json()["id"])))
     retail = await db_session.scalar(select(CustomerSegment.id).where(CustomerSegment.code == SegmentType.RETAIL))
-    assert user.segment_id == retail  # never self-granted
-    app = await db_session.scalar(select(B2BApplication).where(B2BApplication.user_id == user.id))
-    assert app.status == "PENDING" and app.requested_segment == "CAFE"
+    assert customer_user.segment_id == retail  # never self-granted
+    row = await db_session.scalar(select(B2BApplication).where(B2BApplication.user_id == customer_user.id))
+    assert row.status == "PENDING" and row.requested_segment == "CAFE"
 
 
 @pytest.mark.parametrize(
@@ -45,8 +57,11 @@ async def test_signup_with_application_stays_retail_and_is_pending(client: Async
         {**APPLICATION, "company_title": " "},
     ],
 )
-async def test_signup_rejects_bad_applications(client: AsyncClient, application: dict):
-    assert (await client.post("/api/v1/auth/register", json=_register_body(b2b_application=application))).status_code == 422
+async def test_bad_applications_are_rejected(
+    client: AsyncClient, customer_user: User, application: dict
+):
+    resp = await client.post("/api/v1/me/b2b-application", headers=auth_header(customer_user), json=application)
+    assert resp.status_code == 422, resp.text
 
 
 async def test_customer_applies_once_at_a_time(client: AsyncClient, customer_user: User):
@@ -74,7 +89,7 @@ async def test_admin_approves_with_override_and_records_company(
     dealer = await db_session.scalar(select(CustomerSegment.id).where(CustomerSegment.code == SegmentType.DEALER))
     segment_id = await db_session.scalar(select(User.segment_id).where(User.id == user_id))
     assert segment_id == dealer
-    title = await db_session.scalar(select(CompanyProfile.company_title).where(CompanyProfile.user_id == user_id))
+    title = await db_session.scalar(select(CustomerProfile.company_title).where(CustomerProfile.user_id == user_id))
     assert title == "Köşe Kafe Ltd."
 
 

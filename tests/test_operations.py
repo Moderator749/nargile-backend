@@ -320,8 +320,11 @@ async def test_admin_adjusts_customer_points(client: AsyncClient, admin_user: Us
     assert (await client.post(url, headers=h, json={"amount": 0, "note": "Sıfır"})).status_code == 422
     assert (await client.post(url, headers=h, json={"amount": 10, "note": ""})).status_code == 422
 
+    # The grid lists accounts; a balance belongs to the one customer's page.
     listed = (await client.get("/api/v1/admin/customers", headers=h, params={"q": customer_user.email})).json()
-    assert listed[0]["balance"] == 300
+    assert [c["email"] for c in listed] == [customer_user.email]
+    detail = (await client.get(f"/api/v1/admin/customers/{customer_user.id}", headers=h)).json()
+    assert detail["loyalty_balance"] == 300
     wallet = (await client.get(f"/api/v1/admin/customers/{customer_user.id}/wallet", headers=h)).json()
     assert [e["points"] for e in wallet["history"][:2]] == [-200, 500]
 
@@ -330,6 +333,8 @@ async def test_admin_adjusts_customer_points(client: AsyncClient, admin_user: Us
     ("method", "path"),
     [
         ("GET", "/api/v1/admin/customers"),
+        ("GET", f"/api/v1/admin/customers/{uuid.uuid4()}"),
+        ("PUT", f"/api/v1/admin/customers/{uuid.uuid4()}/segment"),
         ("GET", f"/api/v1/admin/customers/{uuid.uuid4()}/wallet"),
         ("POST", f"/api/v1/admin/customers/{uuid.uuid4()}/points"),
         ("GET", "/api/v1/admin/bank-accounts"),

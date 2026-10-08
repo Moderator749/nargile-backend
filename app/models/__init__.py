@@ -1,4 +1,9 @@
-from app.models.user import User, CustomerSegment, CompanyProfile  # noqa: F401
+from app.models.user import (  # noqa: F401
+    CustomerAddress,
+    CustomerProfile,
+    CustomerSegment,
+    User,
+)
 from app.models.catalog import (  # noqa: F401
     Category,
     Inventory,

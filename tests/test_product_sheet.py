@@ -109,9 +109,21 @@ async def test_sheet_save_writes_every_section(client: AsyncClient, admin_user: 
     # The gallery keeps its order and the cover is mirrored for one-photo readers.
     assert sheet["image_urls"] == ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg"]
     assert sheet["youtube_video_url"] == "https://youtu.be/dQw4w9WgXcQ"
-    assert sheet["sku"] == body["base_code"]  # the code doubles as the variant SKU
+    # One variant per colour, in the admin's order, each with a stock code of its
+    # own derived from the product code.
+    assert [v["color"] for v in sheet["variants"]] == ["Antrasit", "Bakır"]
+    assert [v["sku"] for v in sheet["variants"]] == [
+        f"{body['base_code']}-ANTRASIT",
+        f"{body['base_code']}-BAKIR",
+    ]
+    # `sku` is the stem the codes come from, so the sheet can be sent straight back.
+    assert sheet["sku"] == body["base_code"]
+    # `stock` reads back as the total across the colours; this sheet sent no
+    # per-colour block, so all of it opened on the first colour.
     assert sheet["stock"] == {"bayi": 4, "toptan": 3, "kafe": 2, "perakende": 1}
     assert sheet["stock_total"] == 10
+    assert sheet["variants"][0]["stock"] == {"bayi": 4, "toptan": 3, "kafe": 2, "perakende": 1}
+    assert sheet["variants"][1]["stock"] == {"bayi": 0, "toptan": 0, "kafe": 0, "perakende": 0}
     assert sheet["rules"]["is_cart_rule_applied"] is True
     assert sheet["rules"]["has_havale_discount"] is False
     assert sheet["rules"]["has_volume_discount"] is False
@@ -408,13 +420,14 @@ async def test_deleting_a_pinned_product_removes_the_link(
     pinned = (await _post(client, admin_user, _sheet())).json()
     main = (await _post(client, admin_user, _sheet(related_product_ids=[pinned["id"]]))).json()
 
-    # Products have no delete endpoint, so clear the variant's own rows the way one
-    # would have to; what is being proved is that the cross-sell link goes with it.
+    # Products have no delete endpoint, so clear every colour's own rows the way
+    # one would have to; what is being proved is that the cross-sell link goes
+    # with the product.
     pinned_id = uuid.UUID(pinned["id"])
-    variant_id = uuid.UUID(pinned["variant_id"])
+    variant_ids = [uuid.UUID(v["id"]) for v in pinned["variants"]]
     for table in (FlashSale, VariantPrice, Inventory):
-        await db_session.execute(delete(table).where(table.variant_id == variant_id))
-    await db_session.execute(delete(ProductVariant).where(ProductVariant.id == variant_id))
+        await db_session.execute(delete(table).where(table.variant_id.in_(variant_ids)))
+    await db_session.execute(delete(ProductVariant).where(ProductVariant.id.in_(variant_ids)))
     await db_session.execute(delete(Product).where(Product.id == pinned_id))
     await db_session.commit()
 

@@ -40,6 +40,7 @@ def _read(sale: FlashSale, retail_id: int, now: datetime) -> FlashSaleRead:
         variant_id=sale.variant_id,
         sku=sale.variant.sku,
         product_name=sale.variant.product.name,
+        color_name=sale.variant.color_name,
         sale_price_incl_tax=sale.sale_price_incl_tax,
         regular_price_incl_tax=regular,
         starts_at=sale.starts_at,

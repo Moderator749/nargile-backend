@@ -127,24 +127,22 @@ async def _retail_segment_id(db: AsyncSession) -> int | None:
 async def _product_order(db: AsyncSession, sort: ProductSort | None, direction: SortDirection):
     """ORDER BY for the admin products table, matching the column it sorts on.
 
-    The sortable values live a join away (the code and stock on the variants, the
-    price on their retail price rows), so each one is a scalar subquery per product
-    rather than a join that would multiply the rows.
+    The stock and the price live a join away — spread across the product's colour
+    variants and their retail price rows — so each is a scalar subquery per
+    product rather than a join that would multiply the rows.
     """
     if sort is None:
         return (Product.name, Product.id)
 
-    sku = (
-        select(func.min(ProductVariant.sku))
-        .where(ProductVariant.product_id == Product.id)
-        .correlate(Product)
-        .scalar_subquery()
-    )
     retail_stock = (
         select(func.coalesce(func.sum(Inventory.quantity), 0))
         .select_from(Inventory)
         .join(ProductVariant, ProductVariant.id == Inventory.variant_id)
-        .where(ProductVariant.product_id == Product.id, Inventory.warehouse_type == WarehouseType.RETAIL_STOCK)
+        .where(
+            ProductVariant.product_id == Product.id,
+            ProductVariant.is_active.is_(True),
+            Inventory.warehouse_type == WarehouseType.RETAIL_STOCK,
+        )
         .correlate(Product)
         .scalar_subquery()
     )
@@ -155,6 +153,7 @@ async def _product_order(db: AsyncSession, sort: ProductSort | None, direction: 
         .join(ProductVariant, ProductVariant.id == VariantPrice.variant_id)
         .where(
             ProductVariant.product_id == Product.id,
+            ProductVariant.is_active.is_(True),
             VariantPrice.segment_id == retail_id,
             VariantPrice.currency == CurrencyType.TRY,
         )
@@ -163,7 +162,8 @@ async def _product_order(db: AsyncSession, sort: ProductSort | None, direction: 
     )
 
     column = {
-        ProductSort.CODE: sku,
+        # The product code, not a stock code: a coloured product has one per colour.
+        ProductSort.CODE: Product.base_code,
         ProductSort.NAME: Product.name,
         ProductSort.STOCK: retail_stock,
         ProductSort.PRICE: retail_price,
@@ -219,13 +219,18 @@ def _admin_product_row(product: Product) -> AdminProductDetail:
             AdminVariantDetail(
                 id=v.id,
                 sku=v.sku,
+                color_name=v.color_name,
                 attributes=v.attributes,
                 cost_price=v.cost_price,
                 weight_kg=v.weight_kg,
                 prices=[AdminVariantPrice.model_validate(pr) for pr in v.prices],
                 inventory=[AdminInventoryRead.model_validate(inv) for inv in v.inventory],
             )
-            for v in sorted(product.variants, key=lambda v: v.sku)
+            # Live colours only, in the admin's order: the table's stock column is
+            # the sum of these, and a retired colour has no stock to add.
+            for v in sorted(
+                (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku)
+            )
         ],
     )
 

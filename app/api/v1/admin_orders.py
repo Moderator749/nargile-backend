@@ -15,7 +15,9 @@ from app.api.deps import get_current_admin_user
 from app.core.database import get_db
 from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
 from app.models.order import PENDING_STATUSES, Order, OrderItem, OrderStatus, ShippingMethod
-from app.models.user import User
+from app.models.user import AddressKind, User
+from app.core.countries import TURKEY, country_name
+from app.schemas.address import address_line, international_line
 from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse
 from app.schemas.order import OrderItemRead, OrderRead
 from app.services import mailer, order_emails, order_lifecycle
@@ -38,7 +40,7 @@ async def list_orders(
     stmt = (
         select(Order, User)
         .join(User, Order.user_id == User.id)
-        .options(selectinload(Order.items), selectinload(User.company_profile))
+        .options(selectinload(Order.items), selectinload(User.profile), selectinload(User.addresses))
     )
     filters = []
 
@@ -60,15 +62,15 @@ async def list_orders(
     return [_list_item(order, user, catalog) for order, user in rows]
 
 
-# Per ordered variant: (sku, product code, product name, VAT rate).
-LineCatalog = dict[uuid.UUID, tuple[str, str, str, Decimal | None]]
+# Per ordered variant: (sku, product code, product name, colour, VAT rate).
+LineCatalog = dict[uuid.UUID, tuple[str, str, str, str | None, Decimal | None]]
 
 
 async def _line_catalog(db: AsyncSession, orders: Sequence[Order]) -> LineCatalog:
     """Catalogue data for the ordered variants, in one query, for the detail sheet.
 
     The order lines store only ids and prices, but the order sheet prints the
-    product code, the name and the VAT the price includes.
+    product code, the name, the colour and the VAT the price includes.
     """
     variant_ids = {item.variant_id for order in orders for item in order.items}
     if not variant_ids:
@@ -79,6 +81,7 @@ async def _line_catalog(db: AsyncSession, orders: Sequence[Order]) -> LineCatalo
             ProductVariant.sku,
             Product.base_code,
             Product.name,
+            ProductVariant.color_name,
             # The rate belongs to the product, so it is the same in every
             # segment's price row; max() just collapses them to one.
             func.max(VariantPrice.vat_rate),
@@ -89,31 +92,77 @@ async def _line_catalog(db: AsyncSession, orders: Sequence[Order]) -> LineCatalo
             (VariantPrice.variant_id == ProductVariant.id) & (VariantPrice.currency == CurrencyType.TRY),
         )
         .where(ProductVariant.id.in_(variant_ids))
-        .group_by(ProductVariant.id, ProductVariant.sku, Product.base_code, Product.name)
+        .group_by(
+            ProductVariant.id,
+            ProductVariant.sku,
+            Product.base_code,
+            Product.name,
+            ProductVariant.color_name,
+        )
     )
-    return {row[0]: (row[1], row[2], row[3], row[4]) for row in (await db.execute(stmt)).all()}
+    return {row[0]: tuple(row[1:]) for row in (await db.execute(stmt)).all()}
 
 
 def _line(item: OrderItem, catalog: LineCatalog) -> AdminOrderItemDetail:
-    sku, product_code, product_name, vat_rate = catalog.get(item.variant_id, (None, None, None, None))
+    sku, product_code, product_name, color_name, vat_rate = catalog.get(
+        item.variant_id, (None, None, None, None, None)
+    )
     return AdminOrderItemDetail(
         **OrderItemRead.model_validate(item).model_dump(),
         sku=sku,
         product_code=product_code,
         product_name=product_name,
+        color_name=color_name,
         vat_rate=vat_rate,
     )
 
 
+def _billing_address(user: User) -> dict | None:
+    """The customer's standing invoice address, in the shape the order sheet
+    prints — the same five fields as the delivery address it sits beside, plus
+    the country when it is not this one.
+
+    None when they never gave one: a retail buyer is invoiced where they are
+    delivered, and the sheet says so.
+    """
+    # The firm's address when the invoice is made out to one, the customer's own
+    # otherwise: an invoice goes where it is addressed.
+    by_kind = {a.kind: a for a in user.addresses}
+    row = by_kind.get(AddressKind.CORPORATE_BILLING) or by_kind.get(AddressKind.BILLING)
+    if row is None:
+        return None
+    profile = user.profile
+    domestic = row.country == TURKEY
+    return {
+        "full_name": (profile.company_title if profile else None) or user.full_name,
+        "phone": user.phone,
+        "city": row.city,
+        "district": row.district,
+        "line": address_line(
+            neighbourhood=row.neighbourhood,
+            street=row.street,
+            building_no=row.building_no,
+            building_name=row.building_name,
+            door_no=row.door_no,
+        )
+        if domestic
+        else international_line(
+            address_line1=row.address_line1,
+            address_line2=row.address_line2,
+            postal_code=row.postal_code,
+        ),
+        **({} if domestic else {"country": country_name(row.country)}),
+    }
+
+
 def _list_item(order: Order, user: User, catalog: LineCatalog) -> AdminOrderListItem:
-    profile = user.company_profile
     return AdminOrderListItem(
         **OrderRead.model_validate(order).model_dump(exclude={"items"}),
         customer_email=user.email,
         customer_name=user.full_name,
         customer_phone=user.phone,
-        company_title=profile.company_title if profile else None,
-        billing_address=profile.billing_address if profile else None,
+        company_title=user.profile.company_title if user.profile else None,
+        billing_address=_billing_address(user),
         items=[_line(item, catalog) for item in order.items],
     )
 
@@ -139,7 +188,7 @@ async def _order_with_user(db: AsyncSession, order_id: uuid.UUID) -> tuple[Order
     user = await db.scalar(
         select(User)
         .where(User.id == order.user_id)
-        .options(selectinload(User.segment), selectinload(User.company_profile))
+        .options(selectinload(User.segment), selectinload(User.profile), selectinload(User.addresses))
     )
     return order, user
 

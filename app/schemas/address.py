@@ -1,6 +1,9 @@
 import re
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+from app.core.countries import COUNTRY_NAMES, TURKEY
 
 # The 81 provinces, as customers write them.
 TR_PROVINCES = (
@@ -25,6 +28,26 @@ def _key(name: str) -> str:
 
 _BY_KEY = {_key(p): p for p in TR_PROVINCES} | {"istanbul": ISTANBUL, "izmir": "İzmir"}
 _PHONE = re.compile(r"^\+?[0-9 ()-]{10,20}$")
+# Anywhere else in the world: a dialling code, any punctuation people use to
+# group digits, and as few as seven of them (some countries really are that
+# short). Nothing here pretends to know whether the number exists.
+_INTL_PHONE = re.compile(r"^\+?[0-9 ()./-]{7,30}$")
+
+
+def valid_phone(value: str) -> str:
+    """A Turkish phone number as people write it, or ValueError."""
+    found = (value or "").strip()
+    if not _PHONE.match(found) or len(re.sub(r"\D", "", found)) < 10:
+        raise ValueError("Geçerli bir telefon numarası girilmeli")
+    return found
+
+
+def valid_international_phone(value: str) -> str:
+    """A phone number from any country, dialling code and all, or ValueError."""
+    found = " ".join((value or "").split())
+    if not _INTL_PHONE.match(found) or len(re.sub(r"\D", "", found)) < 7:
+        raise ValueError("Enter a valid phone number, including the country code")
+    return found
 
 
 class ShippingAddress(BaseModel):
@@ -42,10 +65,7 @@ class ShippingAddress(BaseModel):
     @field_validator("phone")
     @classmethod
     def _phone(cls, v: str) -> str:
-        v = v.strip()
-        if not _PHONE.match(v) or len(re.sub(r"\D", "", v)) < 10:
-            raise ValueError("Enter a valid phone number")
-        return v
+        return valid_phone(v)
 
     @field_validator("city")
     @classmethod
@@ -55,3 +75,146 @@ class ShippingAddress(BaseModel):
             return _BY_KEY[_key(v)]
         except KeyError:
             raise ValueError("Unknown province") from None
+
+
+def _trim(value: str | None) -> str | None:
+    """Collapsed whitespace, or None for a field left empty."""
+    return " ".join((value or "").split()) or None
+
+
+class StructuredAddress(BaseModel):
+    """A Turkish address field by field, as the sign-up form asks for it.
+
+    Only the district and the province are required: an invoice without them
+    names no place, and neither does a shipment later. A street or a
+    neighbourhood is required too — one of the two, not both, since villages
+    have no street names and new districts have no neighbourhood worth writing.
+    The rest (building, door) is detail a courier needs but the system cannot
+    check.
+    """
+
+    # Fixed: an address with a country of its own is an InternationalAddress,
+    # and this is also what tells the two apart when one field accepts either.
+    country: Literal["TR"] = TURKEY
+    neighbourhood: str | None = Field(default=None, max_length=120)  # Mahalle / Köy
+    street: str | None = Field(default=None, max_length=120)  # Cadde / Sokak
+    building_no: str | None = Field(default=None, max_length=20)  # Bina no
+    building_name: str | None = Field(default=None, max_length=120)  # Bina adı
+    door_no: str | None = Field(default=None, max_length=20)  # Kapı no
+    district: str = Field(min_length=2, max_length=80)  # İlçe
+    city: str = Field(max_length=40)  # Şehir
+
+    @field_validator("neighbourhood", "street", "building_no", "building_name", "door_no", mode="before")
+    @classmethod
+    def _optional(cls, value: str | None) -> str | None:
+        return _trim(value)
+
+    @field_validator("district")
+    @classmethod
+    def _district(cls, value: str) -> str:
+        return " ".join(value.split())
+
+    @field_validator("city")
+    @classmethod
+    def _city(cls, value: str) -> str:
+        try:
+            return _BY_KEY[_key(value)]
+        except KeyError:
+            raise ValueError("Şehir 81 ilden biri olmalı") from None
+
+    @model_validator(mode="after")
+    def _addressable(self) -> "StructuredAddress":
+        if not self.neighbourhood and not self.street:
+            raise ValueError("Mahalle/köy veya cadde/sokak girilmeli")
+        return self
+
+    def single_line(self) -> str:
+        return address_line(
+            neighbourhood=self.neighbourhood,
+            street=self.street,
+            building_no=self.building_no,
+            building_name=self.building_name,
+            door_no=self.door_no,
+        )
+
+
+class InternationalAddress(BaseModel):
+    """An address outside Turkey.
+
+    Two lines, a city (or state, or province — one field, since which of them a
+    country uses is its own business), an optional postal code and a country
+    code. Nothing is validated against a national format: there are nearly two
+    hundred of them, and a wrong guess would turn a customer away. The country
+    is checked, because it decides the carrier, the duty and the paperwork.
+
+    Its messages are in English, like the form it comes from.
+    """
+
+    country: str = Field(min_length=2, max_length=2)
+    city: str = Field(min_length=2, max_length=80)  # city / state / province
+    postal_code: str | None = Field(default=None, max_length=20)
+    address_line1: str = Field(min_length=3, max_length=200)
+    address_line2: str | None = Field(default=None, max_length=200)
+
+    @field_validator("city", "address_line1")
+    @classmethod
+    def _collapse(cls, value: str) -> str:
+        return " ".join(value.split())
+
+    @field_validator("postal_code", "address_line2", mode="before")
+    @classmethod
+    def _optional(cls, value: str | None) -> str | None:
+        return _trim(value)
+
+    @field_validator("country")
+    @classmethod
+    def _country(cls, value: str) -> str:
+        code = value.strip().upper()
+        if code not in COUNTRY_NAMES:
+            raise ValueError("Select a country")
+        if code == TURKEY:
+            raise ValueError("A Turkish address belongs to a Turkish account type")
+        return code
+
+    def single_line(self) -> str:
+        return international_line(
+            address_line1=self.address_line1,
+            address_line2=self.address_line2,
+            postal_code=self.postal_code,
+        )
+
+
+def address_line(
+    *,
+    neighbourhood: str | None = None,
+    street: str | None = None,
+    building_no: str | None = None,
+    building_name: str | None = None,
+    door_no: str | None = None,
+) -> str:
+    """A structured address as one line, the way it is written on a label.
+
+    Checkout and the order sheet both speak :class:`ShippingAddress`, whose
+    ``line`` is free text; this is how the parts become one line without losing
+    any of them. Takes the parts rather than a model so a stored row can be
+    printed without being re-validated.
+    """
+    parts = [
+        neighbourhood,
+        street,
+        f"No: {building_no}" if building_no else None,
+        building_name,
+        f"Kapı No: {door_no}" if door_no else None,
+    ]
+    return ", ".join(p for p in parts if p)
+
+
+def international_line(
+    *,
+    address_line1: str | None = None,
+    address_line2: str | None = None,
+    postal_code: str | None = None,
+) -> str:
+    """An international address as one line, the way it is written on a waybill.
+    The city and the country stay separate: a carrier sorts by those."""
+    return ", ".join(p for p in (address_line1, address_line2, postal_code) if p)

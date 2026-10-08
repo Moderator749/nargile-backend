@@ -1,10 +1,17 @@
 """The admin's product sheet ("Ürün Ekle / Düzenle"), as one payload.
 
-The sheet is a grid: product info, four stock quotas, a currency × segment price
-matrix, the commercial rule flags and the "Fırsat" block. It maps onto several
-tables (products, product_variants, inventory, variant_prices, flash_sales), so
-it travels as one object and is written in one transaction — the admin fills one
-form and presses save once.
+The sheet is a grid: product info, the stock quotas, a currency × segment price
+matrix, the commercial rule flags, the "Açıklama ve SEO" block and the "Fırsat"
+block. It maps onto several tables (products, product_variants, inventory,
+variant_prices, flash_sales), so it travels as one object and is written in one
+transaction — the admin fills one form and presses save once.
+
+Stock is per colour. `color_names` is the colour list as the admin arranged the
+pills, and `variants` carries one block of four quotas for each of them; a
+product with no colours has one unnamed ("Standart") variant instead. The two
+are reconciled into a canonical `variants` list before the sheet is saved, so
+the writer has one list to walk and cannot be handed a colour with no stock
+block or a stock block for a colour that is gone.
 """
 
 import re
@@ -49,6 +56,38 @@ class SheetStock(BaseModel):
     @property
     def total(self) -> int:
         return self.bayi + self.toptan + self.kafe + self.perakende
+
+    def __add__(self, other: "SheetStock") -> "SheetStock":
+        return SheetStock(**{f: getattr(self, f) + getattr(other, f) for f in STOCK_FIELD_NAMES})
+
+
+STOCK_FIELD_NAMES = ("bayi", "toptan", "kafe", "perakende")
+
+
+def fold(label: str) -> str:
+    """How two colour labels are compared: trimmed, collapsed, case-insensitive."""
+    return " ".join(label.split()).casefold()
+
+
+class SheetVariant(BaseModel):
+    """One colour of the product, with the four stock quotas that colour sells from.
+
+    `color` is None on the single "Standart" variant a colourless product has.
+    `id` names a variant that already exists, so renaming a colour keeps its
+    stock and its history instead of starting a new one; it is absent on a colour
+    the admin has just added.
+    """
+
+    id: uuid.UUID | None = None
+    color: str | None = Field(default=None, max_length=40)
+    sku: str | None = Field(default=None, max_length=50)
+    stock: SheetStock = SheetStock()
+
+    @field_validator("color")
+    @classmethod
+    def _label(cls, color: str | None) -> str | None:
+        label = " ".join((color or "").split())[:40]
+        return label or None
 
 
 class SheetPriceCell(BaseModel):
@@ -141,15 +180,21 @@ class ProductSheetWrite(BaseModel):
     name: str = Field(min_length=2, max_length=255)
     brand: str | None = Field(default=None, max_length=100)
     category_id: int | None = None
-    # "Renk": one or more labels, in the order the admin added them.
+    # "Renk": one or more labels, in the order the admin added them. Each one is a
+    # buyable colour with its own stock; see `variants`.
     color_names: list[str] = Field(default_factory=list, max_length=20)
-    description: str | None = None
+    # ── "Açıklama ve SEO" ────────────────────────────────────────────────────
+    description: str | None = Field(default=None, max_length=8000)
+    # Override the product page's <title>; blank falls back to the product name.
+    meta_title: str | None = Field(default=None, max_length=70)
+    # Override its <meta name="description">; blank falls back to `description`.
+    meta_description: str | None = Field(default=None, max_length=160)
     # Gallery, in order; the first is the cover. The server keeps `image_url` in
     # step with it, so one-photo readers need no change.
     image_urls: list[str] = Field(default_factory=list, max_length=12)
     youtube_video_url: str | None = Field(default=None, max_length=500)
-    # The sheet has no variant picker: one product, one variant, whose SKU
-    # defaults to the product code.
+    # The stem every colour's stock code is derived from; defaults to the product
+    # code, which is what the form sends (it has no separate box for this).
     sku: str | None = Field(default=None, max_length=50)
     # Unit weight in kg, for the coal free-shipping rule; null = not recorded.
     # Leaving the field out of a save keeps whatever is stored (the product form
@@ -158,7 +203,14 @@ class ProductSheetWrite(BaseModel):
     # Off the storefront while false (the products list toggles this per row too).
     is_published: bool = True
 
+    # The four quotas as one block. On a colourless product it *is* the stock. On
+    # a coloured one it is the total across the colours when read back, and the
+    # opening stock of the first colour when a caller sends no `variants` at all.
     stock: SheetStock = SheetStock()
+    # One block of quotas per colour, in `color_names` order. Reconciled against
+    # `color_names` on the way in (see `_reconcile_variants`), so the saver always
+    # gets exactly one entry per colour — or one unnamed entry when there are none.
+    variants: list[SheetVariant] = Field(default_factory=list, max_length=20)
     prices: list[SheetPriceRow] = Field(default_factory=list)
     rules: SheetRules = SheetRules()
     opportunity: SheetOpportunity = SheetOpportunity()
@@ -217,14 +269,82 @@ class ProductSheetWrite(BaseModel):
             raise ValueError("Geçerli bir YouTube bağlantısı girin")
         return url
 
+    @field_validator("description", "meta_title", "meta_description")
+    @classmethod
+    def _trim_to_none(cls, text: str | None) -> str | None:
+        """An emptied textarea stores NULL, not "", so the fallbacks kick in."""
+        return (text or "").strip() or None
+
+    @model_validator(mode="after")
+    def _reconcile_variants(self) -> "ProductSheetWrite":
+        """Make `variants` say exactly one thing: the colours, with their stock.
+
+        `color_names` decides which colours exist — it is what the admin's pills
+        are — and `variants` only supplies each one's quotas (and the id that
+        keeps them attached across a rename). A block for a colour that is gone is
+        dropped; a colour with no block opens at zero.
+
+        With no colours at all the product has one unnamed "Standart" variant,
+        whose quotas are the sheet's own `stock`.
+
+        A caller that sends no `variants` (every client before colours had stock,
+        this sheet's own older payloads included) has its flat `stock` read as the
+        first colour's: that is where a migrated product's stock sits, so a read →
+        write round-trip of such a product does not move it.
+        """
+        if not self.color_names:
+            standard = next((v for v in self.variants if v.color is None), None)
+            self.variants = [
+                SheetVariant(
+                    id=standard.id if standard else None,
+                    sku=standard.sku if standard else None,
+                    color=None,
+                    stock=self.stock if standard is None else standard.stock,
+                )
+            ]
+            return self
+
+        by_color = {fold(v.color): v for v in self.variants if v.color is not None}
+        sent_nothing = not self.variants
+        reconciled: list[SheetVariant] = []
+        seen: set[uuid.UUID] = set()
+        for position, label in enumerate(self.color_names):
+            sent = by_color.get(fold(label))
+            if sent is None and sent_nothing and position == 0:
+                sent = SheetVariant(stock=self.stock)
+            # One variant row cannot be two colours: a repeated id is a new colour.
+            variant_id = sent.id if sent and sent.id not in seen else None
+            if variant_id is not None:
+                seen.add(variant_id)
+            reconciled.append(
+                SheetVariant(
+                    id=variant_id,
+                    sku=sent.sku if sent and variant_id is not None else None,
+                    color=label,
+                    stock=sent.stock if sent else SheetStock(),
+                )
+            )
+        self.variants = reconciled
+        return self
+
 
 class ProductSheetRead(ProductSheetWrite):
-    """The saved sheet, as the form reloads it."""
+    """The saved sheet, as the form reloads it.
+
+    `variants` comes back with each colour's id and derived SKU, which is how a
+    resave keeps a colour's stock attached to it. `stock` is the total across the
+    colours, for the form's "Toplam Stok" box.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    # The first colour's variant (the only one on a colourless product). Kept for
+    # readers that only ever expected one; `variants` is the full list.
     variant_id: uuid.UUID
+    # The stem, not a stock code: each colour's own code is in `variants[].sku`.
+    # Reading back the stem is what lets a client send the sheet straight back
+    # without the first colour's "-RENK" suffix growing a second one.
     sku: str
     stock_total: int
     # The pinned products with enough to draw their cards, same order as the ids.

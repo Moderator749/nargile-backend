@@ -45,12 +45,18 @@ class ProductRead(BaseModel):
     name: str
     brand: str | None
     description: str | None
+    # "Açıklama ve SEO": overrides for the product page's title and description;
+    # null falls back to the name and the description.
+    meta_title: str | None = None
+    meta_description: str | None = None
     category_id: int | None
     tags: list | None
     # The cover; `image_urls` is the whole gallery, cover first.
     image_url: str | None = None
     image_urls: list[str] | None = None
     youtube_video_url: str | None = None
+    # The colour labels, in the admin's order. Each one is a variant with its own
+    # stock; `variants[].color_name` is what to add to the cart.
     color_names: list[str] | None = None
     # On the "Fırsat Ürünleri" list while this is true, whether or not the offer
     # is still claimable; `variants[].flash_sale` says whether it is.
@@ -91,10 +97,18 @@ class FlashSaleInfo(BaseModel):
 
 
 class CatalogVariantRead(BaseModel):
-    """A variant priced for one segment only — never the full price matrix."""
+    """One buyable colour, priced for one segment only — never the full matrix.
+
+    A product with colour pills has one of these per colour, in the admin's
+    order, and the customer picks one on the product page; a colourless product
+    has a single entry whose `color_name` is null. Retired colours are left out
+    entirely.
+    """
 
     id: uuid.UUID
     sku: str
+    # The "Renk" this variant is; null on a product with no colour axis.
+    color_name: str | None = None
     attributes: dict | None
     # Always TRY, because that is what the cart charges. None = not sold to this
     # segment (or its foreign price could not be converted today).

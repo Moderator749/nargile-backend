@@ -132,10 +132,12 @@ class SegmentRead(BaseModel):
 
 
 class AdminVariantDetail(BaseModel):
-    """A variant with its full price matrix and stock pools."""
+    """One colour of a product, with its full price matrix and stock quotas."""
 
     id: uuid.UUID
     sku: str
+    # The "Renk" this variant is; null on a product with no colour axis.
+    color_name: str | None = None
     attributes: dict | None
     cost_price: Decimal | None
     # kg per unit (coal's 20 kg free-shipping rule); None = unknown.
@@ -230,6 +232,8 @@ class AdminOrderItemDetail(OrderItemRead):
     sku: str | None = None
     product_code: str | None = None
     product_name: str | None = None
+    # The "Renk" that was sold; null on a colourless product.
+    color_name: str | None = None
     vat_rate: Decimal | None = None
 
 

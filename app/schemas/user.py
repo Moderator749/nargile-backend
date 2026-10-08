@@ -1,21 +1,9 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict
 
-from app.models.user import SegmentType, UserRole
-from app.schemas.b2b import B2BApplicationCreate
-
-
-class UserCreate(BaseModel):
-    """Public sign-up payload. Segment is never client-controlled (always RETAIL)."""
-
-    email: str
-    password: str
-    full_name: str | None = Field(default=None, max_length=150)
-    phone: str | None = None
-    # Optional Kafe / Toptan / Bayi application: reviewed by an admin, never self-granted.
-    b2b_application: B2BApplicationCreate | None = None
+from app.models.user import AccountType, SegmentType, UserRole
 
 
 class UserRead(BaseModel):
@@ -25,6 +13,7 @@ class UserRead(BaseModel):
     email: str
     full_name: str | None = None
     phone: str | None
+    account_type: AccountType
     role: UserRole
     is_active: bool
     is_verified: bool
@@ -44,24 +33,7 @@ class Token(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    """``email`` accepts either the e-mail address or the chosen username."""
+
     email: str
     password: str
-
-
-class CompanyProfileCreate(BaseModel):
-    company_title: str
-    tax_number: str | None = None
-    tax_office: str | None = None
-    billing_address: dict | None = None
-    delivery_address: dict | None = None
-
-
-class CompanyProfileRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    company_title: str
-    tax_number: str | None
-    tax_office: str | None
-    billing_address: dict | None
-    delivery_address: dict | None

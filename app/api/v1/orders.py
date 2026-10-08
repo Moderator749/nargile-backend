@@ -99,6 +99,7 @@ async def calculate_cart(
                 product_id=i.product.id,
                 sku=i.variant.sku,
                 product_name=i.product.name,
+                color_name=i.variant.color_name,
                 quantity=i.quantity,
                 unit_price=i.unit_price,
                 line_total=i.line_total,

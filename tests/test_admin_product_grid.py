@@ -164,11 +164,12 @@ async def test_duplicate_copies_everything_as_a_draft(
             related_product_ids=[grid["b"]["id"]],
         ),
     )
-    source["stock"]["bayi"] = 3
+    # Give the one colour a dealer quota too, so the copy has two to carry.
+    colour = {**source["variants"][0], "stock": {**source["variants"][0]["stock"], "bayi": 3}}
     await client.put(
         f"/api/v1/admin/products/{source['id']}/sheet",
         headers=auth_header(admin_user),
-        json={**source, "stock": {**source["stock"], "bayi": 3}},
+        json={**source, "variants": [colour]},
     )
 
     resp = await client.post(

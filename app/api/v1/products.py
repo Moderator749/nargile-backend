@@ -133,7 +133,13 @@ async def _catalog_view(
     db: AsyncSession, user: User | None, products: list[Product]
 ) -> list[CatalogProductRead]:
     """Price products for the caller's segment (RETAIL when anonymous), matching
-    what checkout will charge, including live flash sales."""
+    what checkout will charge, including live flash sales.
+
+    Every live colour of a product comes back as its own variant, in the admin's
+    order, each with its own stock flag — the product page's colour picker is a
+    choice between these. A retired colour is left out: it exists for the orders
+    that contain it, not to be bought again.
+    """
     segments = {s.id: s.code for s in (await db.execute(select(CustomerSegment))).scalars()}
     retail_id = next(sid for sid, code in segments.items() if code == SegmentType.RETAIL)
     segment_id = (user.segment_id if user else None) or retail_id
@@ -146,12 +152,15 @@ async def _catalog_view(
     views = []
     for product in products:
         variants = []
-        for v in sorted(product.variants, key=lambda v: v.sku):
+        for v in sorted(
+            (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku)
+        ):
             price, origin = _price_for(v, segment_id, rates)
             variants.append(
                 CatalogVariantRead(
                     id=v.id,
                     sku=v.sku,
+                    color_name=v.color_name,
                     attributes=v.attributes,
                     price=price,
                     origin_price=origin,
@@ -160,7 +169,11 @@ async def _catalog_view(
                     in_stock=_in_stock(v, warehouse),
                 )
             )
-        views.append(CatalogProductRead(**ProductRead.model_validate(product).model_dump(), variants=variants))
+        view = ProductRead.model_validate(product).model_dump()
+        # The labels the live variants carry, so the picker and the pills agree
+        # even if a colour was retired after the product's own list was written.
+        view["color_names"] = [v.color_name for v in variants if v.color_name]
+        views.append(CatalogProductRead(**view, variants=variants))
     return views
 
 

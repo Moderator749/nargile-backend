@@ -70,7 +70,12 @@ class Product(Base):
     base_code: Mapped[str] = mapped_column(String(30), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     brand: Mapped[str | None] = mapped_column(String(100))
+    # "Açıklama ve SEO" on the product sheet. `description` is the storefront's
+    # own copy; the two meta fields override the page's <title>/<meta
+    # description>, which otherwise fall back to the name and the description.
     description: Mapped[str | None] = mapped_column(Text)
+    meta_title: Mapped[str | None] = mapped_column(String(70))
+    meta_description: Mapped[str | None] = mapped_column(String(160))
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     tags: Mapped[list | None] = mapped_column(JSONB, default=list)
     # The cover photo: always the first of `image_urls`, kept here so cards,
@@ -79,7 +84,10 @@ class Product(Base):
     # Every photo of the product, in gallery order (the cover first).
     image_urls: Mapped[list | None] = mapped_column(JSONB)
     youtube_video_url: Mapped[str | None] = mapped_column(String(500))
-    # "Renk" on the product sheet: free text labels, not a variant axis.
+    # "Renk" on the product sheet, in the admin's order. The variant axis: one
+    # `ProductVariant` per label, each with its own four stock quotas. Kept on the
+    # product as well so a reader that only wants the labels needs no join; the
+    # product sheet is the single writer and keeps the two in step.
     color_names: Mapped[list | None] = mapped_column(JSONB)
     # Off the storefront entirely while false; the admin lists show it either way.
     is_published: Mapped[bool] = mapped_column(
@@ -119,7 +127,10 @@ class Product(Base):
     opp_can_use_points: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
 
     category: Mapped[Category | None] = relationship(back_populates="products")
-    variants: Mapped[list["ProductVariant"]] = relationship(back_populates="product")
+    # The colours, in the order the admin arranged them (see ProductVariant).
+    variants: Mapped[list["ProductVariant"]] = relationship(
+        back_populates="product", order_by="ProductVariant.position, ProductVariant.sku"
+    )
     cross_sells: Mapped[list["ProductCrossSell"]] = relationship(
         foreign_keys="ProductCrossSell.product_id",
         order_by="ProductCrossSell.position",
@@ -156,8 +167,33 @@ class ProductCrossSell(Base):
 
 
 class ProductVariant(Base):
+    """One buyable colour of a product — the thing stock, prices and orders hang off.
+
+    A product with "Renk" labels has one variant per label; one with none has a
+    single variant whose `color_name` is NULL (the "Standart" variant). The
+    customer picks a colour on the product page and buys *that* variant, so each
+    colour carries its own four stock quotas in `inventory`.
+
+    Prices are per variant in the schema but product-wide in practice: the sheet
+    has one price matrix and writes the same rows to every colour. Keeping the
+    column here leaves room to price a colour differently later without another
+    migration.
+
+    A colour the admin removes is deleted when it was never ordered, and
+    otherwise kept with `is_active = False`: its order lines still have to name
+    the thing that was sold. Re-adding the same label revives that row, with its
+    history, instead of making a second one — which the unique constraint on
+    (product, colour) forbids anyway.
+    """
+
     __tablename__ = "product_variants"
-    __table_args__ = (Index("ix_product_variants_sku", "sku", unique=True),)
+    __table_args__ = (
+        Index("ix_product_variants_sku", "sku", unique=True),
+        # One row per colour per product. NULLs are distinct in Postgres, so this
+        # does not by itself stop two "Standart" variants; the product sheet does.
+        UniqueConstraint("product_id", "color_name", name="uq_variant_product_color"),
+        Index("ix_product_variants_product", "product_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -167,6 +203,16 @@ class ProductVariant(Base):
     )
     sku: Mapped[str] = mapped_column(String(50), nullable=False)
     barcode: Mapped[str | None] = mapped_column(String(50))
+    # The "Renk" label this variant is, exactly as the admin typed it; NULL on a
+    # product that has no colour axis.
+    color_name: Mapped[str | None] = mapped_column(String(40))
+    # Order among the product's colours (0-based), as the admin arranged the pills.
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # False once the colour is retired: off the storefront and off the sheet, but
+    # still readable by the orders that contain it.
+    is_active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=sa_true()
+    )
     attributes: Mapped[dict | None] = mapped_column(JSONB)
     cost_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
     # Weight of one unit in kg (coal's 20 kg free-shipping minimum); None = unknown.

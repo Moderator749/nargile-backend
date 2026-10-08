@@ -25,6 +25,8 @@ class CartItemBreakdown(BaseModel):
     product_id: uuid.UUID | None = None
     sku: str
     product_name: str
+    # The "Renk" of the variant in the cart; null on a colourless product.
+    color_name: str | None = None
     quantity: int
     unit_price: Decimal
     line_total: Decimal

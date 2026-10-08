@@ -1,16 +1,23 @@
 """Reads and writes the admin's product sheet across its five tables.
 
-The sheet is one screen but five tables: products (info, colour, rule flags, the
-Fırsat block), product_variants (the code), inventory (four quotas),
-variant_prices (the currency × segment matrix) and flash_sales (the live sale
-price). Everything here is written in the caller's transaction, so a save is all
-or nothing.
+The sheet is one screen but five tables: products (info, the rule flags, the
+"Açıklama ve SEO" block, the Fırsat block), product_variants (one row per
+colour), inventory (four quotas per colour), variant_prices (the currency ×
+segment matrix) and flash_sales (the live sale price). Everything here is
+written in the caller's transaction, so a save is all or nothing.
+
+Colours are the variant axis: the sheet's colour pills become one variant each,
+and each variant owns its own four quotas. What the sheet holds once per product
+— the price matrix, the weight, the Fırsat price — is written to *every* colour,
+because the tables that carry it hang off the variant. That fan-out is what
+keeps one screen honest about a schema that can price colours apart later.
 
 flash_sales is derived, never edited by hand from here on: the Fırsat block on
-the product is the input, and `_sync_flash_sale` makes the sale row match it.
+the product is the input, and `_sync_flash_sale` makes the sale rows match it.
 That keeps one writer, so the storefront price and the sheet can't drift apart.
 """
 
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -41,6 +48,8 @@ from app.schemas.product_sheet import (
     SheetPriceRow,
     SheetRules,
     SheetStock,
+    SheetVariant,
+    fold,
 )
 
 # The sheet's stock boxes, in sheet order, and the quota each one fills.
@@ -80,9 +89,21 @@ PRODUCT_FIELDS = (
     "category_id",
     "color_names",
     "description",
+    "meta_title",
+    "meta_description",
     "image_urls",
     "youtube_video_url",
 )
+
+SKU_MAX = 50
+# A colour label as a stock code: Turkish letters folded to ASCII, the rest to
+# dashes. Mirrored by the migration that first split the colours out.
+_TR_ASCII = str.maketrans("ÇĞİIÖŞÜçğıiöşü", "CGIIOSUcgiiosu")
+
+
+def color_slug(label: str) -> str:
+    """"Açık Mavi" → "ACIK-MAVI"; "" when the label holds nothing codeable."""
+    return re.sub(r"[^A-Z0-9]+", "-", label.translate(_TR_ASCII).upper()).strip("-")
 
 _LOADS = (
     selectinload(Product.variants).selectinload(ProductVariant.prices),
@@ -118,23 +139,37 @@ async def load(db: AsyncSession, product_id: uuid.UUID) -> Product | None:
     )
 
 
-def sheet_variant(product: Product) -> ProductVariant | None:
-    """The variant the sheet edits, from an already-loaded product (see `_LOADS`).
+def sheet_variants(product: Product) -> list[ProductVariant]:
+    """The product's live colours, in the admin's order (see `_LOADS`).
 
-    One product, one variant; the first by SKU wins if a product from before the
-    sheet has several.
+    Retired colours are left out: they exist for the orders that contain them,
+    not for the sheet. A product from before colours had stock has one unnamed
+    variant, which is exactly one entry here.
     """
-    return min(product.variants, key=lambda v: v.sku) if product.variants else None
+    return sorted(
+        (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku)
+    )
 
 
-async def _fetch_sheet_variant(db: AsyncSession, product: Product) -> ProductVariant | None:
-    """Same choice as `sheet_variant`, but as a query: on the write path the
-    product may be brand new, whose `variants` would lazy-load mid-transaction."""
-    return await db.scalar(
-        select(ProductVariant)
-        .where(ProductVariant.product_id == product.id)
-        .order_by(ProductVariant.sku)
-        .limit(1)
+def sheet_variant(product: Product) -> ProductVariant | None:
+    """The first live colour — the only one on a colourless product."""
+    live = sheet_variants(product)
+    return live[0] if live else None
+
+
+async def _fetch_variants(db: AsyncSession, product: Product) -> list[ProductVariant]:
+    """Every variant of the product, retired ones included, as a query: on the
+    write path the product may be brand new, whose `variants` would lazy-load
+    mid-transaction. Retired rows are included because re-adding a colour has to
+    find and revive its own row rather than collide with it."""
+    return list(
+        (
+            await db.execute(
+                select(ProductVariant)
+                .where(ProductVariant.product_id == product.id)
+                .order_by(ProductVariant.position, ProductVariant.sku)
+            )
+        ).scalars()
     )
 
 
@@ -158,34 +193,192 @@ async def save(
         setattr(product, field, getattr(payload.opportunity, field))
     await db.flush()
 
-    variant = await _fetch_sheet_variant(db, product)
-    sku = (payload.sku or payload.base_code).strip()
-    if variant is None:
-        clash = await db.scalar(select(ProductVariant.id).where(ProductVariant.sku == sku))
-        if clash is not None:
-            raise SheetError(f"“{sku}” kodu başka bir ürüne ait")
-        variant = ProductVariant(product_id=product.id, sku=sku)
-        db.add(variant)
-        await db.flush()
-    elif variant.sku != sku:
-        clash = await db.scalar(
-            select(ProductVariant.id).where(ProductVariant.sku == sku, ProductVariant.id != variant.id)
-        )
-        if clash is not None:
-            raise SheetError(f"“{sku}” kodu başka bir ürüne ait")
-        variant.sku = sku
-    # Only when the caller actually sent it: the product form does not edit the
-    # weight, and an omitted field must leave the stored one alone.
-    if "weight_kg" in payload.model_fields_set:
-        variant.weight_kg = payload.weight_kg
-
-    await _sync_stock(db, variant, payload.stock)
-    await _sync_prices(db, variant, payload.prices, segments)
-    await _sync_flash_sale(db, variant, payload.opportunity, now)
+    variants = await _sync_variants(db, product, payload)
+    for variant, sheet in variants:
+        # Only when the caller actually sent it: the product form does not edit the
+        # weight, and an omitted field must leave the stored one alone.
+        if "weight_kg" in payload.model_fields_set:
+            variant.weight_kg = payload.weight_kg
+        await _sync_stock(db, variant, sheet.stock)
+        await _sync_prices(db, variant, payload.prices, segments)
+        await _sync_flash_sale(db, variant, payload.opportunity, now)
     await _sync_cross_sells(db, product, payload.related_product_ids)
 
     await db.flush()
     return product
+
+
+async def _sync_variants(
+    db: AsyncSession, product: Product, payload: ProductSheetWrite
+) -> list[tuple[ProductVariant, SheetVariant]]:
+    """Make the product's variants match the sheet's colours, and pair them up.
+
+    Each sheet entry is matched to a stored row by id, then by colour label — so
+    a colour the admin removed and added back finds its own row again, retired or
+    not, instead of colliding with it. A colour that has gone is deleted outright
+    when nothing was ever ordered from it, and retired (`is_active = False`, every
+    quota zeroed) when something was: an order line has to keep naming the thing
+    it sold.
+
+    When *nothing* in the sheet matches and the product has exactly one variant,
+    that variant becomes the sheet's first entry rather than being replaced. That
+    is the only reading of "this product now has colours" (or has stopped having
+    them, or had its one colour relabelled) that does not throw away the stock the
+    product is holding — the same choice the migration made when it split the
+    colours out. With two or more stored variants there is no such single answer,
+    so the unmatched ones go the usual way.
+    """
+    stored = await _fetch_variants(db, product)
+    by_id = {v.id: v for v in stored}
+    by_color = {fold(v.color_name): v for v in stored if v.color_name}
+
+    # Pass one: which stored row is each sheet entry?
+    matched: list[ProductVariant | None] = []
+    claimed: set[uuid.UUID] = set()
+    for sheet in payload.variants:
+        variant = by_id.get(sheet.id) if sheet.id else None
+        if variant is None and sheet.color:
+            variant = by_color.get(fold(sheet.color))
+        if variant is None and sheet.color is None:
+            # A colourless product's lone row may predate colours and have no label.
+            variant = next((v for v in stored if not v.color_name), None)
+        if variant is not None and variant.id in claimed:
+            variant = None  # an earlier entry already took it
+        if variant is not None:
+            claimed.add(variant.id)
+        matched.append(variant)
+
+    if matched and not claimed and len(stored) == 1:
+        matched[0] = stored[0]
+        claimed.add(stored[0].id)
+
+    base = (payload.sku or payload.base_code).strip()
+    # Codes other products own: deriving one of those is the admin's mistake, not
+    # something to quietly number around.
+    foreign = await _taken_skus(db, exclude=[v.id for v in stored])
+    mine: set[str] = set()
+
+    # Pass two: what each row should end up being.
+    targets: list[tuple[ProductVariant | None, str, SheetVariant]] = []
+    for sheet, variant in zip(payload.variants, matched):
+        sku = _variant_sku(base, sheet.color, foreign=foreign, mine=mine)
+        mine.add(sku)
+        targets.append((variant, sku, sheet))
+
+    await _park_swapped(db, targets)
+
+    paired: list[tuple[ProductVariant, SheetVariant]] = []
+    for position, (variant, sku, sheet) in enumerate(targets):
+        if variant is None:
+            variant = ProductVariant(product_id=product.id, sku=sku)
+            db.add(variant)
+            await db.flush()
+        else:
+            variant.sku = sku
+        variant.color_name = sheet.color
+        variant.position = position
+        variant.is_active = True
+        paired.append((variant, sheet))
+
+    for variant in stored:
+        if variant.id not in claimed:
+            await _retire_variant(db, variant)
+    return paired
+
+
+async def _park_swapped(
+    db: AsyncSession, targets: list[tuple[ProductVariant | None, str, SheetVariant]]
+) -> None:
+    """Move a code or label out of the way when another row of the same product is
+    about to take it.
+
+    Swapping two colours' labels (or their codes, which follow the labels) would
+    otherwise double a value for as long as one UPDATE: the unique SKU index and
+    the (product, colour) pair are both checked per row, not at commit, so the
+    flush would fail. Parking the rows on throwaway values first makes the swap
+    two steps, which is what it has to be. Nothing is parked when nothing moves,
+    so the usual save pays nothing for this.
+    """
+    wanted_skus = {sku for variant, sku, _ in targets if variant is None or variant.sku != sku}
+    wanted_colors = {
+        fold(sheet.color)
+        for variant, _, sheet in targets
+        if sheet.color and (variant is None or variant.color_name != sheet.color)
+    }
+    parked = [
+        variant
+        for variant, sku, sheet in targets
+        if variant is not None
+        and (
+            (variant.sku != sku and variant.sku in wanted_skus)
+            or (
+                variant.color_name
+                and variant.color_name != sheet.color
+                and fold(variant.color_name) in wanted_colors
+            )
+        )
+    ]
+    if not parked:
+        return
+    for variant in parked:
+        # Unique by construction, and not a code anything else could be called.
+        variant.sku = f"__{variant.id.hex}"[:SKU_MAX]
+        variant.color_name = None  # several NULLs are distinct under the constraint
+    await db.flush()
+
+
+async def _taken_skus(db: AsyncSession, exclude: list[uuid.UUID]) -> set[str]:
+    """Every SKU in use outside this product, so a derived one cannot shadow one."""
+    stmt = select(ProductVariant.sku)
+    if exclude:
+        stmt = stmt.where(ProductVariant.id.not_in(exclude))
+    return set((await db.execute(stmt)).scalars())
+
+
+def _variant_sku(base: str, color: str | None, *, foreign: set[str], mine: set[str]) -> str:
+    """The stock code for one colour: "<ürün kodu>-<RENK>", or the bare code when
+    the product has no colours (which is what it has always been).
+
+    A code another product owns is refused outright — that is a duplicate product
+    code, and the admin has to see it. A clash between two of *this* product's own
+    colours (two labels that spell the same code, or a label with nothing codeable
+    in it) is numbered around instead, because neither label is wrong.
+    """
+    slug = color_slug(color) if color else ""
+    tail = f"-{slug}" if slug else ""
+    candidate = f"{base[: SKU_MAX - len(tail)]}{tail}"
+    if candidate in foreign:
+        raise SheetError(f"“{candidate}” kodu başka bir ürüne ait")
+    if candidate not in mine:
+        return candidate
+
+    stem = slug or "RENK"
+    for attempt in range(2, 100):
+        tail = f"-{stem}-{attempt}"
+        numbered = f"{base[: SKU_MAX - len(tail)]}{tail}"
+        if numbered not in foreign and numbered not in mine:
+            return numbered
+    raise SheetError(f"“{base}” için boş bir stok kodu bulunamadı")
+
+
+async def _retire_variant(db: AsyncSession, variant: ProductVariant) -> None:
+    """Drop a colour the sheet no longer lists, or shelve it if it has been sold."""
+    sold = (
+        await db.scalar(select(OrderItem.id).where(OrderItem.variant_id == variant.id).limit(1))
+    ) is not None
+    if not sold:
+        await db.execute(delete(FlashSale).where(FlashSale.variant_id == variant.id))
+        for table in (VariantPrice, Inventory):
+            await db.execute(delete(table).where(table.variant_id == variant.id))
+        await db.delete(variant)
+        return
+    # Sold: keep the row for its order lines, but let nothing else reach it.
+    variant.is_active = False
+    sale = await db.scalar(select(FlashSale).where(FlashSale.variant_id == variant.id))
+    if sale is not None:
+        sale.is_active = False
+    for row in (await db.execute(select(Inventory).where(Inventory.variant_id == variant.id))).scalars():
+        row.quantity = 0
 
 
 async def _sync_stock(db: AsyncSession, variant: ProductVariant, stock: SheetStock) -> None:
@@ -349,22 +542,35 @@ async def duplicate(db: AsyncSession, product: Product, segments: dict[int, Segm
     """
     sheet = read(product, segments)
     payload = ProductSheetWrite(
-        **sheet.model_dump(exclude={"id", "variant_id", "sku", "stock_total", "related_products", "weight_kg"}),
-        sku=await _free_code(db, select(ProductVariant.sku), sheet.sku, 50),
+        **sheet.model_dump(
+            exclude={"id", "variant_id", "sku", "stock_total", "related_products", "weight_kg", "variants"}
+        ),
+        # The copy's colours are its own rows, so they carry the source's stock but
+        # none of its ids or codes — those would point the save back at the source.
+        variants=[SheetVariant(color=v.color, stock=v.stock) for v in sheet.variants],
         weight_kg=sheet.weight_kg,
     )
-    payload.base_code = await _free_code(db, select(Product.base_code), sheet.base_code, 30)
+    # One free code serves as both the product code and the stem its colours'
+    # stock codes are derived from, so `sku` is left for `save` to derive.
+    payload.base_code = await _free_code(db, sheet.base_code)
+    payload.sku = None
     payload.name = f"{sheet.name} (Kopya)"[:255]
     payload.is_published = False  # a draft until the admin says otherwise
     return await save(db, payload)
 
 
-async def _free_code(db: AsyncSession, existing, code: str, limit: int) -> str:
-    """"<code>-KOPYA", then -KOPYA2, -KOPYA3… until one is free within `limit`."""
-    taken = set((await db.execute(existing)).scalars())
+# A product code is 30 characters; its colours' stock codes add "-<RENK>" on top.
+BASE_CODE_MAX = 30
+
+
+async def _free_code(db: AsyncSession, code: str) -> str:
+    """"<code>-KOPYA", then -KOPYA2, -KOPYA3… until one no product and no stock
+    code has taken. Both pools, because the copy's code becomes both."""
+    taken = set((await db.execute(select(Product.base_code))).scalars())
+    taken |= set((await db.execute(select(ProductVariant.sku))).scalars())
     for n in range(1, 100):
         suffix = f"-KOPYA{'' if n == 1 else n}"
-        candidate = f"{code[: limit - len(suffix)]}{suffix}"
+        candidate = f"{code[: BASE_CODE_MAX - len(suffix)]}{suffix}"
         if candidate not in taken:
             return candidate
     raise SheetError("Kopya için boş bir ürün kodu bulunamadı")
@@ -397,11 +603,22 @@ async def is_sold(db: AsyncSession, product: Product) -> bool:
     ) is not None
 
 
+def _variant_stock(variant: ProductVariant) -> SheetStock:
+    rows = {i.warehouse_type: i.quantity for i in variant.inventory}
+    return SheetStock(**{field: rows.get(warehouse, 0) for field, _s, warehouse in STOCK_FIELDS})
+
+
 def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead:
     """The saved sheet, exactly as the form should reload it."""
-    variant = sheet_variant(product)
-    stock_rows = {i.warehouse_type: i.quantity for i in (variant.inventory if variant else [])}
-    stock = SheetStock(**{field: stock_rows.get(warehouse, 0) for field, _s, warehouse in STOCK_FIELDS})
+    live = sheet_variants(product)
+    variant = live[0] if live else None
+    sheet_colours = [
+        SheetVariant(id=v.id, color=v.color_name, sku=v.sku, stock=_variant_stock(v)) for v in live
+    ]
+    # The form's "Toplam Stok": every quota of every colour.
+    stock = SheetStock()
+    for colour in sheet_colours:
+        stock = stock + colour.stock
 
     by_currency: dict[CurrencyType, dict[SegmentType, SheetPriceCell]] = {c: {} for c in CurrencyType}
     for price in variant.prices if variant else []:
@@ -415,17 +632,23 @@ def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead
         )
 
     retail_id = next((sid for sid, code in segments.items() if code == SegmentType.RETAIL), None)
+    fields = {f: getattr(product, f) for f in PRODUCT_FIELDS}
+    # The colours the variants actually are, which is what the stock blocks are
+    # keyed on — a stored label the product's own list has lost would otherwise
+    # drop a colour (and its stock) out of the form.
+    fields["color_names"] = [v.color for v in sheet_colours if v.color]
     return ProductSheetRead(
         id=product.id,
         related_product_ids=[c.related_product_id for c in sorted(product.cross_sells, key=lambda c: c.position)],
         related_products=cross_sell_cards(product, retail_id),
         variant_id=variant.id if variant else uuid.UUID(int=0),
-        sku=variant.sku if variant else product.base_code,
+        sku=product.base_code,
         weight_kg=variant.weight_kg if variant else None,
         stock=stock,
+        variants=sheet_colours,
         stock_total=stock.total,
         prices=[SheetPriceRow(currency=c, cells=cells) for c, cells in by_currency.items()],
         rules=SheetRules(**{f: getattr(product, f) for f in RULE_FIELDS}),
         opportunity=SheetOpportunity(**{f: getattr(product, f) for f in OPPORTUNITY_FIELDS}),
-        **{f: getattr(product, f) for f in PRODUCT_FIELDS},
+        **fields,
     )
