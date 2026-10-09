@@ -117,14 +117,29 @@ def _line(item: OrderItem, catalog: LineCatalog) -> AdminOrderItemDetail:
     )
 
 
-def _billing_address(user: User) -> dict | None:
-    """The customer's standing invoice address, in the shape the order sheet
-    prints — the same five fields as the delivery address it sits beside, plus
-    the country when it is not this one.
+def _billing_address(order: Order, user: User) -> dict | None:
+    """Where this order's invoice goes, in the shape the order sheet prints —
+    the same five fields as the delivery address it sits beside, plus the
+    country when it is not this one.
 
-    None when they never gave one: a retail buyer is invoiced where they are
-    delivered, and the sheet says so.
+    The order's own snapshot wins when it has one: a buyer who asked for the
+    invoice to be made out to a firm gave that firm's registered address at
+    checkout, and the invoice has to show the address as it was then, not as the
+    account looks later.
+
+    Otherwise it is the customer's standing invoice address, and None when they
+    never gave one: a retail buyer is invoiced where they are delivered, and the
+    sheet says so.
     """
+    if order.invoice_address:
+        snapshot: dict = order.invoice_address
+        return {
+            "full_name": order.invoice_company_title or user.full_name,
+            "phone": user.phone,
+            "city": snapshot.get("city"),
+            "district": snapshot.get("district"),
+            "line": snapshot.get("line"),
+        }
     # The firm's address when the invoice is made out to one, the customer's own
     # otherwise: an invoice goes where it is addressed.
     by_kind = {a.kind: a for a in user.addresses}
@@ -162,7 +177,7 @@ def _list_item(order: Order, user: User, catalog: LineCatalog) -> AdminOrderList
         customer_name=user.full_name,
         customer_phone=user.phone,
         company_title=user.profile.company_title if user.profile else None,
-        billing_address=_billing_address(user),
+        billing_address=_billing_address(order, user),
         items=[_line(item, catalog) for item in order.items],
     )
 

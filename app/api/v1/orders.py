@@ -149,8 +149,12 @@ async def checkout(
             shipping_branch_name=payload.shipping_branch_name,
             invoice_to_company=payload.invoice_to_company,
             invoice_company_title=payload.invoice_company_title,
+            invoice_trade_name=payload.invoice_trade_name,
             invoice_tax_office=payload.invoice_tax_office,
             invoice_tax_number=payload.invoice_tax_number,
+            invoice_address=(
+                payload.invoice_address.model_dump() if payload.invoice_address else None
+            ),
             save_card=payload.save_card,
             distance_sales_accepted=payload.distance_sales_accepted,
             terms_accepted=payload.terms_accepted,

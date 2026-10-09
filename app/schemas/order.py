@@ -4,9 +4,9 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.core.tr_identity import normalize_vkn
+from app.core.tr_identity import normalize_tax_id
 from app.models.order import OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer
-from app.schemas.address import ShippingAddress, valid_contact_phone
+from app.schemas.address import InvoiceAddress, ShippingAddress, valid_contact_phone
 
 # Both Yurtiçi Kargo options; the agreement number belongs to the carrier, not
 # to one of its two ways of delivering.
@@ -65,8 +65,15 @@ class CheckoutRequest(BaseModel):
     # which then has to say which one. The account's own details are untouched.
     invoice_to_company: bool = False
     invoice_company_title: str | None = Field(default=None, max_length=200)
+    # "Firma Adı": the name the firm trades under. Optional — plenty of firms
+    # are known by their ünvan and have nothing else to add.
+    invoice_trade_name: str | None = Field(default=None, max_length=200)
     invoice_tax_office: str | None = Field(default=None, max_length=100)
     invoice_tax_number: str | None = Field(default=None, max_length=20)
+    # "Şirket Resmi Fatura Adresi": where the firm is registered, which is what
+    # the invoice has to show. Required with the three fields above, and
+    # separate from `shipping_address` even when they name the same place.
+    invoice_address: InvoiceAddress | None = None
     # "Kart bilgilerimi sonraki alışverişlerim için güvenle kaydet". Recorded as
     # a wish; the card itself is only ever held by the payment provider.
     save_card: bool = False
@@ -113,25 +120,34 @@ class CheckoutRequest(BaseModel):
 
     @model_validator(mode="after")
     def _invoiceable(self) -> "CheckoutRequest":
-        """An invoice to a firm has to say which firm.
+        """An invoice to a firm has to say which firm, and where it is.
 
-        A mistyped VKN is only discovered when the invoice is rejected, so it is
-        checked here. Details left over from an unticked box are dropped rather
-        than refused.
+        All four are required together: an invoice without a tax number, or
+        without the address the firm is registered at, is not one the shop can
+        issue. A sole proprietor is registered under a TCKN rather than a VKN,
+        so either is accepted — a mistyped number is otherwise only discovered
+        when the invoice is rejected.
+
+        Details left over from an unticked box are dropped rather than refused.
         """
         if not self.invoice_to_company:
             self.invoice_company_title = None
+            self.invoice_trade_name = None
             self.invoice_tax_office = None
             self.invoice_tax_number = None
+            self.invoice_address = None
             return self
 
         self.invoice_company_title = " ".join((self.invoice_company_title or "").split())
+        self.invoice_trade_name = " ".join((self.invoice_trade_name or "").split()) or None
         self.invoice_tax_office = " ".join((self.invoice_tax_office or "").split())
         if len(self.invoice_company_title) < 2:
             raise ValueError("Fatura için firma ünvanını girin")
         if len(self.invoice_tax_office) < 2:
             raise ValueError("Fatura için vergi dairesini girin")
-        self.invoice_tax_number = normalize_vkn(self.invoice_tax_number or "")
+        self.invoice_tax_number = normalize_tax_id(self.invoice_tax_number or "")
+        if self.invoice_address is None:
+            raise ValueError("Fatura için şirketin resmi fatura adresini girin")
         return self
 
 
@@ -174,8 +190,11 @@ class OrderRead(BaseModel):
     # Who the invoice is made out to, when it is not the customer themselves.
     invoice_to_company: bool = False
     invoice_company_title: str | None = None
+    invoice_trade_name: str | None = None
     invoice_tax_office: str | None = None
     invoice_tax_number: str | None = None
+    # {city, district, line}: the firm's registered address, as it was given.
+    invoice_address: dict | None = None
     save_card: bool = False
     # When the two agreements were accepted; no order is placed without them.
     agreements_accepted_at: datetime | None = None

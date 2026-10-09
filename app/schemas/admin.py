@@ -275,8 +275,11 @@ class AdminOrderListItem(BaseModel):
     # "Faturayı firmaya istiyorum": who to make this one out to.
     invoice_to_company: bool = False
     invoice_company_title: str | None = None
+    invoice_trade_name: str | None = None
     invoice_tax_office: str | None = None
     invoice_tax_number: str | None = None
+    # The firm's registered address, as this order recorded it.
+    invoice_address: dict | None = None
     save_card: bool = False
     agreements_accepted_at: datetime | None = None
     paid_at: datetime | None = None

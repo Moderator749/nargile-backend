@@ -125,8 +125,15 @@ class Order(Base):
         Boolean, nullable=False, default=False, server_default="false"
     )
     invoice_company_title: Mapped[str | None] = mapped_column(String(200))
+    # "Firma Adı": the name the firm trades under, when it differs from the
+    # registered ünvan above. Printed beside it, never instead of it.
+    invoice_trade_name: Mapped[str | None] = mapped_column(String(200))
     invoice_tax_office: Mapped[str | None] = mapped_column(String(100))
     invoice_tax_number: Mapped[str | None] = mapped_column(String(11))
+    # The firm's official billing address, frozen onto the order the way
+    # `shipping_address` is: {city, district, line}. The invoice is a document
+    # about the day it was issued, so it does not follow the account afterwards.
+    invoice_address: Mapped[dict | None] = mapped_column(JSONB)
     # "Kart bilgilerimi sonraki alışverişlerim için güvenle kaydet": the buyer's
     # wish, recorded here. No card data is ever stored by us — the payment
     # provider keeps the token.

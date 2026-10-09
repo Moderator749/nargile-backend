@@ -328,8 +328,10 @@ class CheckoutEngine:
         shipping_branch_name: str | None = None,
         invoice_to_company: bool = False,
         invoice_company_title: str | None = None,
+        invoice_trade_name: str | None = None,
         invoice_tax_office: str | None = None,
         invoice_tax_number: str | None = None,
+        invoice_address: dict | None = None,
         save_card: bool = False,
         distance_sales_accepted: bool = False,
         terms_accepted: bool = False,
@@ -352,6 +354,10 @@ class CheckoutEngine:
 
         `shipping_branch_name` is "Şubeme istiyorum": the firm's own branch this
         order is for, which is why its address is not the registered one.
+
+        The invoice fields are "faturayı firmaya istiyorum": who the invoice is
+        made out to and where that firm is registered, kept apart from the
+        delivery address even when they name the same place.
 
         The two agreements — mesafeli satış sözleşmesi and şartlar ve kurallar —
         are not optional: an order is a contract, and this is where the shop
@@ -417,8 +423,10 @@ class CheckoutEngine:
             shipping_branch_name=shipping_branch_name,
             invoice_to_company=invoice_to_company,
             invoice_company_title=invoice_company_title,
+            invoice_trade_name=invoice_trade_name,
             invoice_tax_office=invoice_tax_office,
             invoice_tax_number=invoice_tax_number,
+            invoice_address=invoice_address,
             save_card=save_card,
             agreements_accepted_at=datetime.now(timezone.utc),
             items=order_items,

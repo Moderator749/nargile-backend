@@ -215,6 +215,8 @@ class CustomerProfile(Base):
     # ── Fatura kimliği (business accounts, or an individual's corporate invoice)
     billing_entity_type: Mapped[str | None] = mapped_column(Enum(BillingEntity))
     company_title: Mapped[str | None] = mapped_column(String(255))  # Unvan
+    # Firma adı: what the firm is called day to day, when that is not its ünvan.
+    trade_name: Mapped[str | None] = mapped_column(String(200))
     # The name printed on the tax plate: the owner's for a sole proprietorship,
     # the company's for a company. Not the same thing as the contact person.
     tax_plate_name: Mapped[str | None] = mapped_column(String(150))
@@ -286,7 +288,10 @@ class CustomerAddress(Base):
 
     # ── Türkiye ─────────────────────────────────────────────────────────────
     neighbourhood: Mapped[str | None] = mapped_column(String(120))  # Mahalle / Köy
-    street: Mapped[str | None] = mapped_column(String(120))  # Cadde / Sokak
+    # Cadde / Sokak as the sign-up form asks it — and, when an address is edited
+    # at checkout as one free-text line ("Açık Adres"), that whole line, which is
+    # why it is as long as an address line rather than as long as a street name.
+    street: Mapped[str | None] = mapped_column(String(200))
     building_no: Mapped[str | None] = mapped_column(String(20))  # Bina no
     building_name: Mapped[str | None] = mapped_column(String(120))  # Bina adı
     door_no: Mapped[str | None] = mapped_column(String(20))  # Kapı no

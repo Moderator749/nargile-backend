@@ -129,6 +129,49 @@ class ShippingAddress(BaseModel):
         return self
 
 
+class InvoiceAddress(BaseModel):
+    """The official billing address of the firm an order is invoiced to.
+
+    Only what an invoice has to print: the province, the ilçe and the rest of
+    the address. There is no name or phone here — the firm's title is the name,
+    and where a parcel goes is a separate question (``ShippingAddress``), even
+    when the answer happens to be the same place.
+
+    Turkish only, because a personal order invoiced to a firm is a Turkish tax
+    document; a firm abroad buys as an export account.
+    """
+
+    city: str = Field(max_length=80)  # İl
+    district: str = Field(max_length=80)  # İlçe
+    # As long as the column that keeps it when the customer saves it to their
+    # account (``customer_addresses.street``).
+    line: str = Field(max_length=200)  # Açık adres
+
+    @field_validator("city", "district", "line", mode="before")
+    @classmethod
+    def _collapse(cls, value: str) -> str:
+        # Before the checks below, so whitespace alone cannot pass them.
+        return " ".join(value.split()) if isinstance(value, str) else value
+
+    @field_validator("city")
+    @classmethod
+    def _city(cls, value: str) -> str:
+        try:
+            return _BY_KEY[_key(value)]
+        except KeyError:
+            raise ValueError("Fatura adresindeki il 81 ilden biri olmalı") from None
+
+    @model_validator(mode="after")
+    def _complete(self) -> "InvoiceAddress":
+        # Said in Turkish, like the cart that asks for it: these reach the
+        # customer when something gets past the form.
+        if len(self.district) < 2:
+            raise ValueError("Fatura adresi için ilçe girin")
+        if len(self.line) < 5:
+            raise ValueError("Şirketin açık fatura adresini girin")
+        return self
+
+
 class StructuredAddress(BaseModel):
     """A Turkish address field by field, as the sign-up form asks for it.
 

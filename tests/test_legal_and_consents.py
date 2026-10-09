@@ -6,7 +6,9 @@ accepted. The texts themselves are rows an admin edits, read live by the cart,
 so what the next buyer accepts is what the panel last saved.
 
 The invoice is the other half of the blueprint's bireysel flow: a personal order
-can be made out to a firm, which then has to say which firm.
+can be made out to a firm, which then has to say which firm — its tax identity
+and the address it is registered at, kept on the order as its own snapshot so
+the delivery address is free to be somewhere else entirely.
 """
 
 import uuid
@@ -20,6 +22,21 @@ from app.core.legal_texts import DEFAULT_LEGAL, PRIVACY_NOTICE_BODY
 from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice, WarehouseType
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
 from tests.conftest import ADDRESS, CONSENTS, auth_header
+
+# The firm's registered address, as the invoice has to show it. Nothing to do
+# with where the parcel goes.
+INVOICE_ADDRESS = {
+    "city": "istanbul",
+    "district": "  Beşiktaş ",
+    "line": "  Levent Mah., Büyükdere  Caddesi No: 120, Kat 4 ",
+}
+CORPORATE = {
+    "invoice_to_company": True,
+    "invoice_company_title": "  Köşe  Kafe Ltd. Şti. ",
+    "invoice_tax_office": "Beşiktaş",
+    "invoice_tax_number": "123 456 7890",
+    "invoice_address": INVOICE_ADDRESS,
+}
 
 pytestmark = pytest.mark.asyncio
 
@@ -202,21 +219,21 @@ async def test_a_personal_order_can_be_invoiced_to_a_firm(
     placed = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(user),
-        json=_body(
-            variant,
-            **CONSENTS,
-            invoice_to_company=True,
-            invoice_company_title="  Köşe  Kafe Ltd. Şti. ",
-            invoice_tax_office="Beşiktaş",
-            invoice_tax_number="123 456 7890",
-            save_card=True,
-        ),
+        json=_body(variant, **CONSENTS, **CORPORATE, save_card=True),
     )
     assert placed.status_code == 201, placed.text
     order = placed.json()
     assert order["invoice_to_company"] is True
     assert order["invoice_company_title"] == "Köşe Kafe Ltd. Şti."
     assert (order["invoice_tax_office"], order["invoice_tax_number"]) == ("Beşiktaş", "1234567890")
+    # The firm's own address, tidied and held to the 81 provinces.
+    assert order["invoice_address"] == {
+        "city": "İstanbul",
+        "district": "Beşiktaş",
+        "line": "Levent Mah., Büyükdere Caddesi No: 120, Kat 4",
+    }
+    # And it did not become the delivery address: the parcel still goes to Ankara.
+    assert order["shipping_address"]["city"] == ADDRESS["city"]
     # The buyer asked for their card to be kept; we never hold the card itself.
     assert order["save_card"] is True
 
@@ -225,22 +242,49 @@ async def test_a_personal_order_can_be_invoiced_to_a_firm(
     row = next(o for o in rows.json() if o["id"] == order["id"])
     assert row["invoice_company_title"] == "Köşe Kafe Ltd. Şti."
     assert row["invoice_tax_number"] == "1234567890"
+    # The sheet's "Fatura Adresi" block prints this order's own snapshot, made
+    # out to the firm, rather than whatever the account says today.
+    assert row["billing_address"]["full_name"] == "Köşe Kafe Ltd. Şti."
+    assert (row["billing_address"]["city"], row["billing_address"]["district"]) == (
+        "İstanbul", "Beşiktaş",
+    )
+
+
+def _without(*fields: str) -> dict:
+    """The corporate invoice, with some of it missing."""
+    invoice = {k: v for k, v in CORPORATE.items() if k not in fields}
+    invoice["invoice_to_company"] = True
+    return invoice
 
 
 @pytest.mark.parametrize(
     ("invoice", "expected"),
     [
-        pytest.param({"invoice_tax_office": "Beşiktaş", "invoice_tax_number": "1234567890"}, "ünvan", id="no title"),
-        pytest.param({"invoice_company_title": "Köşe Kafe", "invoice_tax_number": "1234567890"}, "vergi dairesi", id="no tax office"),
-        pytest.param({"invoice_company_title": "Köşe Kafe", "invoice_tax_office": "Beşiktaş"}, "10 haneli", id="no tax number"),
+        pytest.param(_without("invoice_company_title"), "ünvan", id="no title"),
+        pytest.param(_without("invoice_tax_office"), "vergi dairesi", id="no tax office"),
+        pytest.param(_without("invoice_tax_number"), "10 (VKN)", id="no tax number"),
         pytest.param(
-            {"invoice_company_title": "Köşe Kafe", "invoice_tax_office": "Beşiktaş", "invoice_tax_number": "123"},
-            "10 haneli",
-            id="a mistyped tax number",
+            {**CORPORATE, "invoice_tax_number": "123"}, "10 (VKN)", id="a mistyped tax number",
+        ),
+        pytest.param(_without("invoice_address"), "fatura adresini", id="no address"),
+        pytest.param(
+            {**CORPORATE, "invoice_address": {**INVOICE_ADDRESS, "city": "Münih"}},
+            "81 ilden biri",
+            id="somewhere that is not a province",
+        ),
+        pytest.param(
+            {**CORPORATE, "invoice_address": {**INVOICE_ADDRESS, "district": " "}},
+            "ilçe girin",
+            id="no ilçe",
+        ),
+        pytest.param(
+            {**CORPORATE, "invoice_address": {**INVOICE_ADDRESS, "line": "  "}},
+            "açık fatura adresini",
+            id="no open address",
         ),
     ],
 )
-async def test_an_invoice_to_a_firm_has_to_say_which_firm(
+async def test_an_invoice_to_a_firm_has_to_say_which_firm_and_where(
     client: AsyncClient, db_session: AsyncSession, segments, invoice: dict, expected: str
 ):
     user = await _buyer(db_session, segments)
@@ -248,10 +292,55 @@ async def test_an_invoice_to_a_firm_has_to_say_which_firm(
     resp = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(user),
-        json=_body(variant, **CONSENTS, invoice_to_company=True, **invoice),
+        json=_body(variant, **CONSENTS, **invoice),
     )
     assert resp.status_code == 422, resp.text
     assert expected in resp.text
+
+
+async def test_a_sole_proprietor_is_invoiced_under_a_tckn(
+    client: AsyncClient, db_session: AsyncSession, segments
+):
+    """A şahıs şirketi has no VKN of its own, so its 11-digit TCKN stands in —
+    checksum and all, which is what tells a typo from a number."""
+    user = await _buyer(db_session, segments)
+    variant = await _variant(db_session, segments)
+    placed = await client.post(
+        "/api/v1/orders/checkout",
+        headers=auth_header(user),
+        json=_body(variant, **CONSENTS, **{**CORPORATE, "invoice_tax_number": "10000000146"}),
+    )
+    assert placed.status_code == 201, placed.text
+    assert placed.json()["invoice_tax_number"] == "10000000146"
+
+    refused = await client.post(
+        "/api/v1/orders/checkout",
+        headers=auth_header(user),
+        json=_body(variant, **CONSENTS, **{**CORPORATE, "invoice_tax_number": "10000000147"}),
+    )
+    assert refused.status_code == 422, refused.text
+
+
+async def test_the_invoice_address_is_not_the_delivery_address(
+    client: AsyncClient, db_session: AsyncSession, segments
+):
+    """The whole point of the two snapshots: a buyer writes the purchase off to
+    their firm in İstanbul and has the parcel sent to a branch in Ankara."""
+    user = await _buyer(db_session, segments)
+    variant = await _variant(db_session, segments)
+    placed = await client.post(
+        "/api/v1/orders/checkout",
+        headers=auth_header(user),
+        json=_body(
+            variant, **CONSENTS, **CORPORATE,
+            shipping_address={**ADDRESS, "city": "Ankara", "district": "Çankaya"},
+        ),
+    )
+    assert placed.status_code == 201, placed.text
+    order = placed.json()
+    assert (order["invoice_address"]["city"], order["shipping_address"]["city"]) == (
+        "İstanbul", "Ankara",
+    )
 
 
 async def test_details_left_from_an_unticked_box_are_forgotten(
@@ -264,13 +353,15 @@ async def test_details_left_from_an_unticked_box_are_forgotten(
         "/api/v1/orders/checkout",
         headers=auth_header(user),
         json=_body(
-            variant, **CONSENTS, invoice_company_title="Hayalet Ltd.", invoice_tax_number="1234567890"
+            variant, **CONSENTS, invoice_company_title="Hayalet Ltd.",
+            invoice_tax_number="1234567890", invoice_address=INVOICE_ADDRESS,
         ),
     )
     assert placed.status_code == 201, placed.text
     assert placed.json()["invoice_to_company"] is False
     assert placed.json()["invoice_company_title"] is None
     assert placed.json()["invoice_tax_number"] is None
+    assert placed.json()["invoice_address"] is None
 
 
 async def test_a_branch_parcel_can_carry_the_buyers_own_yurtici_agreement(

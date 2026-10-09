@@ -15,10 +15,18 @@ from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
 from app.models.loyalty import LoyaltyLedger, TransactionType
 from app.models.order import Order, OrderStatus
-from app.models.user import AccountType, AddressKind, CustomerAddress, User
-from app.schemas.address import address_line, international_line
+from app.models.user import (
+    AccountType,
+    AddressKind,
+    BillingEntity,
+    CustomerAddress,
+    CustomerProfile,
+    User,
+)
+from app.schemas.address import InvoiceAddress, address_line, international_line
 from app.schemas.b2b import B2BApplicationCreate, B2BApplicationRead
 from app.schemas.customer import SavedAddress
+from app.schemas.invoice import CorporateInvoiceDetails
 from app.schemas.wallet import BankAccountRead, KumbaraRead, WalletEntry, WalletLot, WalletRead
 from app.services.wallet import get_wallet, kumbara_progress
 
@@ -146,6 +154,10 @@ def _saved(user: User, row: CustomerAddress) -> SavedAddress:
 async def my_addresses(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """The addresses the customer gave at sign-up, to pick from at checkout.
 
+    The customer's own invoice address comes first, since that is the one
+    checkout opens on; a "Kurumsal Fatura Adresi" follows it. The rows have no
+    order of their own, so it is given here rather than left to the database.
+
     Checkout never writes one back: an order keeps its own frozen copy, so
     shipping somewhere once does not quietly change what is on file.
     """
@@ -154,7 +166,152 @@ async def my_addresses(user: User = Depends(get_current_user), db: AsyncSession 
         .where(User.id == user.id)
         .options(selectinload(User.profile), selectinload(User.addresses))
     )
-    return [_saved(loaded, row) for row in loaded.addresses]
+    rows = sorted(loaded.addresses, key=lambda row: row.kind != AddressKind.BILLING)
+    return [_saved(loaded, row) for row in rows]
+
+
+# ── Fatura bilgileri ────────────────────────────────────────────────────────
+#
+# Checkout shows what is on file and lets the customer correct it there
+# ("Düzenle"), which is the only way these rows change: placing an order never
+# writes back by itself, because one order's invoice is not a decision about the
+# account. What is saved here is what the next cart starts from.
+
+
+def _as_line(address: InvoiceAddress) -> dict:
+    """An invoice address as a stored row's fields.
+
+    The cart asks for the address as one line, so that line is what the row
+    keeps — in ``street``, the field the single-line form of a stored address is
+    built from. The parts sign-up asks for separately (bina, kapı) are cleared
+    rather than left to contradict it.
+    """
+    return {
+        "country": TURKEY,
+        "city": address.city,
+        "district": address.district,
+        "street": address.line,
+        "neighbourhood": None,
+        "building_no": None,
+        "building_name": None,
+        "door_no": None,
+        "postal_code": None,
+        "address_line1": None,
+        "address_line2": None,
+    }
+
+
+async def _upsert_address(db: AsyncSession, user: User, kind: AddressKind, address: InvoiceAddress) -> None:
+    row = await db.scalar(
+        select(CustomerAddress).where(CustomerAddress.user_id == user.id, CustomerAddress.kind == kind)
+    )
+    if row is None:
+        row = CustomerAddress(user_id=user.id, kind=kind)
+        db.add(row)
+    for field, value in _as_line(address).items():
+        setattr(row, field, value)
+
+
+async def _profile(db: AsyncSession, user: User) -> CustomerProfile:
+    profile = await db.scalar(select(CustomerProfile).where(CustomerProfile.user_id == user.id))
+    if profile is None:
+        profile = CustomerProfile(user_id=user.id)
+        db.add(profile)
+    return profile
+
+
+@router.get("/me/corporate-invoice", response_model=CorporateInvoiceDetails | None)
+async def my_corporate_invoice(
+    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+):
+    """The firm this customer has us invoice, or null when there is none yet.
+
+    Null is also the answer when the details are half there — an account that
+    has a firm's address but no tax number has nothing the cart could prefill a
+    complete invoice from, and the cart asks for all of it anyway.
+    """
+    loaded = await db.scalar(
+        select(User)
+        .where(User.id == user.id)
+        .options(selectinload(User.profile), selectinload(User.addresses))
+    )
+    profile = loaded.profile
+    row = next(
+        (a for a in loaded.addresses if a.kind == AddressKind.CORPORATE_BILLING and a.country == TURKEY),
+        None,
+    )
+    if profile is None or row is None or not profile.company_title or not profile.tax_number:
+        return None
+    if not row.district or not profile.tax_office:
+        return None
+    return CorporateInvoiceDetails(
+        company_title=profile.company_title,
+        trade_name=profile.trade_name,
+        address=InvoiceAddress(
+            city=row.city,
+            district=row.district,
+            line=address_line(
+                neighbourhood=row.neighbourhood,
+                street=row.street,
+                building_no=row.building_no,
+                building_name=row.building_name,
+                door_no=row.door_no,
+            ),
+        ),
+        tax_office=profile.tax_office,
+        tax_number=profile.tax_number,
+    )
+
+
+@router.put("/me/corporate-invoice", response_model=CorporateInvoiceDetails)
+async def save_my_corporate_invoice(
+    payload: CorporateInvoiceDetails,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Keep this firm on file, so the next order is already filled in.
+
+    Only an individual has this to say: a business account is invoiced to its
+    own firm, and its sign-up details are not something checkout may rewrite.
+    """
+    if user.account_type != AccountType.INDIVIDUAL:
+        raise HTTPException(
+            status_code=403,
+            detail="Kurumsal hesapların fatura bilgileri kayıt sırasında alınır",
+        )
+    profile = await _profile(db, user)
+    profile.company_title = payload.company_title
+    profile.trade_name = payload.trade_name
+    profile.tax_office = payload.tax_office
+    profile.tax_number = payload.tax_number
+    # A TCKN is a person's number, so it is a şahıs firması; ten digits is a
+    # company's. The customer never has to answer a question we can read.
+    profile.billing_entity_type = (
+        BillingEntity.SOLE_PROPRIETOR if len(payload.tax_number) == 11 else BillingEntity.COMPANY
+    )
+    await _upsert_address(db, user, AddressKind.CORPORATE_BILLING, payload.address)
+    await db.commit()
+    return payload
+
+
+@router.put("/me/billing-address", response_model=InvoiceAddress)
+async def save_my_billing_address(
+    payload: InvoiceAddress,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The customer's own invoice address, corrected at checkout.
+
+    An individual's to change: a firm is invoiced where it is registered, and
+    that address is the one its prices and its paperwork hang off.
+    """
+    if user.account_type != AccountType.INDIVIDUAL:
+        raise HTTPException(
+            status_code=403, detail="Kurumsal hesapların fatura adresi kayıt sırasında alınır"
+        )
+    await _upsert_address(db, user, AddressKind.BILLING, payload)
+    await db.commit()
+    return payload
 
 
 @router.get("/bank-accounts", response_model=list[BankAccountRead])
