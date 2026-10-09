@@ -52,6 +52,7 @@ async def list_customers(
     q: str | None = Query(None, max_length=100, description="Email, name or company title"),
     account_type: AccountType | None = Query(None),
     segment: SegmentType | None = Query(None),
+    city: str | None = Query(None, max_length=80, description="Şehir, as the grid shows it"),
     order_by: CustomerSort | None = Query(None, description="name | created | orders"),
     order_dir: SortDirection = Query(SortDirection.ASC),
     skip: int = Query(0, ge=0),
@@ -60,6 +61,9 @@ async def list_customers(
     db: AsyncSession = Depends(get_db),
 ):
     """The customers grid: who registered, as what, where, on which price list.
+
+    Filterable by account type, price list and city; searchable by name, unvan or
+    e-mail.
 
     Newest first unless asked otherwise, because the newest account is the one
     waiting to be looked at. The X-Total-Count header carries the number of
@@ -97,6 +101,10 @@ async def list_customers(
         filters.append(User.account_type == account_type)
     if segment is not None:
         filters.append(CustomerSegment.code == segment)
+    if city and city.strip():
+        # The city the row shows, which is the one address the join picked: an
+        # admin filters the column in front of them, not a hidden second address.
+        filters.append(places.c.city == city.strip())
 
     # Outer joins throughout: an account has a profile only if it registered
     # through the current form, and a segment only if one was assigned.
@@ -161,6 +169,22 @@ async def _customer(db: AsyncSession, user_id: uuid.UUID) -> User:
     if user is None:
         raise HTTPException(status_code=404, detail="Customer not found")
     return user
+
+
+@router.get("/customers/cities", response_model=list[str])
+async def customer_cities(
+    _admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
+):
+    """Every city the customers are actually in, for the grid's filter.
+
+    Declared before ``/customers/{user_id}`` so the path is not read as an id.
+    Drawn from the data rather than the list of 81 provinces: it is shorter, it
+    is all reachable, and it includes Berlin.
+    """
+    rows = await db.execute(
+        select(CustomerAddress.city).distinct().order_by(CustomerAddress.city)
+    )
+    return [city for city in rows.scalars() if city]
 
 
 async def _detail(db: AsyncSession, user_id: uuid.UUID) -> AdminCustomerDetail:

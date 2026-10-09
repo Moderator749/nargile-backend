@@ -48,8 +48,13 @@ class ShippingBreakdown(BaseModel):
     # buyer's consent at checkout.
     receiver_pays: bool
     # coal_weight: a coal-dominant cart (> coal_max_ratio) below coal_min_kg.
-    # courier: Istanbul courier, paid to the courier on delivery, by distance.
-    reason: Literal["free", "below_threshold", "coal_weight", "courier"]
+    # freight: nakliye ambarı, which collects its own fee from the receiver.
+    # international: freight and customs, quoted after the order.
+    # tier_price: a B2B account, whose price list does not include carriage, so
+    # the free-shipping threshold does not apply to it at all.
+    reason: Literal[
+        "free", "below_threshold", "coal_weight", "freight", "international", "tier_price"
+    ]
     free_threshold: Decimal
     coal_total: Decimal
     coal_ratio: Decimal  # 0..1
@@ -66,6 +71,10 @@ class VolumeTier(BaseModel):
 
 class CartCalculateResponse(BaseModel):
     subtotal: Decimal
+    # Whether this account gets the retail promotions (ParaPuan, ciro and havale
+    # discounts). False means the amounts below are zero by rule: a B2B account
+    # pays its tier price net. See app.services.perks.
+    perks_eligible: bool = True
     cargo_cost: Decimal
     shipping: ShippingBreakdown
     # Volume discount ("ciro indirimi"), on the subtotal.

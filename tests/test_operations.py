@@ -17,7 +17,7 @@ from app.models.order import Order, OrderStatus
 from app.models.user import SegmentType, User
 from app.schemas.wallet import normalise_tr_iban
 from app.services.wallet import get_wallet
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 ISTANBUL_ADDRESS = {**ADDRESS, "city": "istanbul", "district": "Kadıköy"}
 VALID_IBAN = "TR33 0006 1005 1978 6457 8413 26"  # checksum-valid test IBAN
@@ -25,6 +25,7 @@ VALID_IBAN = "TR33 0006 1005 1978 6457 8413 26"  # checksum-valid test IBAN
 
 async def _checkout(client, user, variant, qty=1, **extra):
     body = {
+        **CONSENTS,
         "payment_method": "BANK_TRANSFER",
         "items": [{"variant_id": str(variant.id), "quantity": qty}],
         "shipping_address": ADDRESS,
@@ -66,7 +67,7 @@ async def test_bank_transfer_order_awaits_transfer_with_address(client: AsyncCli
     assert resp.status_code == 201, resp.text
     order = resp.json()
     assert order["status"] == "AWAITING_TRANSFER"
-    assert order["shipping_method"] == "CARGO"
+    assert order["shipping_method"] == "YURTICI_DOOR"
     assert order["shipping_address"]["city"] == "Ankara"
 
 
@@ -81,7 +82,7 @@ async def test_checkout_requires_an_address(client: AsyncClient, customer_user: 
     resp = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(customer_user),
-        json={"payment_method": "BANK_TRANSFER", "items": [{"variant_id": str(normal_v.id), "quantity": 1}]},
+        json={**CONSENTS, "payment_method": "BANK_TRANSFER", "items": [{"variant_id": str(normal_v.id), "quantity": 1}]},
     )
     assert resp.status_code == 422
 
@@ -120,7 +121,7 @@ async def test_admin_order_list_carries_the_order_sheet_data(
 
     assert order["customer_email"] == customer_user.email
     assert order["customer_phone"] == customer_user.phone
-    assert order["shipping_method"] == "CARGO"
+    assert order["shipping_method"] == "YURTICI_DOOR"
     assert order["shipping_address"]["city"] == "Ankara"
     assert order["paid_at"] is None and order["cancelled_at"] is None
     line = order["items"][0]
@@ -194,46 +195,52 @@ def test_iban_validation_rejects_bad_ibans(iban: str):
         normalise_tr_iban(iban)
 
 
-# ── Istanbul courier ─────────────────────────────────────────────────────────
+# ── Shipping methods ─────────────────────────────────────────────────────────
 
 
-async def test_courier_quote_is_free_and_labelled(client: AsyncClient, customer_user: User, catalog):
+async def test_the_istanbul_run_is_not_a_bireysel_option(
+    client: AsyncClient, customer_user: User, catalog
+):
+    """It is the shop's own van to a firm registered in İstanbul; a person's
+    parcel goes by Yurtiçi, to a door or to a branch."""
     normal_v, _ = catalog
-    resp = await client.post(
-        "/api/v1/orders/calculate-cart",
-        headers=auth_header(customer_user),
-        json={
-            "payment_method": "CREDIT_CARD",
-            "items": [{"variant_id": str(normal_v.id), "quantity": 1}],
-            "shipping_method": "COURIER_ISTANBUL",
-            "shipping_address": ISTANBUL_ADDRESS,
-        },
+    refused = await _checkout(
+        client, customer_user, normal_v, shipping_method="ISTANBUL_FREE",
+        shipping_address=ISTANBUL_ADDRESS,
     )
-    data = resp.json()
-    assert Decimal(data["cargo_cost"]) == Decimal("0.00")
-    assert data["shipping"]["reason"] == "courier"
+    assert refused.status_code == 422
+    assert "hesabınız için geçerli değil" in refused.json()["detail"]
 
 
-async def test_courier_only_for_istanbul(client: AsyncClient, customer_user: User, catalog):
+async def test_a_branch_collection_is_recorded_as_one(
+    client: AsyncClient, customer_user: User, catalog
+):
     normal_v, _ = catalog
-    resp = await _checkout(client, customer_user, normal_v, shipping_method="COURIER_ISTANBUL")
-    assert resp.status_code == 422
-    ok = await _checkout(client, customer_user, normal_v, shipping_method="COURIER_ISTANBUL", shipping_address=ISTANBUL_ADDRESS)
-    assert ok.status_code == 201, ok.text
-    assert ok.json()["shipping_method"] == "COURIER_ISTANBUL"
-    assert Decimal(ok.json()["shipping_cost"]) == Decimal("0.00")
-    assert ok.json()["shipping_address"]["city"] == "İstanbul"  # canonical spelling
+    placed = await _checkout(
+        client, customer_user, normal_v, shipping_method="YURTICI_BRANCH",
+        shipping_address=ISTANBUL_ADDRESS,
+    )
+    assert placed.status_code == 201, placed.text
+    assert placed.json()["shipping_method"] == "YURTICI_BRANCH"
+    assert Decimal(placed.json()["shipping_cost"]) == Decimal("0.00")
+    assert placed.json()["shipping_address"]["city"] == "İstanbul"  # canonical spelling
 
 
-async def test_admin_filters_courier_orders(client: AsyncClient, admin_user: User, customer_user: User, catalog):
+async def test_admin_filters_orders_by_shipping_method(
+    client: AsyncClient, admin_user: User, customer_user: User, catalog
+):
     normal_v, _ = catalog
-    courier = (await _checkout(client, customer_user, normal_v, shipping_method="COURIER_ISTANBUL", shipping_address=ISTANBUL_ADDRESS)).json()
-    cargo = (await _checkout(client, customer_user, normal_v)).json()
+    branch = (await _checkout(
+        client, customer_user, normal_v, shipping_method="YURTICI_BRANCH",
+        shipping_address=ISTANBUL_ADDRESS,
+    )).json()
+    door = (await _checkout(client, customer_user, normal_v)).json()
     rows = (await client.get(
-        "/api/v1/admin/orders", headers=auth_header(admin_user), params={"shipping_method": "COURIER_ISTANBUL", "limit": 200}
+        "/api/v1/admin/orders", headers=auth_header(admin_user),
+        params={"shipping_method": "YURTICI_BRANCH", "limit": 200},
     )).json()
     ids = {r["id"] for r in rows}
-    assert courier["id"] in ids and cargo["id"] not in ids
+    assert branch["id"] in ids and door["id"] not in ids
 
 
 async def test_last_address_prefill(client: AsyncClient, customer_user: User, catalog):
@@ -361,6 +368,7 @@ async def test_receiver_pays_order_charges_no_carriage_and_needs_consent(
     cheap = await _seed_cheap_variant(db_session, segments[SegmentType.RETAIL].id)
 
     body = {
+        **CONSENTS,
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(cheap.id), "quantity": 1}],
         "shipping_address": ADDRESS,
@@ -383,6 +391,7 @@ async def test_free_shipping_order_is_paid_by_the_shop(client: AsyncClient, cust
     """A cart over the threshold needs no consent: the shop pays the carrier."""
     normal_v, _ = catalog
     body = {
+        **CONSENTS,
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(normal_v.id), "quantity": 1}],
         "shipping_address": ADDRESS,

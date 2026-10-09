@@ -264,18 +264,79 @@ async def test_the_cards_the_form_no_longer_offers_are_refused(client: AsyncClie
 
 
 @pytest.mark.parametrize("account_type", ["INDIVIDUAL", "CAFE", "TOBACCO_SHOP"])
-async def test_no_sign_up_asks_for_a_price_group_or_gets_one(
+async def test_no_sign_up_asks_for_a_price_group_or_is_granted_one(
     client: AsyncClient, db_session: AsyncSession, account_type: str
 ):
-    """Every self-service account trades at retail. Which tier a firm should
-    have is an admin's to grant, from the queue a customer joins by applying
-    from their account page — not something asked on the way to an account."""
+    """Nobody is asked which group they would like, and nobody is given one:
+    every self-service account trades at retail until an admin says otherwise.
+    A payload that asks anyway is ignored."""
     body = individual() if account_type == "INDIVIDUAL" else business(account_type)
     created = await register(client, {**body, "requested_segment": "DEALER"})
     assert await segment_of(db_session, created["id"]) == SegmentType.RETAIL
+
+
+@pytest.mark.parametrize(
+    ("account_type", "suggested"),
+    [
+        pytest.param("CAFE", SegmentType.CAFE, id="a kafe is suggested the kafe list"),
+        pytest.param("TOBACCO_SHOP", SegmentType.DEALER, id="a shop resells, so bayi"),
+    ],
+)
+async def test_a_firm_puts_itself_in_the_approval_queue_by_registering(
+    client: AsyncClient, db_session: AsyncSession, account_type: str, suggested: SegmentType
+):
+    """A firm that registered and was never looked at would sit at retail prices
+    with nobody aware of it, so sign-up opens the application itself."""
+    created = await register(client, business(account_type))
+    application = await db_session.scalar(
+        select(B2BApplication).where(B2BApplication.user_id == uuid.UUID(created["id"]))
+    )
+    assert application is not None, "a business sign-up should be waiting for an admin"
+    assert application.status == "PENDING"
+    # A suggestion read off what they sell, not a grant: still retail.
+    assert application.requested_segment == suggested
+    assert await segment_of(db_session, created["id"]) == SegmentType.RETAIL
+    # Carried over from the form, so nothing is typed twice.
+    assert (application.company_title, application.tax_number, application.tax_office) == (
+        COMPANY["title"], VKN, COMPANY["tax_office"],
+    )
+
+
+async def test_a_bireysel_sign_up_opens_no_application(
+    client: AsyncClient, db_session: AsyncSession
+):
+    created = await register(client, individual())
     assert await db_session.scalar(
         select(B2BApplication.id).where(B2BApplication.user_id == uuid.UUID(created["id"]))
     ) is None
+
+
+async def test_the_admin_queue_shows_a_firm_the_moment_it_registers(
+    client: AsyncClient, admin_user: User
+):
+    created = await register(client, business("TOBACCO_SHOP"))
+    pending = await client.get("/api/v1/admin/b2b-applications", headers=auth_header(admin_user))
+    assert pending.status_code == 200, pending.text
+    waiting = next(a for a in pending.json() if a["user_id"] == created["id"])
+    assert (waiting["status"], waiting["requested_segment"]) == ("PENDING", "DEALER")
+    assert waiting["company_title"] == COMPANY["title"]
+
+
+async def test_approving_what_a_sign_up_opened_grants_the_price_list(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User
+):
+    """The whole point of the queue: one approval and the firm is on its list."""
+    created = await register(client, business("CAFE"))
+    application = await db_session.scalar(
+        select(B2BApplication).where(B2BApplication.user_id == uuid.UUID(created["id"]))
+    )
+    approved = await client.post(
+        f"/api/v1/admin/b2b-applications/{application.id}/approve",
+        headers=auth_header(admin_user),
+        json={},
+    )
+    assert approved.status_code == 200, approved.text
+    assert await segment_of(db_session, created["id"]) == SegmentType.CAFE
 
 
 @pytest.mark.parametrize(

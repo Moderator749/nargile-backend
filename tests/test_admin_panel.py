@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.site import ANNOUNCEMENT_ID, SiteAnnouncement
 from app.models.user import User
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 
 BANNER_FIELDS = (
@@ -279,7 +279,7 @@ async def test_admin_orders_include_customer(
     created = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(customer_user),
-        json={
+        json={**CONSENTS, 
             "payment_method": "BANK_TRANSFER",
             "items": [{"variant_id": str(normal_v.id), "quantity": 1}],
             "shipping_address": ADDRESS,

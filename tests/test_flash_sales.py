@@ -12,7 +12,7 @@ from app.models.catalog import Inventory, Product
 from app.models.promotion import FlashSale
 from app.models.user import User
 from app.services.flash_sales import discounted_price
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 
 def _now() -> datetime:
@@ -192,6 +192,7 @@ async def test_buying_on_offer_spends_the_offer_stock(
     product_id = normal_v.product_id  # read now: attributes expire on commit elsewhere
     await sales(end=None, stock=2)
     body = {
+        **CONSENTS,
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(normal_v.id), "quantity": 2}],
         "shipping_address": ADDRESS,

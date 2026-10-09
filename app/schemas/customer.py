@@ -105,6 +105,26 @@ class AdminCustomerDetail(BaseModel):
     requested_segment: SegmentType | None = None
 
 
+class SavedAddress(BaseModel):
+    """A stored invoice address, offered at checkout as somewhere to ship to.
+
+    Every field but the kind and the country is optional: it prefills the
+    delivery form, which validates what is actually sent. An address on file is
+    worth offering even when the account predates the field that would complete
+    it.
+    """
+
+    kind: AddressKind
+    label: str
+    full_name: str | None = None
+    phone: str | None = None
+    country: str
+    city: str
+    district: str | None = None
+    postal_code: str | None = None
+    line: str
+
+
 class SegmentAssign(BaseModel):
     """Which price list this customer buys from, from now on."""
 

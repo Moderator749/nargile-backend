@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import Inventory, ProductVariant, WarehouseType
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 QUOTAS = ("bayi", "toptan", "kafe", "perakende")
 
@@ -194,7 +194,7 @@ async def test_buying_one_colour_leaves_the_others_alone(
     resp = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(customer_user),
-        json={
+        json={**CONSENTS, 
             "payment_method": "CREDIT_CARD",
             "items": [{"variant_id": siyah["id"], "quantity": 2}],
             "shipping_address": ADDRESS,
@@ -265,7 +265,7 @@ async def test_each_colour_sells_from_its_own_segment_quota(
     resp = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(cafe),
-        json={
+        json={**CONSENTS, 
             "payment_method": "CREDIT_CARD",
             "items": [{"variant_id": sheet["variants"][0]["id"], "quantity": 4}],
             "shipping_address": ADDRESS,
@@ -322,7 +322,7 @@ async def test_removing_a_sold_colour_retires_it_instead(
     order = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(customer_user),
-        json={
+        json={**CONSENTS, 
             "payment_method": "CREDIT_CARD",
             "items": [{"variant_id": siyah["id"], "quantity": 1}],
             "shipping_address": ADDRESS,
@@ -372,7 +372,7 @@ async def test_re_adding_a_retired_colour_revives_its_own_row(
     await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(customer_user),
-        json={
+        json={**CONSENTS, 
             "payment_method": "CREDIT_CARD",
             "items": [{"variant_id": siyah["id"], "quantity": 1}],
             "shipping_address": ADDRESS,

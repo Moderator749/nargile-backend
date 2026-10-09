@@ -16,6 +16,8 @@ from app.api.v1.admin_uploads import router as admin_uploads_router
 from app.api.v1.brands import router as brands_router
 from app.api.v1.home_content import admin as admin_home_content_router
 from app.api.v1.home_content import router as home_content_router
+from app.api.v1.legal import router as legal_router
+from app.api.v1.settings import router as settings_router
 from app.api.v1.exchange_rates import router as exchange_rates_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -36,3 +38,5 @@ api_router.include_router(account_router)
 api_router.include_router(admin_customers_router)
 api_router.include_router(admin_dashboard_router)
 api_router.include_router(admin_uploads_router)
+api_router.include_router(legal_router)
+api_router.include_router(settings_router)

@@ -23,7 +23,7 @@ from app.models.loyalty import LoyaltyLedger, TransactionType
 from app.models.order import Order, OrderStatus, PaymentMethod
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
 from app.services.loyalty_service import get_user_loyalty_balance
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -179,7 +179,7 @@ async def test_checkout_with_points_writes_spent_ledger(
 
     await _credit_points(db_session, user.id, 300)
 
-    resp = await client.post("/api/v1/orders/checkout", headers=auth_header(user), json={
+    resp = await client.post("/api/v1/orders/checkout", headers=auth_header(user), json={**CONSENTS, 
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": 1}],
         "points_to_redeem": 300,

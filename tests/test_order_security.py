@@ -7,11 +7,12 @@ from httpx import AsyncClient
 
 from app.models.catalog import ProductVariant
 from app.models.user import User
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 
 def _body(variant: ProductVariant, quantity: int = 1, **extra) -> dict:
     return {
+        **CONSENTS,
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": str(variant.id), "quantity": quantity}],
         "shipping_address": ADDRESS,
@@ -32,7 +33,7 @@ def _body(variant: ProductVariant, quantity: int = 1, **extra) -> dict:
     ],
 )
 async def test_order_endpoints_require_auth(client: AsyncClient, method: str, path: str):
-    resp = await client.request(method, path, json={})
+    resp = await client.request(method, path, json={**CONSENTS, })
     assert resp.status_code in (401, 403)
 
 

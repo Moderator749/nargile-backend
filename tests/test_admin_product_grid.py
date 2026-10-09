@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice, WarehouseType
 from app.models.promotion import FlashSale
 from app.models.user import User
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 
 def _sheet(code: str, name: str, *, price: str, stock: int, **overrides) -> dict:
@@ -122,7 +122,7 @@ async def test_a_sold_product_is_kept_and_reported(
     placed = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(customer_user),
-        json={
+        json={**CONSENTS, 
             "payment_method": "CREDIT_CARD",
             "items": [{"variant_id": sold["variant_id"], "quantity": 1}],
             "shipping_address": ADDRESS,

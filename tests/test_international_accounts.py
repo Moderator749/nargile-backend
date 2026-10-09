@@ -4,8 +4,9 @@ The fourth account type is held to none of the Turkish rules — no TC checksum,
 no VKN length, no province from the list of 81, no mahalle — and to a few of
 its own: a real country, an address line, and a word on what it buys for. Both
 answers to that are businesses; there is no private export customer. Like every
-other sign-up it is asked for no price group: international pricing is quoted by
-hand, as is the freight, which is checkout's question anyway.
+other sign-up it is asked for no price group — but, like every other firm, it
+opens an application for one, and what it buys for is the group that
+application suggests. Freight is checkout's question anyway.
 """
 
 import uuid
@@ -74,12 +75,16 @@ async def test_an_international_business_registers_with_its_vat_number(
     assert (profile.contact_name, profile.national_id, profile.tax_office) == ("John Smith", None, None)
     # What they buy for is kept: it is what the sales team quotes against.
     assert profile.international_kind == kind
-    # Pricing stays retail and nothing goes to the B2B queue: the sales team
-    # quotes it by hand.
+    # Still retail, but waiting on an admin rather than forgotten: what they
+    # buy for becomes the group their application suggests.
     assert await segment_of(db_session, created["id"]) == SegmentType.RETAIL
-    assert await db_session.scalar(
-        select(B2BApplication.id).where(B2BApplication.user_id == uuid.UUID(created["id"]))
-    ) is None
+    application = await db_session.scalar(
+        select(B2BApplication).where(B2BApplication.user_id == uuid.UUID(created["id"]))
+    )
+    assert application.status == "PENDING"
+    assert application.requested_segment == (
+        SegmentType.WHOLESALE if kind == "WHOLESALER" else SegmentType.CAFE
+    )
 
 
 async def test_the_address_is_stored_in_its_international_shape(
@@ -114,6 +119,11 @@ async def test_a_tax_number_is_optional_and_in_whatever_shape_its_country_uses(
         company={"title": "Smith Trading GmbH", "tax_number": tax_number}
     ))
     assert (await profile_of(db_session, created["id"])).tax_number == tax_number
+    # The application opens either way: a firm with no VAT number still waits.
+    application = await db_session.scalar(
+        select(B2BApplication).where(B2BApplication.user_id == uuid.UUID(created["id"]))
+    )
+    assert application.tax_number == tax_number
 
 
 @pytest.mark.parametrize(

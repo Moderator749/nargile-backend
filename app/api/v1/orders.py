@@ -12,6 +12,7 @@ from app.models.order import Order
 from app.models.user import User
 from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingBreakdown, VolumeTier
 from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
+from app.services.delivery import check_delivery_address
 from app.services.checkout_engine import (
     COAL_MAX_RATIO,
     COAL_MIN_FREE_KG,
@@ -69,6 +70,7 @@ async def calculate_cart(
     s = cart.shipping
     return CartCalculateResponse(
         subtotal=cart.subtotal,
+        perks_eligible=cart.perks_eligible,
         cargo_cost=cart.cargo_cost,
         shipping=ShippingBreakdown(
             free=s.free,
@@ -125,6 +127,11 @@ async def checkout(
 
     engine = CheckoutEngine(db)
     try:
+        # A firm ships to the address it registered; the details are editable,
+        # the place is not — unless it has named a branch of its own.
+        await check_delivery_address(
+            db, user, payload.shipping_address, payload.shipping_branch_name
+        )
         order = await engine.execute_checkout(
             user=user,
             variant_quantities=variant_quantities,
@@ -134,6 +141,19 @@ async def checkout(
             shipping_method=payload.shipping_method,
             shipping_address=payload.shipping_address.model_dump(),
             shipping_consent=payload.shipping_consent,
+            receiver_name=payload.receiver_name,
+            receiver_phone=payload.receiver_phone,
+            shipping_contract_no=payload.shipping_contract_no,
+            freight_company_name=payload.freight_company_name,
+            freight_phone=payload.freight_phone,
+            shipping_branch_name=payload.shipping_branch_name,
+            invoice_to_company=payload.invoice_to_company,
+            invoice_company_title=payload.invoice_company_title,
+            invoice_tax_office=payload.invoice_tax_office,
+            invoice_tax_number=payload.invoice_tax_number,
+            save_card=payload.save_card,
+            distance_sales_accepted=payload.distance_sales_accepted,
+            terms_accepted=payload.terms_accepted,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

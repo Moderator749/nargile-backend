@@ -18,6 +18,7 @@ from app.models.user import (
 from app.schemas.address import InternationalAddress, StructuredAddress
 from app.schemas.registration import RegistrationCreate
 from app.schemas.user import LoginRequest, Token, UserMe, UserRead
+from app.services.b2b_intake import application_for
 from app.services.loyalty_service import get_user_loyalty_balance
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -61,8 +62,7 @@ async def register(payload: RegistrationCreate, db: AsyncSession = Depends(get_d
 
     # Self-service sign-ups are always RETAIL, whatever kind of account it is.
     # The B2B segments (CAFE/WHOLESALE/DEALER) unlock lower prices, so they are
-    # an admin's to grant — from the queue a customer joins by applying from
-    # their account page once they are in.
+    # an admin's to grant — from the queue a firm joins the moment it registers.
     retail_id = await db.scalar(
         select(CustomerSegment.id).where(CustomerSegment.code == SegmentType.RETAIL)
     )
@@ -87,6 +87,12 @@ async def register(payload: RegistrationCreate, db: AsyncSession = Depends(get_d
         db.add(_address(user.id, AddressKind.BILLING, payload.billing_address))
     if payload.company is not None and payload.company.address is not None:
         db.add(_address(user.id, AddressKind.CORPORATE_BILLING, payload.company.address))
+
+    # A firm puts itself in the approval queue by registering: it should never
+    # be left trading at retail with nobody aware of it.
+    application = application_for(user.id, payload)
+    if application is not None:
+        db.add(application)
 
     await db.commit()
     await db.refresh(user)

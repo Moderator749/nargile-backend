@@ -24,7 +24,7 @@ from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
 from app.services import exchange_rates
 from app.services.exchange_rates import Rates
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 USD_PER_TRY = Decimal("40.0000")
 
@@ -249,6 +249,7 @@ async def test_cafe_buys_from_the_cafe_quota(
     await db_session.commit()
 
     body = {
+        **CONSENTS,
         "payment_method": "CREDIT_CARD",
         "items": [{"variant_id": sheet["variant_id"], "quantity": 2}],
         "shipping_address": ADDRESS,

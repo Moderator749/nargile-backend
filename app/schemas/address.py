@@ -26,6 +26,12 @@ def _key(name: str) -> str:
     return " ".join(name.translate(_TR_LOWER).lower().split())
 
 
+def place_key(name: str) -> str:
+    """How two place names are compared: trimmed, collapsed, Turkish-folded."""
+    return _key(name)
+
+
+
 _BY_KEY = {_key(p): p for p in TR_PROVINCES} | {"istanbul": ISTANBUL, "izmir": "İzmir"}
 _PHONE = re.compile(r"^\+?[0-9 ()-]{10,20}$")
 # Anywhere else in the world: a dialling code, any punctuation people use to
@@ -50,36 +56,77 @@ def valid_international_phone(value: str) -> str:
     return found
 
 
-class ShippingAddress(BaseModel):
-    full_name: str = Field(min_length=2, max_length=120)
-    phone: str = Field(max_length=20)
-    city: str = Field(max_length=40)
-    district: str = Field(min_length=2, max_length=80)
-    line: str = Field(min_length=5, max_length=300)
+def valid_contact_phone(value: str) -> str:
+    """A number somebody can be reached on, Turkish or not.
 
-    @field_validator("full_name", "district", "line")
-    @classmethod
-    def _strip(cls, v: str) -> str:
-        return " ".join(v.split())
-
-    @field_validator("phone")
-    @classmethod
-    def _phone(cls, v: str) -> str:
-        return valid_phone(v)
-
-    @field_validator("city")
-    @classmethod
-    def _province(cls, v: str) -> str:
-        """Canonical province name ("istanbul" → "İstanbul")."""
-        try:
-            return _BY_KEY[_key(v)]
-        except KeyError:
-            raise ValueError("Unknown province") from None
+    A number written with its own dialling code is held to the international
+    rule; anything else is read as Turkish, where ten digits is the floor. One
+    field, two conventions, because a courier may have to call either.
+    """
+    found = (value or "").strip()
+    if found.startswith("+") or found.replace(" ", "").startswith("00"):
+        return valid_international_phone(found)
+    return valid_phone(found)
 
 
 def _trim(value: str | None) -> str | None:
     """Collapsed whitespace, or None for a field left empty."""
     return " ".join((value or "").split()) or None
+
+
+class ShippingAddress(BaseModel):
+    """Where one order goes, frozen onto the order itself.
+
+    Turkish by default and held to the 81 provinces, because that is what a
+    domestic carrier routes on. An address in another country keeps the same
+    five fields and loosens two: its ``city`` is whatever subdivision that
+    country uses, and it has no ilçe. The parts a Turkish address does not need
+    — a postal code — are optional, and ``line`` carries the rest either way.
+    """
+
+    full_name: str = Field(min_length=2, max_length=120)
+    phone: str = Field(max_length=30)
+    # ISO 3166-1 alpha-2. "TR" unless the order is an export.
+    country: str = Field(default=TURKEY, min_length=2, max_length=2)
+    city: str = Field(min_length=2, max_length=80)
+    district: str | None = Field(default=None, max_length=80)
+    postal_code: str | None = Field(default=None, max_length=20)
+    line: str = Field(min_length=5, max_length=300)
+
+    @field_validator("full_name", "line")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return " ".join(v.split())
+
+    @field_validator("district", "postal_code", mode="before")
+    @classmethod
+    def _optional(cls, v: str | None) -> str | None:
+        return _trim(v)
+
+    @field_validator("phone")
+    @classmethod
+    def _phone(cls, v: str) -> str:
+        return valid_contact_phone(v)
+
+    @field_validator("country")
+    @classmethod
+    def _country(cls, v: str) -> str:
+        code = v.strip().upper()
+        if code not in COUNTRY_NAMES:
+            raise ValueError("Unknown country")
+        return code
+
+    @model_validator(mode="after")
+    def _by_country(self) -> "ShippingAddress":
+        if self.country != TURKEY:
+            return self
+        try:
+            self.city = _BY_KEY[_key(self.city)]
+        except KeyError:
+            raise ValueError("Unknown province") from None
+        if not self.district or len(self.district) < 2:
+            raise ValueError("İlçe girilmeli")
+        return self
 
 
 class StructuredAddress(BaseModel):

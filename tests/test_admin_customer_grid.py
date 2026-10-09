@@ -184,6 +184,64 @@ async def test_the_grid_filters_by_price_list(
     assert {r["segment"] for r in rows} == {"WHOLESALE"}
 
 
+async def test_the_grid_filters_by_city(client: AsyncClient, admin_user: User):
+    """The column in front of the admin is the one that filters."""
+    antalya = await _firm(client)  # ADDRESS is in Muratpaşa / Antalya
+    istanbul = await _firm(client, billing_address={**ADDRESS, "city": "istanbul", "district": "Kadıköy"})
+
+    rows, _ = await _grid(client, admin_user, city="Antalya", limit=200)
+    emails = [r["email"] for r in rows]
+    assert antalya["email"] in emails
+    assert istanbul["email"] not in emails
+    assert {r["city"] for r in rows} == {"Antalya"}
+
+    rows, _ = await _grid(client, admin_user, city="İstanbul", limit=200)
+    assert istanbul["email"] in [r["email"] for r in rows]
+
+
+async def test_the_city_filter_reaches_a_customer_abroad(client: AsyncClient, admin_user: User):
+    created = await _register(client, {
+        "account_type": "INTERNATIONAL",
+        "international_kind": "WHOLESALER",
+        "email": f"grid-c-{uuid.uuid4().hex[:8]}@test.com",
+        "password": "Str0ng-Passw0rd",
+        "contact_name": "John Smith",
+        "phone": "+49 30 1234 5678",
+        "company": {"title": "Smith Trading GmbH", "tax_number": "DE811907980"},
+        "billing_address": {"country": "DE", "city": "Berlin", "address_line1": "Hauptstraße 1"},
+    })
+    rows, _ = await _grid(client, admin_user, city="Berlin", limit=200)
+    assert [r["email"] for r in rows] == [created["email"]]
+
+
+async def test_the_city_filter_combines_with_the_others(client: AsyncClient, admin_user: User):
+    kafe = await _firm(client, "CAFE")
+    await _firm(client, "TOBACCO_SHOP")
+    rows, total = await _grid(client, admin_user, city="Antalya", account_type="CAFE", limit=200)
+    assert kafe["email"] in [r["email"] for r in rows]
+    assert {r["account_type"] for r in rows} == {"CAFE"}
+    assert total == len(rows)
+
+
+async def test_the_filter_offers_the_cities_the_customers_are_in(client: AsyncClient, admin_user: User):
+    await _firm(client)
+    resp = await client.get("/api/v1/admin/customers/cities", headers=auth_header(admin_user))
+    assert resp.status_code == 200, resp.text
+    cities = resp.json()
+    assert "Antalya" in cities
+    # Drawn from the data, so every option returns something.
+    assert len(cities) == len(set(cities))
+    for city in cities:
+        rows, _ = await _grid(client, admin_user, city=city, limit=1)
+        assert rows, f"{city} is offered but matches nobody"
+
+
+async def test_the_city_list_needs_an_admin(client: AsyncClient, customer_user: User):
+    assert (
+        await client.get("/api/v1/admin/customers/cities", headers=auth_header(customer_user))
+    ).status_code == 403
+
+
 async def test_the_newest_account_is_first_unless_asked_otherwise(client: AsyncClient, admin_user: User):
     first = await _individual(client)
     second = await _individual(client)

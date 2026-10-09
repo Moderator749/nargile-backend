@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Numeric, String, Integer
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String, Integer
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -30,9 +30,24 @@ PENDING_STATUSES = (OrderStatus.PENDING_APPROVAL, OrderStatus.AWAITING_TRANSFER)
 
 
 class ShippingMethod(str, enum.Enum):
-    CARGO = "CARGO"
-    # Same-day Istanbul courier, 10:00–20:00; the buyer pays the courier on delivery.
-    COURIER_ISTANBUL = "COURIER_ISTANBUL"
+    """How the order travels. Which of these a customer may pick depends on what
+    kind of account they have — see ``METHODS_BY_ACCOUNT_TYPE`` in
+    ``app.services.checkout_engine``."""
+
+    # Yurtiçi Kargo ile adrese teslim. Offered to everyone domestic; a firm may
+    # add its own Yurtiçi contract number (``shipping_contract_no``).
+    YURTICI_DOOR = "YURTICI_DOOR"
+    # Yurtiçi Kargo şube teslimatı — bireysel only. The parcel is addressed to
+    # the customer ("adınıza gönderilir") unless somebody else is named.
+    YURTICI_BRANCH = "YURTICI_BRANCH"
+    # Nakliye ambarı: a freight depot delivers and collects its fee there. The
+    # firm may name the depot (``freight_company_name`` / ``freight_phone``).
+    NAKLIYE_AMBARI = "NAKLIYE_AMBARI"
+    # The shop's own İstanbul run: free, and offered only to a firm whose
+    # registered address is in İstanbul.
+    ISTANBUL_FREE = "ISTANBUL_FREE"
+    # Export: freight and customs are quoted after the order, not at checkout.
+    INTERNATIONAL_FREIGHT = "INTERNATIONAL_FREIGHT"
 
 
 class ShippingPayer(str, enum.Enum):
@@ -72,7 +87,10 @@ class Order(Base):
     )
     tracking_code: Mapped[str | None] = mapped_column(String(100))
     shipping_method: Mapped[str] = mapped_column(
-        Enum(ShippingMethod), nullable=False, default=ShippingMethod.CARGO, server_default="CARGO"
+        Enum(ShippingMethod),
+        nullable=False,
+        default=ShippingMethod.YURTICI_DOOR,
+        server_default="YURTICI_DOOR",
     )
     shipping_payer: Mapped[str] = mapped_column(
         Enum(ShippingPayer), nullable=False, default=ShippingPayer.SHOP, server_default="SHOP"
@@ -80,8 +98,45 @@ class Order(Base):
     # When the buyer ticked "gönderim ücreti alıcı tarafından ödenecektir"; null
     # on orders that ship free and on orders placed before the box existed.
     shipping_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # {full_name, phone, city, district, line}; null on orders from before addresses existed.
+    # {full_name, phone, country, city, district, line, postal_code}; null on
+    # orders from before addresses existed.
     shipping_address: Mapped[dict | None] = mapped_column(JSONB)
+    # "Başka biri teslim alacak": who signs for the parcel, when it is not the
+    # customer. Both or neither.
+    receiver_name: Mapped[str | None] = mapped_column(String(150))
+    receiver_phone: Mapped[str | None] = mapped_column(String(30))
+    # The buyer's own Yurtiçi Kargo agreement, so the carriage is billed to it
+    # ("size ait anlaşma varsa kodunuzu girebilirsiniz"). Optional, and only on
+    # the two Yurtiçi methods.
+    shipping_contract_no: Mapped[str | None] = mapped_column(String(50))
+    # The nakliye ambarı the firm wants the goods handed to, when it has one in
+    # mind. Optional, NAKLIYE_AMBARI only.
+    freight_company_name: Mapped[str | None] = mapped_column(String(150))
+    freight_phone: Mapped[str | None] = mapped_column(String(30))
+    # "Şubeme istiyorum": the firm's own branch this order goes to, by the name
+    # the firm calls it ("Kadıköy Şubesi"). Set only when the delivery address
+    # is a branch rather than the registered invoice address, and it is what
+    # allows that address to be somewhere else.
+    shipping_branch_name: Mapped[str | None] = mapped_column(String(150))
+    # "Faturayı firmaya/şirkete istiyorum": a personal order invoiced to a firm.
+    # The three fields below are filled only then, and are what the invoice is
+    # made out to — the account's own registered details are not touched.
+    invoice_to_company: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    invoice_company_title: Mapped[str | None] = mapped_column(String(200))
+    invoice_tax_office: Mapped[str | None] = mapped_column(String(100))
+    invoice_tax_number: Mapped[str | None] = mapped_column(String(11))
+    # "Kart bilgilerimi sonraki alışverişlerim için güvenle kaydet": the buyer's
+    # wish, recorded here. No card data is ever stored by us — the payment
+    # provider keeps the token.
+    save_card: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # When both agreements (mesafeli satış, şartlar ve kurallar) were accepted.
+    # Null only on orders placed before the gate existed; no order can be
+    # placed without them now.
+    agreements_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # When an admin approved / marked it paid (loyalty is granted then).
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

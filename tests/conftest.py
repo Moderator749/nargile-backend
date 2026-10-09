@@ -50,6 +50,10 @@ from app.models.user import CustomerSegment, SegmentType, User, UserRole  # noqa
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 # A valid delivery address for checkout calls (required to place an order).
+# The two agreements every order has to carry: an order is a contract, and the
+# engine refuses one that was not accepted. Price previews need neither.
+CONSENTS = {"distance_sales_accepted": True, "terms_accepted": True}
+
 ADDRESS = {
     "full_name": "Test Müşteri",
     "phone": "0532 000 00 00",

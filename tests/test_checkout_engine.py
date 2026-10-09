@@ -20,7 +20,7 @@ from app.models.catalog import ProductVariant
 from app.models.order import PaymentMethod, ShippingMethod
 from app.models.user import User
 from app.services.checkout_engine import CheckoutEngine, ResolvedCartItem
-from tests.conftest import ADDRESS, auth_header
+from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -155,11 +155,19 @@ class TestCargo:
         q = self.quote(_item("2000", coal=True, kg="1", qty=40))
         assert (q.cost, q.reason, q.receiver_pays) == (Decimal("0.00"), "below_threshold", True)
 
-    def test_courier_is_paid_to_the_courier(self):
+    def test_the_istanbul_run_is_free_from_its_own_limit(self):
+        """The shop's own van: free from the limit the panel sets (₺20,000 by
+        default), and below it not an option at all — `resolve_cart` refuses it
+        there, which is what the API tests walk through."""
         q = CheckoutEngine.quote_shipping(
-            Decimal("5000"), [_item("5000")], ShippingMethod.COURIER_ISTANBUL
+            Decimal("20000"), [_item("20000")], ShippingMethod.ISTANBUL_FREE, perks=False
         )
-        assert (q.cost, q.reason, q.receiver_pays) == (Decimal("0.00"), "courier", True)
+        assert (q.cost, q.reason, q.free) == (Decimal("0.00"), "free", True)
+
+        below = CheckoutEngine.quote_shipping(
+            Decimal("100"), [_item("100")], ShippingMethod.ISTANBUL_FREE, perks=False
+        )
+        assert (below.reason, below.free) == ("below_threshold", False)
 
     # Scenario A: hardware/mixed dominant (coal ≤ 50%) → the 20 kg rule doesn't apply.
 
@@ -337,7 +345,7 @@ async def test_checkout_records_all_discounts(
     resp = await client.post(
         "/api/v1/orders/checkout",
         headers=auth_header(admin_user),
-        json={
+        json={**CONSENTS, 
             "payment_method": "BANK_TRANSFER",
             "items": [{"variant_id": str(normal_v.id), "quantity": 11}],
             "shipping_address": ADDRESS,

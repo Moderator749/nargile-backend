@@ -15,9 +15,12 @@ from decimal import Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
 from app.models.order import Order, OrderStatus
+from app.models.user import User
+from app.services.perks import retail_perks
 
 POINT_LIFETIME = timedelta(days=365)
 EXPIRY_WARNING = timedelta(days=30)
@@ -141,7 +144,18 @@ async def kumbara_progress(db: AsyncSession, user_id: uuid.UUID) -> KumbaraProgr
 
 async def award_for_paid_order(db: AsyncSession, order: Order, now: datetime) -> tuple[int, int]:
     """Grant points for an order that was just marked paid (order.paid_at = now,
-    already flushed). Returns (parapuan, kumbarapuan) granted. Idempotent per order."""
+    already flushed). Returns (parapuan, kumbarapuan) granted. Idempotent per order.
+
+    Points are a retail promotion, so a B2B account earns none — see
+    ``app.services.perks``. Loading the buyer here rather than taking it as an
+    argument keeps every caller (the admin API, the SLA job) out of the rule.
+    """
+    buyer = await db.scalar(
+        select(User).where(User.id == order.user_id).options(selectinload(User.segment))
+    )
+    if buyer is None or not retail_perks(buyer, buyer.segment.code if buyer.segment else None):
+        return 0, 0
+
     already = await db.scalar(
         select(LoyaltyLedger.id).where(
             LoyaltyLedger.order_id == order.id, LoyaltyLedger.transaction_type == TransactionType.EARNED

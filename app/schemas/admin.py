@@ -258,11 +258,27 @@ class AdminOrderListItem(BaseModel):
     payment_method: PaymentMethod
     status: OrderStatus
     tracking_code: str | None
-    shipping_method: ShippingMethod = ShippingMethod.CARGO
+    shipping_method: ShippingMethod = ShippingMethod.YURTICI_DOOR
     # Who pays the carrier; the order never includes carriage.
     shipping_payer: ShippingPayer = ShippingPayer.SHOP
     shipping_consent_at: datetime | None = None
     shipping_address: dict | None = None
+    # "Başka biri teslim alacak": who signs for the parcel, when not the buyer.
+    receiver_name: str | None = None
+    receiver_phone: str | None = None
+    # What the firm asked for: its Yurtiçi agreement, or the ambar to use.
+    shipping_contract_no: str | None = None
+    freight_company_name: str | None = None
+    freight_phone: str | None = None
+    # The branch this one goes to, when it is not the invoice address.
+    shipping_branch_name: str | None = None
+    # "Faturayı firmaya istiyorum": who to make this one out to.
+    invoice_to_company: bool = False
+    invoice_company_title: str | None = None
+    invoice_tax_office: str | None = None
+    invoice_tax_number: str | None = None
+    save_card: bool = False
+    agreements_accepted_at: datetime | None = None
     paid_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancel_reason: str | None = None

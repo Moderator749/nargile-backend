@@ -46,7 +46,8 @@ class B2BApplicationRead(BaseModel):
     full_name: str | None
     requested_segment: SegmentType
     company_title: str
-    tax_number: str
+    # Null when the firm is abroad and was issued none.
+    tax_number: str | None
     tax_office: str | None
     status: str
     admin_note: str | None

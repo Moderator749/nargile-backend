@@ -17,10 +17,12 @@ class ApplicationStatus(str, enum.Enum):
 
 
 class B2BApplication(Base):
-    """A customer's request for Kafe / Toptan / Bayi pricing.
+    """A request for Kafe / Toptan / Bayi pricing, waiting on an admin.
 
-    The account stays RETAIL until an admin approves (and picks the segment):
-    a segment is never self-assigned.
+    Opened for a firm by its own sign-up (see ``app.services.b2b_intake``), or
+    by a customer from their account page. Either way the account stays RETAIL
+    until an admin approves it and picks the segment: a segment is never
+    self-assigned.
     """
 
     __tablename__ = "b2b_applications"
@@ -31,7 +33,9 @@ class B2BApplication(Base):
     )
     requested_segment: Mapped[str] = mapped_column(Enum(SegmentType), nullable=False)
     company_title: Mapped[str] = mapped_column(String(255), nullable=False)
-    tax_number: Mapped[str] = mapped_column(String(20), nullable=False)
+    # A Turkish firm always has one (VKN or TCKN); a customer abroad may not,
+    # and sign-up opens an application either way.
+    tax_number: Mapped[str | None] = mapped_column(String(30))
     tax_office: Mapped[str | None] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(
         Enum(ApplicationStatus), nullable=False, default=ApplicationStatus.PENDING, index=True
