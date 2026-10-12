@@ -3,7 +3,9 @@ from sqlalchemy import select
 from app.models.catalog import Category
 
 # Products in this category (or its subcategories) are coal for the cargo rules.
-COAL_CATEGORY_SLUG = "komurler"
+# The admin API will not rename this slug or delete the category: the rules
+# would silently stop applying.
+COAL_CATEGORY_SLUG = "nargile-komurleri"
 
 
 def category_subtree(slug: str):

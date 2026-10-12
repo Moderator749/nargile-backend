@@ -93,6 +93,8 @@ class NavItem(_Strict):
     search: _text(80) | None = None
     href: OptionalLink = None
     accent: bool = False
+    # Off = kept in the list (with its place and settings) but not shown.
+    enabled: bool = True
 
     @model_validator(mode="after")
     def _named(self) -> "NavItem":
@@ -103,10 +105,16 @@ class NavItem(_Strict):
 
 class Navigation(_Strict):
     top: list[NavItem] = Field(max_length=12)
-    # "auto": the sidebar is every active category, in the catalog's own order,
-    # and follows it as categories are added; "custom": the `sidebar` list.
-    sidebar_mode: Literal["auto", "custom"] = "custom"
     sidebar: list[NavItem] = Field(max_length=30)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_mode(cls, data: object) -> object:
+        # The sidebar once had an automatic mode ("sidebar_mode"); it is always
+        # the explicit list now. Documents saved with the key still load.
+        if isinstance(data, dict) and "sidebar_mode" in data:
+            data = {k: v for k, v in data.items() if k != "sidebar_mode"}
+        return data
 
 
 # ── Homepage sections ────────────────────────────────────────────────────────

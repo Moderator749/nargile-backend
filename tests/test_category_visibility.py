@@ -2,7 +2,7 @@
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import Category
@@ -66,19 +66,58 @@ async def test_category_image_must_be_a_url_or_site_path(client: AsyncClient, ad
     assert bad.status_code == 422
 
 
-async def test_menu_auto_mode_and_category_entries_without_a_label(client: AsyncClient, admin_user: User, cleanup):
+async def test_menu_category_entries_without_a_label_and_retired_mode_key(
+    client: AsyncClient, admin_user: User, cleanup
+):
+    # "sidebar_mode" is retired; documents saved with it still load, without it.
     doc = {
         "navigation": {
             "top": [{"label": "", "slug": "luleler"}],
-            "sidebar_mode": "auto",
-            "sidebar": [],
+            "sidebar_mode": "custom",
+            "sidebar": [{"label": "LÜLELER", "href": "/catalog/luleler"}],
         }
     }
     saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json=doc)
     assert saved.status_code == 200, saved.text
-    assert saved.json()["data"]["navigation"]["sidebar_mode"] == "auto"
+    navigation = saved.json()["data"]["navigation"]
+    assert "sidebar_mode" not in navigation
+    assert navigation["sidebar"][0]["href"] == "/catalog/luleler"
 
     # A plain link still needs words to show.
     nameless = {"navigation": {"top": [{"label": "", "href": "/catalog"}], "sidebar": []}}
     refused = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json=nameless)
     assert refused.status_code == 422
+
+
+async def test_clean_taxonomy_is_in_place(client: AsyncClient):
+    """The migration's tree: seven groups, each with sub-categories, coal included."""
+    rows = (await client.get("/api/v1/categories/")).json()
+    groups = [c["slug"] for c in sorted((c for c in rows if c["parent_id"] is None), key=lambda c: c["sort_order"])]
+    expected = [
+        "nargile-takimlari", "luleler", "kozlukler-isi-yonetimi", "marpuc-ve-hortumlar",
+        "sipsiler-ve-aksesuarlar", "nargile-komurleri", "tutun-bitkisel-ve-sarf",
+    ]
+    assert [g for g in groups if g in expected] == expected
+    by_slug = {c["slug"]: c for c in rows}
+    for group in expected:
+        assert any(c["parent_id"] == by_slug[group]["id"] for c in rows), group
+    # Nothing of the replaced tree survives.
+    for gone in ("komurler", "tuketim-sarf", "donanim-parcalar", "rus-takimlar", "masaustu-takimlar", "aksesuarlar"):
+        assert gone not in by_slug
+
+
+async def test_coal_category_is_protected(client: AsyncClient, admin_user: User, db_session: AsyncSession):
+    coal = await db_session.scalar(select(Category).where(Category.slug == "nargile-komurleri"))
+    h = auth_header(admin_user)
+    renamed = await client.put(
+        f"/api/v1/admin/categories/{coal.id}", headers=h, json={"name": "Kömür", "slug": "komur", "parent_id": None}
+    )
+    assert renamed.status_code == 409
+    assert (await client.delete(f"/api/v1/admin/categories/{coal.id}", headers=h)).status_code == 409
+    # Its name and order can still change; only the address the rules use is fixed.
+    ok = await client.put(
+        f"/api/v1/admin/categories/{coal.id}",
+        headers=h,
+        json={"name": coal.name, "slug": "nargile-komurleri", "parent_id": None, "sort_order": coal.sort_order},
+    )
+    assert ok.status_code == 200, ok.text

@@ -20,6 +20,7 @@ from app.schemas.taxonomy import (
     ProductCategoryAssignResult,
     slugify,
 )
+from app.services.categories import COAL_CATEGORY_SLUG
 from app.services.media import MAX_IMAGE_BYTES, InvalidImage, delete_media, save_image
 
 router = APIRouter(prefix="/admin", tags=["admin-taxonomy"])
@@ -108,6 +109,8 @@ async def update_category(
     category = await db.get(Category, category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="Category not found")
+    if category.slug == COAL_CATEGORY_SLUG and (payload.slug or slugify(payload.name)) != COAL_CATEGORY_SLUG:
+        raise HTTPException(status_code=409, detail="Bu kategorinin adresi kömür kargo kurallarında kullanılıyor; değiştirilemez")
     await _apply_category(db, category, payload)
     await db.commit()
     return (await _category_rows(db, [category_id]))[0]
@@ -122,6 +125,8 @@ async def delete_category(
     category = await db.get(Category, category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="Category not found")
+    if category.slug == COAL_CATEGORY_SLUG:
+        raise HTTPException(status_code=409, detail="Bu kategori kömür kargo kurallarında kullanılıyor; silinemez")
     if await db.scalar(select(Category.id).where(Category.parent_id == category_id).limit(1)):
         raise HTTPException(status_code=409, detail="Move or delete its subcategories first")
     if await db.scalar(select(Product.id).where(Product.category_id == category_id).limit(1)):

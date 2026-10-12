@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.database import get_db  # noqa: E402
 from app.core.security import create_access_token  # noqa: E402
 from app.main import app  # noqa: E402
+from app.services.categories import COAL_CATEGORY_SLUG  # noqa: E402
 from app.models.catalog import (  # noqa: E402
     Category,
     Inventory,
@@ -221,7 +222,7 @@ async def catalog(
     ))
 
     # Coal: in the Kömürler category (created by the migrations), so the coal cargo rules apply.
-    coal_category_id = await db_session.scalar(select(Category.id).where(Category.slug == "komurler"))
+    coal_category_id = await db_session.scalar(select(Category.id).where(Category.slug == COAL_CATEGORY_SLUG))
     heavy_prod = Product(
         base_code=f"HVY-{suffix}", name="Odun Komuru", tags=["HEAVY_CARGO"], category_id=coal_category_id
     )

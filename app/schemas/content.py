@@ -16,6 +16,62 @@ ADVANTAGE_ICONS = (
 
 Requirement = Literal["flash_sales"]
 TextAlign = Literal["left", "center", "right"]
+# Which way a promo photo's dark veil runs: towards right, left, bottom, top.
+OverlayDirection = Literal["to-r", "to-l", "to-b", "to-t"]
+
+
+class Point(BaseModel):
+    """A part's centre on the slide, in % of its width (x) and height (y)."""
+
+    x: float = Field(ge=0, le=100)
+    y: float = Field(ge=0, le=100)
+
+
+class HeroLayout(BaseModel):
+    """Where each of a slide's four parts sits; all four or none."""
+
+    model_config = {"extra": "forbid"}
+
+    eyebrow: Point
+    title: Point
+    subtitle: Point
+    button: Point
+
+
+class SocialWidget(BaseModel):
+    """The split card's channels (left half) and its jump button's text (right
+    half, which links to the card's own `href`, e.g. "/#avantajlar")."""
+
+    model_config = {"extra": "forbid"}
+
+    instagram_href: str | None = Field(default=None, max_length=300)
+    instagram_label: str = Field(default="Instagram", max_length=40)
+    youtube_href: str | None = Field(default=None, max_length=300)
+    youtube_label: str = Field(default="YouTube", max_length=40)
+    anchor_label: str = Field(default="Keşfet", max_length=40)
+
+    @field_validator("instagram_href", "youtube_href")
+    @classmethod
+    def _links(cls, v: str | None) -> str | None:
+        return _href(v)
+
+    @field_validator("instagram_label", "youtube_label", "anchor_label")
+    @classmethod
+    def _label(cls, v: str) -> str:
+        return _required(v)
+
+
+class PromoLayout(BaseModel):
+    """Where a promo card's four text parts sit. `image` is kept only so layouts
+    saved while photos were a placed square still load; it is not used."""
+
+    model_config = {"extra": "forbid"}
+
+    eyebrow: Point
+    title: Point
+    text: Point
+    button: Point
+    image: Point | None = None
 
 
 def _href(value: str | None) -> str | None:
@@ -59,6 +115,7 @@ class HeroSlideWrite(BaseModel):
     image_focus_x: int = Field(default=50, ge=0, le=100)
     image_focus_y: int = Field(default=50, ge=0, le=100)
     image_zoom: int = Field(default=100, ge=100, le=200)
+    layout: HeroLayout | None = None
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
@@ -116,6 +173,7 @@ class HeroSlideRead(BaseModel):
     image_focus_x: int
     image_focus_y: int
     image_zoom: int
+    layout: HeroLayout | None
     is_active: bool
     sort_order: int
 
@@ -125,7 +183,7 @@ class HeroSlideRead(BaseModel):
 
 class PromoBoxWrite(BaseModel):
     row: Literal[1, 2] = 1
-    variant: Literal["image", "text", "transparent"] = "text"
+    variant: Literal["image", "text", "transparent", "social"] = "text"
     eyebrow: str = Field(default="", max_length=60)
     title: str = Field(max_length=120)
     text: str | None = Field(default=None, max_length=240)
@@ -133,6 +191,12 @@ class PromoBoxWrite(BaseModel):
     image_url: str | None = Field(default=None, max_length=500)
     badge: Literal["sok"] | None = None
     requires: Requirement | None = None
+    layout: PromoLayout | None = None
+    overlay_direction: OverlayDirection = "to-t"
+    image_focus_x: int = Field(default=50, ge=0, le=100)
+    image_focus_y: int = Field(default=50, ge=0, le=100)
+    image_zoom: int = Field(default=100, ge=100, le=200)
+    widget: SocialWidget | None = None
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
@@ -183,6 +247,12 @@ class PromoBoxRead(BaseModel):
     has_upload: bool
     badge: str | None
     requires: Requirement | None
+    layout: PromoLayout | None
+    overlay_direction: OverlayDirection
+    image_focus_x: int
+    image_focus_y: int
+    image_zoom: int
+    widget: SocialWidget | None
     is_active: bool
     sort_order: int
 

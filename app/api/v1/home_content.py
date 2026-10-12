@@ -41,7 +41,7 @@ def slide_read(row: HeroSlide, request: Request) -> HeroSlideRead:
         guest_cta_label=row.guest_cta_label, guest_cta_href=row.guest_cta_href,
         image=_image(row, request), image_url=row.image_url, has_upload=bool(row.image_path),
         requires=row.requires, text_align=row.text_align, image_focus_x=row.image_focus_x,
-        image_focus_y=row.image_focus_y, image_zoom=row.image_zoom,
+        image_focus_y=row.image_focus_y, image_zoom=row.image_zoom, layout=row.layout,
         is_active=row.is_active, sort_order=row.sort_order,
     )
 
@@ -50,7 +50,9 @@ def promo_read(row: PromoBox, request: Request) -> PromoBoxRead:
     return PromoBoxRead(
         id=row.id, row=row.row, variant=row.variant, eyebrow=row.eyebrow, title=row.title,
         text=row.text, href=row.href, image=_image(row, request), image_url=row.image_url,
-        has_upload=bool(row.image_path), badge=row.badge, requires=row.requires,
+        has_upload=bool(row.image_path), badge=row.badge, requires=row.requires, layout=row.layout,
+        overlay_direction=row.overlay_direction, image_focus_x=row.image_focus_x,
+        image_focus_y=row.image_focus_y, image_zoom=row.image_zoom, widget=row.widget,
         is_active=row.is_active, sort_order=row.sort_order,
     )
 

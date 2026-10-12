@@ -34,6 +34,10 @@ class HeroSlide(Base):
     image_focus_x: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
     image_focus_y: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
     image_zoom: Mapped[int] = mapped_column(Integer, nullable=False, default=100, server_default="100")
+    # Free positions for the four parts on a wide screen, as % of the slide:
+    # {"eyebrow": {"x": 50, "y": 24}, "title": …, "subtitle": …, "button": …}.
+    # Null = the default centred stack.
+    layout: Mapped[dict | None] = mapped_column(JSONB)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
@@ -44,7 +48,7 @@ class PromoBox(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     # 1 = first promo grid (Module 6), 2 = second (Module 7). Up to 3 active boxes each.
     row: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    # "image" | "text" | "transparent"
+    # "image" | "text" | "transparent" | "social" (the split social & advantages widget)
     variant: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     eyebrow: Mapped[str] = mapped_column(String(60), nullable=False, default="")
     title: Mapped[str] = mapped_column(String(120), nullable=False)
@@ -54,6 +58,17 @@ class PromoBox(Base):
     image_url: Mapped[str | None] = mapped_column(String(500))
     # "sok" = the minimal flash-sale pill.
     badge: Mapped[str | None] = mapped_column(String(20))
+    # Free positions for the card's parts on a wide screen, as % of the card:
+    # eyebrow, title, text, button. Null = the default stacked card.
+    layout: Mapped[dict | None] = mapped_column(JSONB)
+    # The full-bleed photo: which way its dark veil runs ("to-t" = dark at the
+    # foot, rising), and its focal point (0–100 %) and zoom (100 = cover).
+    overlay_direction: Mapped[str] = mapped_column(String(10), nullable=False, default="to-t", server_default="to-t")
+    image_focus_x: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
+    image_focus_y: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
+    image_zoom: Mapped[int] = mapped_column(Integer, nullable=False, default=100, server_default="100")
+    # The "social" variant's channel links and button text; null otherwise.
+    widget: Mapped[dict | None] = mapped_column(JSONB)
     requires: Mapped[str | None] = mapped_column(String(20))
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
