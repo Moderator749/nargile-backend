@@ -1,8 +1,11 @@
-"""Homepage content managed from the admin panel: hero slides, promo boxes and
-the advantages ("Avantajlar") bento."""
+"""Homepage content managed from the admin panel: hero slides, promo boxes,
+the advantages ("Avantajlar") bento, and the "Ana Sayfa Düzenleme" document."""
 
-from sqlalchemy import Boolean, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB
+import uuid
+from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -25,6 +28,12 @@ class HeroSlide(Base):
     image_url: Mapped[str | None] = mapped_column(String(500))
     # "flash_sales": only shown while a flash sale is live.
     requires: Mapped[str | None] = mapped_column(String(20))
+    # How the slide is laid out: the text block's alignment, and the photo's
+    # focal point (0–100 % across and down) and zoom (100 = cover, up to 200).
+    text_align: Mapped[str] = mapped_column(String(10), nullable=False, default="center", server_default="center")
+    image_focus_x: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
+    image_focus_y: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
+    image_zoom: Mapped[int] = mapped_column(Integer, nullable=False, default=100, server_default="100")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
@@ -65,3 +74,26 @@ class Advantage(Base):
     footnote: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class SiteContent(Base):
+    """A whole page's editable copy and switches, as one validated JSON document.
+
+    Keyed by page ("homepage"). The document holds only what the admin has
+    saved: a section that is absent falls back to the storefront's own default,
+    so the shop looks the same until someone edits it.
+    """
+
+    __tablename__ = "site_content"
+
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+    updated_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )

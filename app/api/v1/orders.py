@@ -156,6 +156,8 @@ async def checkout(
                 payload.invoice_address.model_dump() if payload.invoice_address else None
             ),
             save_card=payload.save_card,
+            order_note=payload.order_note,
+            transport_mode=payload.transport_mode,
             distance_sales_accepted=payload.distance_sales_accepted,
             terms_accepted=payload.terms_accepted,
         )

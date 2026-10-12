@@ -182,6 +182,23 @@ def _list_item(order: Order, user: User, catalog: LineCatalog) -> AdminOrderList
     )
 
 
+@router.get("/orders/{order_id}", response_model=AdminOrderListItem)
+async def get_order(
+    order_id: uuid.UUID,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """One order as the sheet prints it.
+
+    The listing above is a page of orders, read when the page is read; this is
+    the order as it stands right now. The sheet asks for it when it opens, so
+    what an admin reads is never a row the panel happened to fetch earlier —
+    before the customer's note was written, before an address was corrected.
+    """
+    order, user = await _order_with_user(db, order_id)
+    return _list_item(order, user, await _line_catalog(db, [order]))
+
+
 # Pending orders, plus a paid one the shop decides not to ship after all.
 CANCELLABLE_STATUSES = (*PENDING_STATUSES, OrderStatus.APPROVED)
 

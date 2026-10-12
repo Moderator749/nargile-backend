@@ -57,7 +57,15 @@ from app.models.catalog import (
     WarehouseType,
 )
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
-from app.models.order import Order, OrderItem, OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer
+from app.models.order import (
+    Order,
+    OrderItem,
+    OrderStatus,
+    PaymentMethod,
+    ShippingMethod,
+    ShippingPayer,
+    TransportMode,
+)
 from app.models.user import AccountType, SegmentType, User
 from app.services.categories import COAL_CATEGORY_SLUG, category_subtree
 from app.services.delivery import delivers_in_istanbul
@@ -116,6 +124,19 @@ _BUSINESS_METHODS = frozenset({
     ShippingMethod.NAKLIYE_AMBARI,
     ShippingMethod.ISTANBUL_FREE,
 })
+def is_quote_account(user: User) -> bool:
+    """Whether this account asks for orders instead of placing them.
+
+    An export customer buys nothing at checkout: there is no gateway open to
+    them, the freight and the customs are not known yet, and the quantities
+    they put in the cart are what they want quoted rather than what the
+    warehouse is about to hand over. So their order is a request — it reserves
+    nothing, charges nothing and moves no stock — until an admin turns it into
+    an order.
+    """
+    return user.account_type == AccountType.INTERNATIONAL
+
+
 METHODS_BY_ACCOUNT_TYPE: dict[AccountType, frozenset[ShippingMethod]] = {
     AccountType.INDIVIDUAL: frozenset({ShippingMethod.YURTICI_DOOR, ShippingMethod.YURTICI_BRANCH}),
     AccountType.CAFE: _BUSINESS_METHODS,
@@ -333,6 +354,8 @@ class CheckoutEngine:
         invoice_tax_number: str | None = None,
         invoice_address: dict | None = None,
         save_card: bool = False,
+        order_note: str | None = None,
+        transport_mode: TransportMode | None = None,
         distance_sales_accepted: bool = False,
         terms_accepted: bool = False,
     ) -> Order:
@@ -359,21 +382,48 @@ class CheckoutEngine:
         made out to and where that firm is registered, kept apart from the
         delivery address even when they name the same place.
 
+        `order_note` is "Sipariş Notu": the customer's own message about this
+        order, stored as given for whoever picks the order up in the panel.
+
+        `transport_mode` is road, air or sea, and belongs to an export request:
+        it is what the carriage will be quoted against. An export account must
+        give one, and nobody else may.
+
         The two agreements — mesafeli satış sözleşmesi and şartlar ve kurallar —
         are not optional: an order is a contract, and this is where the shop
         records that both were accepted. A price preview never comes through
         here, so nothing is asked of a customer who is only looking.
         """
-        if not distance_sales_accepted:
-            raise ValueError("Mesafeli Satış Sözleşmesi'ni onaylamanız gerekiyor")
-        if not terms_accepted:
-            raise ValueError("Şartlar ve Kurallar Sözleşmesi'ni onaylamanız gerekiyor")
+        # An export request and a paid order are different things, and neither
+        # may be submitted as the other.
+        quote = is_quote_account(user)
+        # The two agreements are what makes an order a contract. A request is
+        # not one: nothing is sold, nothing is charged, and the sale — with its
+        # agreements — is the conversation that follows. So they are asked of
+        # an order and not of a request.
+        if not quote:
+            if not distance_sales_accepted:
+                raise ValueError("Mesafeli Satış Sözleşmesi'ni onaylamanız gerekiyor")
+            if not terms_accepted:
+                raise ValueError("Şartlar ve Kurallar Sözleşmesi'ni onaylamanız gerekiyor")
+        if quote:
+            if transport_mode is None:
+                raise ValueError("Please choose a transport type for your order request")
+            payment_method = PaymentMethod.QUOTE
+        else:
+            if payment_method == PaymentMethod.QUOTE:
+                raise ValueError("Bu hesap için ödeme yöntemi seçilmelidir")
+            if transport_mode is not None:
+                raise ValueError("Taşıma tipi yalnızca yurt dışı siparişlerinde seçilir")
 
         cart = await self.resolve_cart(
             user, variant_quantities, payment_method, points_to_redeem, shipping_method
         )
         consent_at: datetime | None = None
-        if cart.shipping.receiver_pays:
+        # Who pays the carriage is part of the quote, not a box to tick before
+        # one exists: an export request is not asked to consent to a cost
+        # nobody has named yet.
+        if cart.shipping.receiver_pays and not quote:
             if not shipping_consent:
                 raise ValueError(
                     "Gönderim ücretinin teslimat sırasında alıcı tarafından ödeneceğini onaylamanız gerekiyor"
@@ -383,9 +433,13 @@ class CheckoutEngine:
         # Determine warehouse type from user segment
         warehouse = self._warehouse_for_segment(user)
 
-        # Validate inventory and deduct
-        await self._deduct_inventory(cart.items, warehouse)
-        self._spend_offer_stock(cart.items)
+        # Validate inventory and deduct — but not for a request. A quote is a
+        # question about quantities the shop may or may not be able to meet;
+        # answering it is the admin's job, and taking the goods out of the
+        # warehouse before anyone has agreed a price would be the wrong answer.
+        if not quote:
+            await self._deduct_inventory(cart.items, warehouse)
+            self._spend_offer_stock(cart.items)
 
         # Build order: discount_amount is volume + bank transfer + points
         total_discount = cart.volume_discount_amount + cart.discount_amount + cart.points_discount
@@ -428,7 +482,16 @@ class CheckoutEngine:
             invoice_tax_number=invoice_tax_number,
             invoice_address=invoice_address,
             save_card=save_card,
-            agreements_accepted_at=datetime.now(timezone.utc),
+            order_note=order_note,
+            is_quote=quote,
+            transport_mode=transport_mode,
+            # Recorded when they were actually accepted, which a request does
+            # not do; the sale that may follow records its own.
+            agreements_accepted_at=(
+                datetime.now(timezone.utc)
+                if distance_sales_accepted and terms_accepted
+                else None
+            ),
             items=order_items,
         )
         self._db.add(order)

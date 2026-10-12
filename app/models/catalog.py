@@ -53,6 +53,11 @@ class Category(Base):
     parent_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     # Menu order among siblings (ascending; ties by name).
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # Off = kept with its products but hidden from the storefront's menus and
+    # category list (and its page), without having to move anything out first.
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
+    # A cover photo for the category's showcase tile; null = borrow a product photo.
+    image_url: Mapped[str | None] = mapped_column(String(500))
 
     parent: Mapped["Category | None"] = relationship(
         remote_side="Category.id", back_populates="children"

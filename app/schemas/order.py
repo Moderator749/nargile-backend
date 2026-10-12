@@ -2,10 +2,16 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.tr_identity import normalize_tax_id
-from app.models.order import OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer
+from app.models.order import (
+    OrderStatus,
+    PaymentMethod,
+    ShippingMethod,
+    ShippingPayer,
+    TransportMode,
+)
 from app.schemas.address import InvoiceAddress, ShippingAddress, valid_contact_phone
 
 # Both Yurtiçi Kargo options; the agreement number belongs to the carrier, not
@@ -77,10 +83,31 @@ class CheckoutRequest(BaseModel):
     # "Kart bilgilerimi sonraki alışverişlerim için güvenle kaydet". Recorded as
     # a wish; the card itself is only ever held by the payment provider.
     save_card: bool = False
+    # "Sipariş Notu" (opsiyonel): a message to the shop, kept as typed. Long
+    # enough for a paragraph and no longer, since nothing reads it but a person.
+    order_note: str | None = Field(default=None, max_length=500)
+    # "Delivery information" on an export order request: road, air or sea.
+    # Required of an INTERNATIONAL account and refused to everyone else —
+    # the engine has the last word on both (``is_quote_account``).
+    transport_mode: TransportMode | None = None
     # The two agreements. Both are required to place an order and ignored on a
     # price preview, like `shipping_consent` — the engine is what refuses.
     distance_sales_accepted: bool = False
     terms_accepted: bool = False
+
+    @field_validator("order_note", mode="before")
+    @classmethod
+    def _note(cls, value: str | None) -> str | None:
+        """Trimmed at the ends and nowhere else: the line breaks a customer put
+        in a note are the shape they wanted it read in. Whitespace alone is no
+        note at all.
+
+        Runs before the length check, so 500 characters of spaces cannot pass
+        for a note.
+        """
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
 
     @model_validator(mode="after")
     def _deliverable(self) -> "CheckoutRequest":
@@ -196,6 +223,12 @@ class OrderRead(BaseModel):
     # {city, district, line}: the firm's registered address, as it was given.
     invoice_address: dict | None = None
     save_card: bool = False
+    # "Sipariş Notu": what the customer wrote at checkout, as they wrote it.
+    order_note: str | None = None
+    # An export order request rather than a placed order: nothing was
+    # charged and no stock moved.
+    is_quote: bool = False
+    transport_mode: TransportMode | None = None
     # When the two agreements were accepted; no order is placed without them.
     agreements_accepted_at: datetime | None = None
     paid_at: datetime | None = None

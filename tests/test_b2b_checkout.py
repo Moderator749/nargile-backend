@@ -263,6 +263,7 @@ async def test_an_export_order_has_no_branch(
     variant = await _variant(db_session, segments)
     placed = await _checkout(
         client, headers, variant, shipping_method="INTERNATIONAL_FREIGHT",
+        transport_mode="ROAD",
         shipping_branch_name="Berlin Şubesi",
         shipping_address={
             "full_name": "John Smith", "phone": "+49 30 1234 5678", "country": "DE",

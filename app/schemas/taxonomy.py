@@ -3,6 +3,8 @@ import uuid
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.schemas.catalog import IMAGE_URL_PATTERN
+
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _TR = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
 
@@ -34,6 +36,20 @@ class CategoryWrite(BaseModel):
     # None = top-level menu item. Only two levels: a parent must itself be top-level.
     parent_id: int | None = None
     sort_order: int = Field(default=0, ge=0, le=100_000)
+    # Off hides it (and its subcategories) from the storefront; products stay.
+    is_active: bool = True
+    # Cover photo for its showcase tile: an http(s) URL or a site path.
+    image_url: str | None = Field(default=None, max_length=500)
+
+    @field_validator("image_url")
+    @classmethod
+    def _check_image(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
+        v = v.strip()
+        if re.match(r"^/(?!/)[^\s\"'<>\\]+$", v) or re.match(IMAGE_URL_PATTERN, v):
+            return v
+        raise ValueError("Image must be a site path (/images/…) or an http(s) URL")
 
     @field_validator("slug")
     @classmethod
@@ -55,6 +71,8 @@ class AdminCategoryRead(BaseModel):
     slug: str
     parent_id: int | None
     sort_order: int
+    is_active: bool
+    image_url: str | None
     # Products assigned directly to this category (not its subcategories).
     product_count: int
 

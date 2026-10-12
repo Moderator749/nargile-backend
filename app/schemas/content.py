@@ -15,6 +15,7 @@ ADVANTAGE_ICONS = (
 )
 
 Requirement = Literal["flash_sales"]
+TextAlign = Literal["left", "center", "right"]
 
 
 def _href(value: str | None) -> str | None:
@@ -54,6 +55,10 @@ class HeroSlideWrite(BaseModel):
     guest_cta_href: str | None = Field(default=None, max_length=300)
     image_url: str | None = Field(default=None, max_length=500)
     requires: Requirement | None = None
+    text_align: TextAlign = "center"
+    image_focus_x: int = Field(default=50, ge=0, le=100)
+    image_focus_y: int = Field(default=50, ge=0, le=100)
+    image_zoom: int = Field(default=100, ge=100, le=200)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
@@ -107,6 +112,10 @@ class HeroSlideRead(BaseModel):
     image_url: str | None
     has_upload: bool
     requires: Requirement | None
+    text_align: TextAlign
+    image_focus_x: int
+    image_focus_y: int
+    image_zoom: int
     is_active: bool
     sort_order: int
 

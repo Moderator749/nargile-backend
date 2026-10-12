@@ -25,6 +25,7 @@ class CategoryRead(BaseModel):
     slug: str
     parent_id: int | None
     sort_order: int = 0
+    image_url: str | None = None
 
 
 class ProductCreate(BaseModel):

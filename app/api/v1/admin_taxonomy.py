@@ -43,7 +43,8 @@ async def _category_rows(db: AsyncSession, ids: list[int] | None = None) -> list
         stmt = stmt.where(Category.id.in_(ids))
     return [
         AdminCategoryRead(
-            id=c.id, name=c.name, slug=c.slug, parent_id=c.parent_id, sort_order=c.sort_order, product_count=n
+            id=c.id, name=c.name, slug=c.slug, parent_id=c.parent_id, sort_order=c.sort_order,
+            is_active=c.is_active, image_url=c.image_url, product_count=n
         )
         for c, n in (await db.execute(stmt)).all()
     ]
@@ -73,6 +74,8 @@ async def _apply_category(db: AsyncSession, category: Category, payload: Categor
     category.slug = slug
     category.parent_id = payload.parent_id
     category.sort_order = payload.sort_order
+    category.is_active = payload.is_active
+    category.image_url = payload.image_url
 
 
 @router.get("/categories", response_model=list[AdminCategoryRead])

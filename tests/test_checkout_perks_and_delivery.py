@@ -119,7 +119,11 @@ def _body(variant: ProductVariant, user: User | None = None, **extra) -> dict:
     }
     if user is not None:
         body["shipping_method"] = method_for(user)
-    return {**body, **extra}
+    merged = {**body, **extra}
+    # An export order is a request, and a request says how it should travel.
+    if merged.get("shipping_method") == "INTERNATIONAL_FREIGHT":
+        merged.setdefault("transport_mode", "SEA")
+    return merged
 
 
 async def _quote(client: AsyncClient, user: User, variant: ProductVariant, **extra) -> dict:
@@ -409,11 +413,13 @@ async def test_what_the_shop_cannot_quote_it_does_not_cover(
     assert Decimal(quote["cargo_cost"]) == Decimal("0.00")
 
 
+# An export shipment is also paid by the receiver, and is deliberately *not*
+# here: it is a request, and nobody has named a freight price for it to consent
+# to yet. See ``test_export_quote.test_a_request_needs_no_carriage_consent``.
 @pytest.mark.parametrize(
     ("account_type", "method", "address"),
     [
         pytest.param(AccountType.CAFE, "NAKLIYE_AMBARI", ADDRESS, id="freight"),
-        pytest.param(AccountType.INTERNATIONAL, "INTERNATIONAL_FREIGHT", ABROAD, id="export"),
     ],
 )
 async def test_a_shipment_the_shop_does_not_cover_needs_the_buyers_consent(
@@ -572,7 +578,7 @@ async def _order(
     client: AsyncClient, headers: dict, variant: ProductVariant, address: dict,
     quantity: int = 1, **extra,
 ):
-    return await client.post("/api/v1/orders/checkout", headers=headers, json={
+    body = {
         **CONSENTS,
         "payment_method": "BANK_TRANSFER",
         "items": [{"variant_id": str(variant.id), "quantity": quantity}],
@@ -580,7 +586,11 @@ async def _order(
         "shipping_consent": True,
         "shipping_address": address,
         **extra,
-    })
+    }
+    # An export order is a request, and a request says how it should travel.
+    if body["shipping_method"] == "INTERNATIONAL_FREIGHT":
+        body.setdefault("transport_mode", "SEA")
+    return await client.post("/api/v1/orders/checkout", headers=headers, json=body)
 
 
 # ── The shop's own İstanbul run, and what each method asks for ───────────────

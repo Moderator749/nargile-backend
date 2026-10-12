@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Numeric, String, Integer
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -13,6 +13,23 @@ from app.core.database import Base
 class PaymentMethod(str, enum.Enum):
     CREDIT_CARD = "CREDIT_CARD"
     BANK_TRANSFER = "BANK_TRANSFER"
+    # An export order is not paid for at checkout: the freight, the customs and
+    # the total are agreed afterwards, so there is no gateway to choose and this
+    # is what the order records instead. Only an INTERNATIONAL account may send
+    # it, and an order carrying it is a quote (see ``Order.is_quote``).
+    QUOTE = "QUOTE"
+
+
+class TransportMode(str, enum.Enum):
+    """How an export shipment leaves the country, as the customer asks for it.
+
+    The carriage is priced against this once the packages and the weight are
+    known, which is why it is asked at the order rather than costed at it.
+    """
+
+    ROAD = "ROAD"
+    AIR = "AIR"
+    SEA = "SEA"
 
 
 class OrderStatus(str, enum.Enum):
@@ -140,6 +157,22 @@ class Order(Base):
     save_card: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # An order request rather than an order: an export customer builds a cart
+    # at export prices and asks for it to be confirmed. Nothing is charged and
+    # no stock moves — the quantities are what is being quoted, not what is
+    # being taken out of the warehouse — so these never reach the sales
+    # figures as a sale until an admin turns one into one.
+    is_quote: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # "Delivery information": road, air or sea, on an export request only.
+    transport_mode: Mapped[str | None] = mapped_column(
+        Enum(TransportMode), nullable=True
+    )
+    # "Sipariş Notu": whatever the customer wanted to tell us when they
+    # ordered — a delivery window, a missing invoice detail, a request. Free
+    # text, kept as typed (line breaks and all) and never acted on by code.
+    order_note: Mapped[str | None] = mapped_column(Text)
     # When both agreements (mesafeli satış, şartlar ve kurallar) were accepted.
     # Null only on orders placed before the gate existed; no order can be
     # placed without them now.

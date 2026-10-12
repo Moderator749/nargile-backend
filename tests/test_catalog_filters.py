@@ -42,7 +42,7 @@ async def test_list_categories_is_public(client: AsyncClient, filter_fixture):
     cat, *_ = filter_fixture
     resp = await client.get("/api/v1/categories/")
     assert resp.status_code == 200
-    assert {"id": cat.id, "name": cat.name, "slug": cat.slug, "parent_id": None, "sort_order": 0} in resp.json()
+    assert {"id": cat.id, "name": cat.name, "slug": cat.slug, "parent_id": None, "sort_order": 0, "image_url": None} in resp.json()
 
 
 async def test_filter_by_category_slug(client: AsyncClient, filter_fixture):

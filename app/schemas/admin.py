@@ -8,7 +8,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.catalog import CurrencyType, WarehouseType
-from app.models.order import OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer
+from app.models.order import OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer, TransportMode
 from app.models.user import SegmentType
 from app.schemas.catalog import IMAGE_URL_PATTERN
 from app.schemas.order import OrderItemRead
@@ -281,6 +281,13 @@ class AdminOrderListItem(BaseModel):
     # The firm's registered address, as this order recorded it.
     invoice_address: dict | None = None
     save_card: bool = False
+    # "Sipariş Notu": the customer's message, for the sheet's own note block.
+    order_note: str | None = None
+    # An export order request: priced at export rates, paid for nothing, and
+    # no stock taken. The panel shows it as a request until someone agrees a
+    # freight price with the customer and turns it into an order.
+    is_quote: bool = False
+    transport_mode: TransportMode | None = None
     agreements_accepted_at: datetime | None = None
     paid_at: datetime | None = None
     cancelled_at: datetime | None = None
