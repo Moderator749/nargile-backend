@@ -438,3 +438,23 @@ async def test_a_firm_can_ask_for_its_card_to_be_saved(
     assert placed.status_code == 201, placed.text
     assert placed.json()["save_card"] is True
     assert placed.json()["agreements_accepted_at"] is not None
+
+
+# ── The VAT inside a firm's cart ─────────────────────────────────────────────
+
+
+async def test_a_firms_cart_states_its_vat(client: AsyncClient, db_session: AsyncSession, segments):
+    """A business cart is priced net of promotions, so its invoice lines are
+    exact: the lines before VAT, the VAT on them, and the VAT-inclusive total."""
+    headers = await _firm(client)
+    variant = await _variant(db_session, segments)
+    resp = await _quote(client, headers, variant, quantity=3)
+    assert resp.status_code == 200, resp.text
+    cart = resp.json()
+    assert cart["perks_eligible"] is False
+    total = Decimal(cart["net_total"])
+    excl, vat = Decimal(cart["subtotal_excl_tax"]), Decimal(cart["vat_total"])
+    assert excl + vat == Decimal(cart["subtotal"]) == total
+    assert excl == (total / Decimal("1.20")).quantize(Decimal("0.01"))
+    assert [Decimal(r) for r in cart["vat_rates"]] == [Decimal("20")]
+    assert Decimal(cart["items"][0]["vat_rate"]) == Decimal("20")

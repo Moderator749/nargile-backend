@@ -9,7 +9,11 @@ from app.api.v1.account import router as account_router
 from app.api.v1.admin_catalog import router as admin_catalog_router
 from app.api.v1.admin_customers import router as admin_customers_router
 from app.api.v1.admin_dashboard import router as admin_dashboard_router
+from app.api.v1.admin_notes import router as admin_notes_router
+from app.api.v1.admin_communications import router as admin_communications_router
+from app.api.v1.password_reset import router as password_reset_router
 from app.api.v1.admin_orders import router as admin_orders_router
+from app.api.v1.admin_pricing import router as admin_pricing_router
 from app.api.v1.admin_promotions import router as admin_promotions_router
 from app.api.v1.admin_taxonomy import router as admin_taxonomy_router
 from app.api.v1.admin_uploads import router as admin_uploads_router
@@ -20,14 +24,17 @@ from app.api.v1.home_settings import router as home_settings_router
 from app.api.v1.legal import router as legal_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.exchange_rates import router as exchange_rates_router
+from app.api.v1.payments import router as payments_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
 api_router.include_router(categories_router)
 api_router.include_router(products_router)
 api_router.include_router(orders_router)
+api_router.include_router(payments_router)
 api_router.include_router(admin_catalog_router)
 api_router.include_router(admin_orders_router)
+api_router.include_router(admin_pricing_router)
 api_router.include_router(announcements_router)
 api_router.include_router(admin_promotions_router)
 api_router.include_router(exchange_rates_router)
@@ -39,6 +46,9 @@ api_router.include_router(home_settings_router)
 api_router.include_router(account_router)
 api_router.include_router(admin_customers_router)
 api_router.include_router(admin_dashboard_router)
+api_router.include_router(admin_notes_router)
+api_router.include_router(admin_communications_router)
+api_router.include_router(password_reset_router)
 api_router.include_router(admin_uploads_router)
 api_router.include_router(legal_router)
 api_router.include_router(settings_router)

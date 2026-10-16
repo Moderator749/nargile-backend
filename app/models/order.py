@@ -36,14 +36,24 @@ class OrderStatus(str, enum.Enum):
     PENDING_APPROVAL = "PENDING_APPROVAL"
     # Bank transfer placed; waiting for the money ("Havale Bekliyor").
     AWAITING_TRANSFER = "AWAITING_TRANSFER"
+    # Card order placed; waiting for PayTR to confirm the payment ("Ödeme Bekliyor").
+    AWAITING_PAYMENT = "AWAITING_PAYMENT"
     # Paid / approved by an admin.
     APPROVED = "APPROVED"
     SHIPPED = "SHIPPED"
     CANCELLED = "CANCELLED"
+    # PayTR reported the card payment failed (or it was never completed): the
+    # reserved stock and points went back, as on a cancellation.
+    PAYMENT_FAILED = "PAYMENT_FAILED"
 
 
-# Statuses an admin can approve (mark paid) or cancel.
-PENDING_STATUSES = (OrderStatus.PENDING_APPROVAL, OrderStatus.AWAITING_TRANSFER)
+# Statuses an admin can approve (mark paid) or cancel. A card order waiting for
+# PayTR is among them: if the notification never arrives, an admin who sees the
+# payment in the PayTR panel can still mark it paid.
+PENDING_STATUSES = (OrderStatus.PENDING_APPROVAL, OrderStatus.AWAITING_TRANSFER, OrderStatus.AWAITING_PAYMENT)
+# Orders that came to nothing: their stock went back, the points spent on them
+# returned and the points earned on them are void.
+VOID_STATUSES = (OrderStatus.CANCELLED, OrderStatus.PAYMENT_FAILED)
 
 
 class ShippingMethod(str, enum.Enum):

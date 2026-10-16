@@ -71,10 +71,11 @@ async def test_bank_transfer_order_awaits_transfer_with_address(client: AsyncCli
     assert order["shipping_address"]["city"] == "Ankara"
 
 
-async def test_card_order_stays_pending_approval(client: AsyncClient, customer_user: User, catalog):
+async def test_card_order_waits_for_the_payment(client: AsyncClient, customer_user: User, catalog):
+    """A card order is paid on PayTR's page, so it waits for that, not for an admin."""
     normal_v, _ = catalog
     resp = await _checkout(client, customer_user, normal_v, payment_method="CREDIT_CARD")
-    assert resp.json()["status"] == "PENDING_APPROVAL"
+    assert resp.json()["status"] == "AWAITING_PAYMENT"
 
 
 async def test_checkout_requires_an_address(client: AsyncClient, customer_user: User, catalog):
@@ -277,14 +278,14 @@ async def test_kumbara_grants_5pct_when_small_orders_reach_20k(
 
     wallet = (await client.get("/api/v1/me/wallet", headers=auth_header(customer_user))).json()
     assert wallet["balance"] == 1000
-    assert Decimal(wallet["kumbara"]["accumulated"]) == 0  # counter restarted
+    assert Decimal(wallet["milestone"]["spent"]) == 0  # counter restarted
     assert wallet["history"][0]["source"] == "KUMBARA"
 
     # The next small order starts a fresh accumulation.
     order = (await _checkout(client, customer_user, normal_v, qty=1)).json()
     await _approve(client, admin_user, order["id"])
     wallet = (await client.get("/api/v1/me/wallet", headers=auth_header(customer_user))).json()
-    assert Decimal(wallet["kumbara"]["accumulated"]) == Decimal("5000.00")
+    assert Decimal(wallet["milestone"]["spent"]) == Decimal("5000.00")
 
 
 async def test_kumbara_ignores_unpaid_and_large_orders(
@@ -295,7 +296,7 @@ async def test_kumbara_ignores_unpaid_and_large_orders(
     big = (await _checkout(client, customer_user, normal_v, qty=5)).json()  # 25,000: ParaPuan, not kumbara
     await _approve(client, admin_user, big["id"])
     wallet = (await client.get("/api/v1/me/wallet", headers=auth_header(customer_user))).json()
-    assert Decimal(wallet["kumbara"]["accumulated"]) == 0
+    assert Decimal(wallet["milestone"]["spent"]) == 0
 
 
 async def test_points_expire_after_a_year_and_spend_fifo(db_session: AsyncSession, customer_user: User):

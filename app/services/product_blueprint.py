@@ -27,9 +27,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.catalog import (
+    Category,
     CurrencyType,
     Inventory,
     Product,
+    ProductCategory,
     ProductCrossSell,
     ProductVariant,
     VariantPrice,
@@ -37,6 +39,7 @@ from app.models.catalog import (
 )
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType
+from app.services import slug_redirects
 from app.services.pricing_engine import pick_price_row
 from app.models.order import OrderItem
 from app.schemas.product_sheet import (
@@ -106,6 +109,7 @@ def color_slug(label: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "-", label.translate(_TR_ASCII).upper()).strip("-")
 
 _LOADS = (
+    selectinload(Product.category_links),
     selectinload(Product.variants).selectinload(ProductVariant.prices),
     selectinload(Product.variants).selectinload(ProductVariant.inventory),
     # The pinned products, with enough of each to draw its preview card.
@@ -179,10 +183,26 @@ async def save(
     """Create or update a product from its sheet. Flushes; the caller commits."""
     segments = await _segment_ids(db)
     now = datetime.now(timezone.utc)
+    # Before anything is written: the primary one goes on the product row itself.
+    if payload.category_ids:
+        found = set((await db.execute(select(Category.id).where(Category.id.in_(payload.category_ids)))).scalars())
+        if any(cid not in found for cid in payload.category_ids):
+            raise SheetError("Seçilen kategorilerden biri bulunamadı")
+
+    if payload.slug and payload.slug != (product.slug if product else None):
+        clash = await db.scalar(
+            select(Product.id).where(Product.slug == payload.slug, Product.id != (product.id if product else None))
+        )
+        if clash is not None:
+            raise SheetError(f"“{payload.slug}” adresi başka bir üründe kullanılıyor")
 
     if product is None:
-        product = Product(tags=[])
+        product = Product(tags=[], slug=payload.slug)
         db.add(product)
+    elif payload.slug and payload.slug != product.slug:
+        # Renamed: the old address keeps leading here (and to nowhere else).
+        await slug_redirects.moved(db, "product", product.slug, payload.slug, product_id=product.id)
+        product.slug = payload.slug
     for field in PRODUCT_FIELDS:
         setattr(product, field, getattr(payload, field))
     # The cover stays in `image_url`, where every one-photo reader looks.
@@ -203,9 +223,23 @@ async def save(
         await _sync_prices(db, variant, payload.prices, segments)
         await _sync_flash_sale(db, variant, payload.opportunity, now)
     await _sync_cross_sells(db, product, payload.related_product_ids)
+    await _sync_categories(db, product, payload.category_ids or [])
 
     await db.flush()
     return product
+
+
+async def _sync_categories(db: AsyncSession, product: Product, category_ids: list[int]) -> None:
+    """Replace the categories the product is listed under, primary first.
+
+    `products.category_id` (the primary) is already set from the same list,
+    which `save` has checked.
+    """
+    # Cleared and rewritten, as the cross-sells are: short, and positions stay contiguous.
+    await db.execute(delete(ProductCategory).where(ProductCategory.product_id == product.id))
+    db.add_all(
+        ProductCategory(product_id=product.id, category_id=cid, position=i) for i, cid in enumerate(category_ids)
+    )
 
 
 async def _sync_variants(
@@ -555,6 +589,7 @@ async def duplicate(db: AsyncSession, product: Product, segments: dict[int, Segm
     payload.base_code = await _free_code(db, sheet.base_code)
     payload.sku = None
     payload.name = f"{sheet.name} (Kopya)"[:255]
+    payload.slug = None  # the copy's own, from its name
     payload.is_published = False  # a draft until the admin says otherwise
     return await save(db, payload)
 
@@ -637,6 +672,12 @@ def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead
     # keyed on — a stored label the product's own list has lost would otherwise
     # drop a colour (and its stock) out of the form.
     fields["color_names"] = [v.color for v in sheet_colours if v.color]
+    # A product saved before it could have several still has its primary one.
+    category_ids = [link.category_id for link in product.category_links]
+    if product.category_id is not None and product.category_id not in category_ids:
+        category_ids.insert(0, product.category_id)
+    fields["category_ids"] = category_ids
+    fields["slug"] = product.slug
     return ProductSheetRead(
         id=product.id,
         related_product_ids=[c.related_product_id for c in sorted(product.cross_sells, key=lambda c: c.position)],

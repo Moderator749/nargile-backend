@@ -9,6 +9,8 @@ The two agreements are drafts with the shop's own details left in brackets: they
 are templates to be completed and reviewed, not legal advice.
 """
 
+from app.core.rich_text import text_to_html
+
 SHOP_NAME = "Sultan Nargile"
 
 # The framed notice beside the payment step, which the blueprint fixes word for
@@ -87,16 +89,22 @@ Fiyatlara KDV dâhildir. Fiyatlar ve kampanyalar önceden haber verilmeksizin de
 
 ## Kurumsal (B2B) hesaplar
 
-Kafe, restoran ve tütün mamulü satış noktaları için açılan hesaplarda fiyatlar, onaylanan fiyat listesine göre hesaplanır. Bu hesaplarda bireysel müşterilere tanımlı ParaPuan, ciro ve havale indirimleri uygulanmaz ve ücretsiz kargo koşulları geçerli değildir.
+Kafe, restoran ve tütün mamulü satış noktaları için açılan hesaplarda fiyatlar, onaylanan fiyat listesine göre hesaplanır. Bu hesaplarda bireysel müşterilere tanımlı Sultan Puan, ciro ve havale indirimleri uygulanmaz ve ücretsiz kargo koşulları geçerli değildir.
 
 ## İletişim
 
 Soru ve talepleriniz için: [E-posta] · [Telefon]"""
 
 # key -> (title, body). The order is the order the panel lists them in.
+# Written above in the old plain format ("## " headings, blank lines between
+# paragraphs) because that is easier to read here; served and stored as the
+# editor's HTML, like an edited text.
 DEFAULT_LEGAL: dict[str, tuple[str, str]] = {
-    "PRIVACY_NOTICE": ("Sepet Gizlilik Bilgilendirmesi", PRIVACY_NOTICE_BODY),
-    "PRIVACY": ("Gizlilik Kuralları", PRIVACY_BODY),
-    "DISTANCE_SALES": ("Mesafeli Satış Sözleşmesi", DISTANCE_SALES_BODY),
-    "TERMS": ("Şartlar ve Kurallar Sözleşmesi", TERMS_BODY),
+    key: (title, text_to_html(body))
+    for key, (title, body) in {
+        "PRIVACY_NOTICE": ("Sepet Gizlilik Bilgilendirmesi", PRIVACY_NOTICE_BODY),
+        "PRIVACY": ("Gizlilik Kuralları", PRIVACY_BODY),
+        "DISTANCE_SALES": ("Mesafeli Satış Sözleşmesi", DISTANCE_SALES_BODY),
+        "TERMS": ("Şartlar ve Kurallar Sözleşmesi", TERMS_BODY),
+    }.items()
 }

@@ -1,21 +1,23 @@
 """Checkout engine implementing Turhan Abi's commercial rules.
 
 Four of these rules are retail promotions and reach only a bireysel account on
-the retail price list — the volume discount, the havale discount, ParaPuan, and
-free shipping.
+the retail price list — the volume discount, the havale discount, Sultan Puan,
+and free shipping.
 A kafe, a shop or an export customer buys at a tier price those were never
 costed on top of, so it pays that price net, whatever it pays with and whatever
 it has in its wallet. ``app.services.perks`` is the one place that decides it.
 
-Business rules (all tiers are judged on the merchandise subtotal):
+Business rules (all tiers are judged on the merchandise subtotal). The figures
+are the defaults; the admin panel's "Parametreler" page sets the live ones, read
+once per cart (see ``app.services.store_parameters``):
 - Volume discount ("ciro indirimi"): 5% for 30,000-49,999.99 TRY, 8% for >= 50,000
   — retail only
 - Bank transfer discount: 5% for 1-29,999.99 TRY, 7% for >= 30,000, applied
   sequentially: on the amount left after the volume discount — retail only
-- ParaPuan/Kumbarapuan: granted when an order is paid (see app.services.wallet)
-  — retail only
-- ParaPuan redemption: 1 point = 1.00 TRY, capped at the discounted subtotal
-  — retail only
+- Sultan Puan: granted when an order is paid (see app.services.wallet), by
+  the loyalty parameters — retail only, and only while the program is on
+- Sultan Puan redemption: 1 point = `conversion_rate` TRY (₺1.00 by default),
+  capped at the discounted subtotal — retail only, and only while it is on
 - Shipping method: each kind of account is offered its own (see
   ``METHODS_BY_ACCOUNT_TYPE``); a nakliye ambarı and an export shipment are
   always paid by the receiver, since the shop cannot quote either at checkout
@@ -26,8 +28,8 @@ Business rules (all tiers are judged on the merchandise subtotal):
   Free from 3,000 TRY means the shop pays the carrier; below that the shipment
   goes "karşı ödemeli" and the buyer pays the carrier on delivery (which the
   buyer confirms with a checkbox at checkout). The 20 kg coal minimum applies
-  only to coal-dominant carts (coal, i.e. the Kömürler category, worth more than
-  50% of the subtotal): those ship on the shop only from 20 kg of coal (unknown
+  only to coal-dominant carts (coal, i.e. products with the "Sepet Kuralı"
+  switch on in the product form, worth more than 50% of the subtotal): those ship on the shop only from 20 kg of coal (unknown
   weights count as 0 kg). Where hardware dominates, its margin absorbs the freight.
 - The shop's own İstanbul run is free for a firm whose registered address is in
   İstanbul, from a subtotal the admin panel sets ("İstanbul içi 20000 ve üzeri
@@ -67,33 +69,25 @@ from app.models.order import (
     TransportMode,
 )
 from app.models.user import AccountType, SegmentType, User
-from app.services.categories import COAL_CATEGORY_SLUG, category_subtree
 from app.services.delivery import delivers_in_istanbul
 from app.services.perks import PERKS_REFUSED, retail_perks
 from app.services.shop_settings import ISTANBUL_FREE_MIN_DEFAULT, istanbul_free_minimum
+from app.services.store_parameters import (
+    DEFAULT_LOYALTY,
+    DEFAULT_PARAMETERS,
+    LoyaltyParameters,
+    StoreParameters,
+    load_parameters,
+)
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.flash_sales import discounted_price, live_flash_sales
 from app.services.loyalty_service import get_user_loyalty_balance
-from app.services.wallet import parapuan_for
+from app.services.wallet import points_for
 from app.services.pricing_engine import calculate_line_total, pick_price_row, to_try
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-FREE_SHIPPING_THRESHOLD = Decimal("3000.00")
-COAL_MAX_RATIO = Decimal("0.50")  # above this share of the subtotal, the 20 kg coal minimum applies
-COAL_MIN_FREE_KG = Decimal("20")  # coal ships free only from this weight
-VOLUME_LOW_THRESHOLD = Decimal("30000.00")
-VOLUME_LOW_RATE = Decimal("0.05")
-VOLUME_HIGH_THRESHOLD = Decimal("50000.00")
-VOLUME_HIGH_RATE = Decimal("0.08")
-VOLUME_TIERS = ((VOLUME_LOW_THRESHOLD, VOLUME_LOW_RATE), (VOLUME_HIGH_THRESHOLD, VOLUME_HIGH_RATE))
-
-BANK_TRANSFER_LOW_CEILING = Decimal("29999.99")
-BANK_TRANSFER_LOW_RATE = Decimal("0.05")
-BANK_TRANSFER_HIGH_THRESHOLD = Decimal("30000.00")
-BANK_TRANSFER_HIGH_RATE = Decimal("0.07")
-
-POINTS_TO_TRY = Decimal("1.00")  # 1 ParaPuan = 1.00 TRY
+LOYALTY_OFF = "Sultan Puan programı şu anda kapalı; puan kullanılamıyor"
 
 
 def try_amount(value: Decimal) -> str:
@@ -169,12 +163,19 @@ class ResolvedCartItem:
     quantity: int
     line_total: Decimal = field(init=False)
     tags: list[str] = field(init=False)
-    # In the Kömürler category (or a subcategory).
+    # The product's "Sepet Kuralı" switch is on: it counts as coal for the cargo rule.
     is_coal: bool = False
     # Charged at the product's "Fırsat" price, so the deal's stock is spent.
     offer_applied: bool = False
     # kg per unit; None = not recorded.
     unit_weight_kg: Decimal | None = None
+    # The VAT rate (percent) the line's price includes, from its price row.
+    vat_rate: Decimal = Decimal("0")
+
+    @property
+    def line_total_excl_tax(self) -> Decimal:
+        """The line before VAT: prices are stored and charged VAT-inclusive."""
+        return (self.line_total / (1 + self.vat_rate / 100)).quantize(Decimal("0.01"))
 
     def __post_init__(self) -> None:
         self.line_total = calculate_line_total(self.unit_price, self.quantity)
@@ -196,6 +197,7 @@ class ShippingQuote:
     coal_ratio: Decimal  # coal_total / subtotal, 0..1
     coal_weight_kg: Decimal  # known coal weight in the cart
     coal_weight_unknown: bool  # some coal in the cart has no recorded weight
+    coal_quantity: int = 0  # units (adet) of coal in the cart
 
     @property
     def free(self) -> bool:
@@ -233,6 +235,8 @@ class CartResult:
     # Whether this account gets the retail promotions at all. False means every
     # discount above is zero by rule, not by arithmetic.
     perks_eligible: bool = True
+    # The parameters this cart was priced with, so the response can state them.
+    params: StoreParameters = DEFAULT_PARAMETERS
 
 
 # ── Engine ───────────────────────────────────────────────────────────────────
@@ -262,6 +266,7 @@ class CheckoutEngine:
                 "İstanbul içi ücretsiz teslimat yalnızca İstanbul'daki kayıtlı adresler için geçerlidir"
             )
         perks = retail_perks(user, segment_code)
+        params = await load_parameters(self._db)
 
         segment_id = user.segment_id or 1  # default to RETAIL
         items = await self._load_items(variant_quantities, segment_id)
@@ -278,19 +283,19 @@ class CheckoutEngine:
                     f"siparişlerde geçerlidir; sepetinizde {try_amount(subtotal)} TL var"
                 )
         shipping = self.quote_shipping(
-            subtotal, items, shipping_method, perks=perks, istanbul_min=istanbul_min
+            subtotal, items, shipping_method, perks=perks, istanbul_min=istanbul_min, params=params
         )
         # The three retail promotions, all of them off for a B2B account.
         volume_rate, volume_amount = (
-            self.calculate_volume_discount(subtotal) if perks else (Decimal("0.00"), Decimal("0.00"))
+            self.calculate_volume_discount(subtotal, params) if perks else (Decimal("0.00"), Decimal("0.00"))
         )
         # Sequential: the transfer discount applies to what's left after the volume discount.
         discount_rate, discount_amount = (
-            self.calculate_discounts(subtotal, payment_method, base=subtotal - volume_amount)
+            self.calculate_discounts(subtotal, payment_method, base=subtotal - volume_amount, params=params)
             if perks
             else (Decimal("0.00"), Decimal("0.00"))
         )
-        loyalty_points = self.calculate_loyalty_earnings(subtotal) if perks else 0
+        loyalty_points = self.calculate_loyalty_earnings(subtotal, params.loyalty) if perks else 0
 
         # Points redemption: validate and cap
         points_discount = Decimal("0.00")
@@ -298,17 +303,17 @@ class CheckoutEngine:
         if points_to_redeem > 0:
             if not perks:
                 raise ValueError(PERKS_REFUSED)
+            if not params.loyalty.enabled:
+                raise ValueError(LOYALTY_OFF)
             balance = await get_user_loyalty_balance(self._db, user.id)
             if points_to_redeem > balance:
                 raise ValueError(
-                    f"Insufficient ParaPuan: requested {points_to_redeem}, "
-                    f"available {balance}"
+                    f"Yetersiz Sultan Puan: {points_to_redeem} puan kullanmak istediniz, "
+                    f"bakiyeniz {balance} puan"
                 )
-            # 1 point = 1.00 TRY, but cannot exceed the discounted subtotal
-            max_redeemable = subtotal - volume_amount - discount_amount
-            points_as_try = Decimal(points_to_redeem) * POINTS_TO_TRY
-            points_discount = min(points_as_try, max_redeemable).quantize(Decimal("0.01"))
-            actual_redeemed = int(points_discount / POINTS_TO_TRY)
+            points_discount, actual_redeemed = self.redeem_points(
+                points_to_redeem, subtotal - volume_amount - discount_amount, params.loyalty
+            )
 
         net_total = (
             subtotal + shipping.cost - volume_amount - discount_amount - points_discount
@@ -329,6 +334,7 @@ class CheckoutEngine:
             points_redeemed=actual_redeemed,
             payment_method=payment_method,
             perks_eligible=perks,
+            params=params,
         )
 
     async def execute_checkout(
@@ -362,7 +368,10 @@ class CheckoutEngine:
         """Execute the full checkout: calculate, create order, deduct inventory.
 
         Bank-transfer orders start as AWAITING_TRANSFER ("Havale Bekliyor") until an
-        admin confirms the money; others start as PENDING_APPROVAL.
+        admin confirms the money; card orders as AWAITING_PAYMENT until PayTR
+        confirms the payment; an export request as PENDING_APPROVAL. Stock and
+        spent points are held from here either way, and released if the order
+        is cancelled or its payment fails.
 
         `shipping_consent` is the buyer ticking "gönderim ücreti teslimatta alıcı
         tarafından ödenecektir"; a shipment the shop does not cover cannot be
@@ -460,9 +469,13 @@ class CheckoutEngine:
             shipping_cost=cart.cargo_cost,
             discount_amount=total_discount,
             payment_method=payment_method,
+            # A transfer waits for the money; a card waits for PayTR to confirm
+            # it (see app.api.v1.payments); a quote request waits for an admin.
             status=(
                 OrderStatus.AWAITING_TRANSFER
                 if payment_method == PaymentMethod.BANK_TRANSFER
+                else OrderStatus.AWAITING_PAYMENT
+                if payment_method == PaymentMethod.CREDIT_CARD
                 else OrderStatus.PENDING_APPROVAL
             ),
             shipping_method=shipping_method,
@@ -507,7 +520,7 @@ class CheckoutEngine:
                 source=PointSource.CHECKOUT,
             ))
 
-        # NOTE: EARNED ledger entries are NOT written here. ParaPuan is
+        # NOTE: EARNED ledger entries are NOT written here. Sultan Puan is
         # awarded only when an admin approves the order (see admin_orders.py).
 
         await self._db.commit()
@@ -517,17 +530,17 @@ class CheckoutEngine:
     # ── Discount calculation ─────────────────────────────────────────────
 
     @staticmethod
-    def calculate_volume_discount(subtotal: Decimal) -> tuple[Decimal, Decimal]:
-        """Return (rate, amount) of the volume discount ("ciro indirimi").
-
+    def calculate_volume_discount(
+        subtotal: Decimal, params: StoreParameters = DEFAULT_PARAMETERS
+    ) -> tuple[Decimal, Decimal]:
+        """Return (rate, amount) of the volume discount ("ciro indirimi"):
+        the rate of the highest tier in `params.volume_tiers` the subtotal
+        reaches. By default:
           - 30,000.00 – 49,999.99 TRY → 5%
           - >= 50,000.00 TRY          → 8%
         """
-        if subtotal >= VOLUME_HIGH_THRESHOLD:
-            rate = VOLUME_HIGH_RATE
-        elif subtotal >= VOLUME_LOW_THRESHOLD:
-            rate = VOLUME_LOW_RATE
-        else:
+        rate = params.volume_rate(subtotal)
+        if not rate:
             return Decimal("0.00"), Decimal("0.00")
         return rate, (subtotal * rate).quantize(Decimal("0.01"))
 
@@ -536,11 +549,14 @@ class CheckoutEngine:
         subtotal: Decimal,
         payment_method: PaymentMethod,
         base: Decimal | None = None,
+        params: StoreParameters = DEFAULT_PARAMETERS,
     ) -> tuple[Decimal, Decimal]:
         """Return (rate, amount) of the bank transfer discount.
 
-        The tier is judged on the subtotal; the rate applies to `base` (the
-        amount left after the volume discount), or to the subtotal if omitted.
+        The tier (from `params.bank_transfer_tiers`) is judged on the subtotal;
+        the rate applies to `base` (the amount left after the volume discount),
+        or to the subtotal if omitted. By default:
+          - below 1.00 TRY        → 0%
           - 1.00 – 29,999.99 TRY  → 5%
           - >= 30,000.00 TRY      → 7%
         Credit card: 0%
@@ -548,13 +564,9 @@ class CheckoutEngine:
         if payment_method != PaymentMethod.BANK_TRANSFER:
             return Decimal("0.00"), Decimal("0.00")
 
-        if subtotal < Decimal("1.00"):
+        rate = params.bank_transfer_rate(subtotal)
+        if not rate:
             return Decimal("0.00"), Decimal("0.00")
-
-        if subtotal >= BANK_TRANSFER_HIGH_THRESHOLD:
-            rate = BANK_TRANSFER_HIGH_RATE
-        else:
-            rate = BANK_TRANSFER_LOW_RATE
 
         amount = ((subtotal if base is None else base) * rate).quantize(Decimal("0.01"))
         return rate, amount
@@ -569,16 +581,22 @@ class CheckoutEngine:
         *,
         perks: bool = True,
         istanbul_min: Decimal = ISTANBUL_FREE_MIN_DEFAULT,
+        params: StoreParameters = DEFAULT_PARAMETERS,
     ) -> ShippingQuote:
         """Who pays the carriage, and why. The cost is always ₺0.
 
         The shop's own İstanbul run is free from `istanbul_min` upwards — the
         limit the panel sets. `resolve_cart` refuses the method below that, so
         the quote only says so for its own sake. Otherwise, for a
-        retail cart the shop pays from 3,000 TRY, whether the parcel goes to a
-        door or to a branch. Exception: in a coal-dominant cart (coal > 50%
-        of the subtotal) less than 20 kg of coal goes "karşı ödemeli" (unknown
-        weights count as 0 kg). At ≤ 50% coal the weight doesn't matter.
+        retail cart the shop pays from `params.free_shipping_threshold` (3,000
+        TRY by default), whether the parcel goes to a door or to a branch.
+        Exception, the "%50 Kuralı": in a coal-dominant cart (coal — products
+        with "Sepet Kuralı" on — over `coal_max_ratio` of the subtotal, 50%)
+        less than the minimum of coal goes "karşı ödemeli". The minimum is
+        `coal_min_kg` (20 kg; unknown weights count as 0 kg) or, when
+        `coal_rule_basis` is "quantity", `coal_min_quantity` units — one or the
+        other, never both. Below the ratio the minimum doesn't matter. The
+        reason is "coal_weight" either way.
 
         Free shipping is one of the retail promotions, so ``perks=False`` — a
         B2B account — never reaches that threshold: a tier price does not
@@ -595,6 +613,12 @@ class CheckoutEngine:
         coal_kg = sum(
             (i.unit_weight_kg * i.quantity for i in coal if i.unit_weight_kg is not None), Decimal("0")
         )
+        coal_quantity = sum(i.quantity for i in coal)
+        short_of_minimum = (
+            coal_quantity < params.coal_min_quantity
+            if params.coal_rule_basis == "quantity"
+            else coal_kg < params.coal_min_kg
+        )
 
         reason: ShippingReason
         if method == ShippingMethod.ISTANBUL_FREE:
@@ -607,9 +631,9 @@ class CheckoutEngine:
         elif not perks:
             # A tier price does not include carriage, at any cart value.
             reason = "tier_price"
-        elif subtotal < FREE_SHIPPING_THRESHOLD:
+        elif subtotal < params.free_shipping_threshold:
             reason = "below_threshold"
-        elif coal_total / subtotal > COAL_MAX_RATIO and coal_kg < COAL_MIN_FREE_KG:
+        elif subtotal > 0 and coal_total / subtotal > params.coal_max_ratio and short_of_minimum:
             reason = "coal_weight"
         else:
             reason = "free"
@@ -622,17 +646,33 @@ class CheckoutEngine:
             coal_ratio=coal_ratio,
             coal_weight_kg=coal_kg.quantize(Decimal("0.001")),
             coal_weight_unknown=any(i.unit_weight_kg is None for i in coal),
+            coal_quantity=coal_quantity,
         )
 
     @staticmethod
     def calculate_cargo(subtotal: Decimal, items: list[ResolvedCartItem]) -> Decimal:
         return CheckoutEngine.quote_shipping(subtotal, items).cost
 
-    # ── Loyalty / ParaPuan calculation ───────────────────────────────────
+    # ── Loyalty / Sultan Puan calculation ────────────────────────────────
 
     @staticmethod
-    def calculate_loyalty_earnings(subtotal: Decimal) -> int:
-        return parapuan_for(subtotal)
+    def calculate_loyalty_earnings(subtotal: Decimal, loyalty: LoyaltyParameters = DEFAULT_LOYALTY) -> int:
+        return points_for(subtotal, loyalty)
+
+    @staticmethod
+    def redeem_points(
+        points: int, max_redeemable: Decimal, loyalty: LoyaltyParameters = DEFAULT_LOYALTY
+    ) -> tuple[Decimal, int]:
+        """(discount in TRY, points actually used) for spending `points`.
+
+        Each point is worth `conversion_rate` TRY, and no more points are used
+        than the discounted subtotal can absorb, so a point is never spent for
+        less than its value — at ₺1 a point, the kuruş left over by the cap is
+        paid in money.
+        """
+        rate = loyalty.conversion_rate
+        usable = min(points, int(max(max_redeemable, Decimal("0")) // rate))
+        return (Decimal(usable) * rate).quantize(Decimal("0.01")), usable
 
     # ── Private helpers ──────────────────────────────────────────────────
 
@@ -685,7 +725,6 @@ class CheckoutEngine:
         )
         variants = {v.id: v for v in result.scalars().all()}
         sales = await live_flash_sales(self._db, variant_ids, datetime.now(timezone.utc))
-        coal_categories = set((await self._db.execute(category_subtree(COAL_CATEGORY_SLUG))).scalars())
         rates = await self._rates_for(variants.values(), segment_id)
 
         items: list[ResolvedCartItem] = []
@@ -714,8 +753,9 @@ class CheckoutEngine:
                     unit_price=sale_price if sale_price is not None else unit_price,
                     quantity=qty,
                     offer_applied=sale_price is not None,
-                    is_coal=variant.product.category_id in coal_categories,
+                    is_coal=variant.product.is_cart_rule_applied,
                     unit_weight_kg=variant.weight_kg,
+                    vat_rate=price_row.vat_rate,
                 )
             )
 

@@ -17,8 +17,9 @@ class TransactionType(str, enum.Enum):
 
 
 class PointSource(str, enum.Enum):
-    PARAPUAN = "PARAPUAN"  # 10% on a single paid order of 20,000–29,999.99 TRY
-    KUMBARA = "KUMBARA"  # 5% once smaller paid orders add up to 20,000 TRY
+    # Names kept from before the "Sultan Puan" rename, so old rows read the same.
+    PARAPUAN = "PARAPUAN"  # standard Sultan Puan on a single paid order inside the band
+    KUMBARA = "KUMBARA"  # annual Sultan Puan bonus (formerly Kumbarapuan)
     CHECKOUT = "CHECKOUT"  # redeemed in the cart
     ADMIN = "ADMIN"  # manual adjustment by an admin
 

@@ -23,6 +23,8 @@ class CartCalculateRequest(BaseModel):
 class CartItemBreakdown(BaseModel):
     variant_id: uuid.UUID
     product_id: uuid.UUID | None = None
+    # For the link to the product's page, /product/<slug>.
+    product_slug: str | None = None
     sku: str
     product_name: str
     # The "Renk" of the variant in the cart; null on a colourless product.
@@ -32,6 +34,8 @@ class CartItemBreakdown(BaseModel):
     line_total: Decimal
     tags: list[str]
     image_url: str | None = None
+    # Percent; `unit_price` and `line_total` include it.
+    vat_rate: Decimal = Decimal("0")
 
 
 class ShippingBreakdown(BaseModel):
@@ -47,7 +51,9 @@ class ShippingBreakdown(BaseModel):
     # "Karşı ödemeli": paid to the carrier/courier on delivery. Requires the
     # buyer's consent at checkout.
     receiver_pays: bool
-    # coal_weight: a coal-dominant cart (> coal_max_ratio) below coal_min_kg.
+    # coal_weight: the "%50 Kuralı" — a coal-dominant cart (> coal_max_ratio)
+    # below the minimum: coal_min_kg, or coal_min_quantity when coal_rule_basis
+    # is "quantity".
     # freight: nakliye ambarı, which collects its own fee from the receiver.
     # international: freight and customs, quoted after the order.
     # tier_price: a B2B account, whose price list does not include carriage, so
@@ -62,6 +68,9 @@ class ShippingBreakdown(BaseModel):
     coal_weight_kg: Decimal
     coal_min_kg: Decimal
     coal_weight_unknown: bool
+    coal_rule_basis: Literal["kg", "quantity"]
+    coal_quantity: int
+    coal_min_quantity: int
 
 
 class VolumeTier(BaseModel):
@@ -71,7 +80,7 @@ class VolumeTier(BaseModel):
 
 class CartCalculateResponse(BaseModel):
     subtotal: Decimal
-    # Whether this account gets the retail promotions (ParaPuan, ciro and havale
+    # Whether this account gets the retail promotions (Sultan Puan, ciro and havale
     # discounts). False means the amounts below are zero by rule: a B2B account
     # pays its tier price net. See app.services.perks.
     perks_eligible: bool = True
@@ -87,6 +96,12 @@ class CartCalculateResponse(BaseModel):
     discount_amount: Decimal
     points_discount: Decimal
     net_total: Decimal
+    # The VAT inside the merchandise, for a business invoice: the lines before
+    # VAT, the VAT on them, and the rates involved. Only meaningful without
+    # discounts — which is how a B2B cart always is (see perks_eligible).
+    subtotal_excl_tax: Decimal = Decimal("0.00")
+    vat_total: Decimal = Decimal("0.00")
+    vat_rates: list[Decimal] = Field(default_factory=list)
     loyalty_points_to_earn: int
     payment_method: PaymentMethod
     items: list[CartItemBreakdown]

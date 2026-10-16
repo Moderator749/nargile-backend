@@ -21,6 +21,8 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.rich_text import RICH_TEXT_MAX, to_rich_html
+from app.core.slugs import PRODUCT_SLUG, PRODUCT_SLUG_MAX
 from app.models.catalog import CurrencyType
 from app.models.user import SegmentType
 from app.schemas.catalog import IMAGE_URL_PATTERN
@@ -131,7 +133,7 @@ class SheetRules(BaseModel):
     has_volume_discount: bool = True
     gives_points: bool = True
     can_use_points: bool = True
-    # "Sepet Kuralı": ağır kargo payı 3.000 TL üzeri sepetlerde %50'yi geçemez.
+    # "Sepet Kuralı": counts as coal for the cargo rule (see Product.is_cart_rule_applied).
     is_cart_rule_applied: bool = False
 
 
@@ -161,6 +163,8 @@ class SheetOpportunity(BaseModel):
 
 
 MAX_CROSS_SELLS = 4
+# Categories one product can be listed under.
+MAX_CATEGORIES = 20
 
 
 class CrossSellCard(BaseModel):
@@ -179,16 +183,26 @@ class ProductSheetWrite(BaseModel):
     base_code: str = Field(min_length=1, max_length=30)
     name: str = Field(min_length=2, max_length=255)
     brand: str | None = Field(default=None, max_length=100)
+    # Every category the product is listed under, the primary one (its
+    # breadcrumb's) first. `category_id` is that first one, kept in step by
+    # `_primary_category`; a caller that sends only `category_id` (as the sheet
+    # did before) gets just that one.
+    category_ids: list[int] | None = Field(default=None, max_length=MAX_CATEGORIES)
     category_id: int | None = None
     # "Renk": one or more labels, in the order the admin added them. Each one is a
     # buyable colour with its own stock; see `variants`.
     color_names: list[str] = Field(default_factory=list, max_length=20)
     # ── "Açıklama ve SEO" ────────────────────────────────────────────────────
-    description: str | None = Field(default=None, max_length=8000)
+    # HTML from the panel's editor, cleaned on the way in (app.core.rich_text).
+    description: str | None = Field(default=None, max_length=RICH_TEXT_MAX)
     # Override the product page's <title>; blank falls back to the product name.
     meta_title: str | None = Field(default=None, max_length=70)
     # Override its <meta name="description">; blank falls back to `description`.
     meta_description: str | None = Field(default=None, max_length=160)
+    # The page's address, /product/<slug>. Blank keeps the current one (a new
+    # product's comes from its name). Changing it leaves the old address
+    # redirecting here, so links already out there keep working.
+    slug: str | None = Field(default=None, max_length=PRODUCT_SLUG_MAX)
     # Gallery, in order; the first is the cover. The server keeps `image_url` in
     # step with it, so one-photo readers need no change.
     image_urls: list[str] = Field(default_factory=list, max_length=12)
@@ -216,6 +230,13 @@ class ProductSheetWrite(BaseModel):
     opportunity: SheetOpportunity = SheetOpportunity()
     # "Birlikte satılanlar", in the order the admin arranged them.
     related_product_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_CROSS_SELLS)
+
+    @model_validator(mode="after")
+    def _primary_category(self) -> "ProductSheetWrite":
+        ids = self.category_ids if self.category_ids is not None else [self.category_id] if self.category_id else []
+        self.category_ids = list(dict.fromkeys(ids))  # de-duplicated, order kept
+        self.category_id = self.category_ids[0] if self.category_ids else None
+        return self
 
     @field_validator("related_product_ids")
     @classmethod
@@ -269,7 +290,23 @@ class ProductSheetWrite(BaseModel):
             raise ValueError("Geçerli bir YouTube bağlantısı girin")
         return url
 
-    @field_validator("description", "meta_title", "meta_description")
+    @field_validator("slug")
+    @classmethod
+    def _clean_slug(cls, slug: str | None) -> str | None:
+        slug = (slug or "").strip().lower()
+        if not slug:
+            return None
+        if not PRODUCT_SLUG.match(slug):
+            raise ValueError("Adres yalnızca küçük harf, rakam, tire ve nokta içerebilir (ör. sultan-nargile-takimi)")
+        return slug
+
+    @field_validator("description")
+    @classmethod
+    def _clean_description(cls, text: str | None) -> str | None:
+        """Only the editor's safe tags are stored; plain text becomes paragraphs."""
+        return to_rich_html(text)
+
+    @field_validator("meta_title", "meta_description")
     @classmethod
     def _trim_to_none(cls, text: str | None) -> str | None:
         """An emptied textarea stores NULL, not "", so the fallbacks kick in."""

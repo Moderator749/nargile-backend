@@ -235,8 +235,9 @@ async def approve_order(
     db: AsyncSession = Depends(get_db),
 ):
     """Approve / mark paid a pending order (incl. "Havale Bekliyor" once the money
-    has arrived). Points are granted here, never at checkout: ParaPuan for a
-    20,000–29,999.99 order, Kumbarapuan once smaller paid orders reach 20,000."""
+    has arrived). Sultan Puan is granted here, never at checkout, by the live
+    loyalty parameters: the standard award for an order inside the band, and
+    the annual bonus when this order brings the rolling spend to the target."""
     order, _user = await _order_with_user(db, order_id)
     if order.status not in PENDING_STATUSES:
         raise HTTPException(
@@ -244,16 +245,19 @@ async def approve_order(
             detail=f"Order cannot be approved — current status is {order.status.value}",
         )
 
-    parapuan, kumbara = await order_lifecycle.mark_paid(db, order, datetime.now(timezone.utc))
+    standard, bonus = await order_lifecycle.mark_paid(db, order, datetime.now(timezone.utc))
     await db.commit()
 
-    parts = [f"{parapuan} ParaPuan" if parapuan else "", f"{kumbara} Kumbarapuan" if kumbara else ""]
+    parts = [
+        f"{standard} Sultan Puan" if standard else "",
+        f"{bonus} Sultan Puan annual bonus" if bonus else "",
+    ]
     awarded = " + ".join(p for p in parts if p)
     return OrderApproveResponse(
         order_id=order.id,
         order_number=order.order_number,
         new_status=OrderStatus.APPROVED.value,
-        loyalty_points_awarded=parapuan + kumbara,
+        loyalty_points_awarded=standard + bonus,
         message=f"Order approved. {awarded} awarded." if awarded else "Order approved. No points earned for this order.",
         paid_at=order.paid_at,
     )

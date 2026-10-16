@@ -2,14 +2,14 @@
 mapping, and brands (with logos) for the menu and the homepage marquee."""
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin_user
 from app.api.v1.brands import brand_read
 from app.core.database import get_db
 from app.models.brand import Brand
-from app.models.catalog import Category, Product
+from app.models.catalog import Category, Product, ProductCategory
 from app.models.user import User
 from app.schemas.taxonomy import (
     AdminCategoryRead,
@@ -20,7 +20,8 @@ from app.schemas.taxonomy import (
     ProductCategoryAssignResult,
     slugify,
 )
-from app.services.categories import COAL_CATEGORY_SLUG
+from app.services import slug_redirects
+from app.services.categories import memberships, products_in
 from app.services.media import MAX_IMAGE_BYTES, InvalidImage, delete_media, save_image
 
 router = APIRouter(prefix="/admin", tags=["admin-taxonomy"])
@@ -30,9 +31,10 @@ router = APIRouter(prefix="/admin", tags=["admin-taxonomy"])
 
 
 async def _category_rows(db: AsyncSession, ids: list[int] | None = None) -> list[AdminCategoryRead]:
+    listed = memberships().subquery()
     counts = (
-        select(Product.category_id, func.count().label("n"))
-        .group_by(Product.category_id)
+        select(listed.c.category_id, func.count().label("n"))
+        .group_by(listed.c.category_id)
         .subquery()
     )
     stmt = (
@@ -45,7 +47,7 @@ async def _category_rows(db: AsyncSession, ids: list[int] | None = None) -> list
     return [
         AdminCategoryRead(
             id=c.id, name=c.name, slug=c.slug, parent_id=c.parent_id, sort_order=c.sort_order,
-            is_active=c.is_active, image_url=c.image_url, product_count=n
+            is_active=c.is_active, image_url=c.image_url, description=c.description, product_count=n
         )
         for c, n in (await db.execute(stmt)).all()
     ]
@@ -71,12 +73,20 @@ async def _apply_category(db: AsyncSession, category: Category, payload: Categor
         if category.id is not None and await db.scalar(select(Category.id).where(Category.parent_id == category.id).limit(1)):
             raise HTTPException(status_code=422, detail="A category with subcategories must stay top-level")
 
+    if category.id is not None and category.slug and category.slug != slug:
+        # Renamed: /catalog/<old> keeps leading here.
+        await slug_redirects.moved(db, "category", category.slug, slug, category_id=category.id)
+    else:
+        await slug_redirects.release(db, "category", slug)
     category.name = payload.name
     category.slug = slug
     category.parent_id = payload.parent_id
     category.sort_order = payload.sort_order
     category.is_active = payload.is_active
     category.image_url = payload.image_url
+    # Only when sent: a caller that predates the field must not wipe it.
+    if "description" in payload.model_fields_set:
+        category.description = payload.description
 
 
 @router.get("/categories", response_model=list[AdminCategoryRead])
@@ -109,8 +119,6 @@ async def update_category(
     category = await db.get(Category, category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="Category not found")
-    if category.slug == COAL_CATEGORY_SLUG and (payload.slug or slugify(payload.name)) != COAL_CATEGORY_SLUG:
-        raise HTTPException(status_code=409, detail="Bu kategorinin adresi kömür kargo kurallarında kullanılıyor; değiştirilemez")
     await _apply_category(db, category, payload)
     await db.commit()
     return (await _category_rows(db, [category_id]))[0]
@@ -125,11 +133,9 @@ async def delete_category(
     category = await db.get(Category, category_id)
     if category is None:
         raise HTTPException(status_code=404, detail="Category not found")
-    if category.slug == COAL_CATEGORY_SLUG:
-        raise HTTPException(status_code=409, detail="Bu kategori kömür kargo kurallarında kullanılıyor; silinemez")
     if await db.scalar(select(Category.id).where(Category.parent_id == category_id).limit(1)):
         raise HTTPException(status_code=409, detail="Move or delete its subcategories first")
-    if await db.scalar(select(Product.id).where(Product.category_id == category_id).limit(1)):
+    if await db.scalar(products_in([category_id]).limit(1)):
         raise HTTPException(status_code=409, detail="Move its products to another category first")
     await db.delete(category)
     await db.commit()
@@ -142,7 +148,10 @@ async def assign_product_category(
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Bulk-move products into a category (or out of any, with category_id null)."""
+    """Bulk-move products into a category (or out of any, with category_id null).
+
+    A move: the category replaces every one the products were listed under.
+    """
     if payload.category_id is not None and await db.get(Category, payload.category_id) is None:
         raise HTTPException(status_code=404, detail="Category not found")
     result = await db.execute(
@@ -151,6 +160,10 @@ async def assign_product_category(
         .values(category_id=payload.category_id)
         .execution_options(synchronize_session=False)
     )
+    await db.execute(delete(ProductCategory).where(ProductCategory.product_id.in_(payload.product_ids)))
+    if payload.category_id is not None:
+        moved = (await db.execute(select(Product.id).where(Product.id.in_(payload.product_ids)))).scalars()
+        db.add_all(ProductCategory(product_id=pid, category_id=payload.category_id, position=0) for pid in moved)
     await db.commit()
     return ProductCategoryAssignResult(updated=result.rowcount)
 

@@ -190,6 +190,33 @@ async def test_sheet_update_clears_a_price_and_keeps_the_sale_running(
     assert sale.starts_at == started  # the countdown did not restart
 
 
+async def test_brand_and_category_saved_together_list_the_product_in_the_sidebar(
+    client: AsyncClient, admin_user: User
+):
+    """The sidebar's brand entries search for the brand's term and its category
+    entries open the category page: one save of both puts the product under each."""
+    h = auth_header(admin_user)
+    tag = uuid.uuid4().hex[:8]
+    brand = (await client.post("/api/v1/admin/brands", headers=h, json={"name": f"Marka {tag}"})).json()
+    luleler = next(c for c in (await client.get("/api/v1/categories/")).json() if c["slug"] == "luleler")
+    try:
+        created = (await _post(client, admin_user, _sheet(brand=None))).json()
+        assert created["id"] not in [p["id"] for p in (await client.get("/api/v1/products/", params={"q": brand["search_term"]})).json()]
+
+        # What the form sends: the picked brand's name and the category's id, in one PUT.
+        body = _sheet(base_code=created["base_code"], brand=brand["name"], category_id=luleler["id"])
+        saved = await client.put(f"/api/v1/admin/products/{created['id']}/sheet", headers=h, json=body)
+        assert saved.status_code == 200, saved.text
+        assert (saved.json()["brand"], saved.json()["category_id"]) == (brand["name"], luleler["id"])
+
+        by_brand = (await client.get("/api/v1/products/", params={"q": brand["search_term"]})).json()
+        by_category = (await client.get("/api/v1/products/", params={"category": "luleler", "limit": 100})).json()
+        assert created["id"] in {p["id"] for p in by_brand}
+        assert created["id"] in {p["id"] for p in by_category}
+    finally:
+        await client.delete(f"/api/v1/admin/brands/{brand['id']}", headers=h)
+
+
 async def test_opportunity_needs_a_price(client: AsyncClient, admin_user: User):
     opportunity = {"is_opportunity": True, "opportunity_end_date": "2030-01-01T00:00:00Z"}
     assert (await _post(client, admin_user, _sheet(opportunity=opportunity))).status_code == 422
@@ -462,3 +489,64 @@ async def test_usd_price_is_shown_in_both_currencies_and_charged_in_try(
         json={"payment_method": "CREDIT_CARD", "items": [{"variant_id": sheet["variant_id"], "quantity": 1}]},
     )
     assert Decimal(quote.json()["subtotal"]) == Decimal("120.00") * USD_PER_TRY
+
+
+# ── Several categories ───────────────────────────────────────────────────────
+
+
+async def test_a_product_is_listed_under_every_category_it_is_in(client: AsyncClient, admin_user: User):
+    """MR.WOOD and Lüleler at once: both pages list it, the first is its primary,
+    the admin counts it in each, and neither category can be deleted under it."""
+    h = auth_header(admin_user)
+    tag = uuid.uuid4().hex[:8]
+    new = lambda name: client.post("/api/v1/admin/categories", headers=h, json={"name": f"{name} {tag}"})  # noqa: E731
+    wood, bowls = (await new("Mr Wood")).json(), (await new("Lule")).json()
+    try:
+        sheet = (await _post(client, admin_user, _sheet(category_ids=[wood["id"], bowls["id"], wood["id"]]))).json()
+        assert sheet["category_ids"] == [wood["id"], bowls["id"]]  # de-duplicated, order kept
+        assert sheet["category_id"] == wood["id"]  # the primary: the breadcrumb's
+
+        for cat in (wood, bowls):
+            listed = (await client.get("/api/v1/products/", params={"category": cat["slug"]})).json()
+            assert [p["id"] for p in listed] == [sheet["id"]], cat["slug"]
+        counts = {r["id"]: r["product_count"] for r in (await client.get("/api/v1/admin/categories", headers=h)).json()}
+        assert (counts[wood["id"]], counts[bowls["id"]]) == (1, 1)
+        assert (await client.delete(f"/api/v1/admin/categories/{bowls['id']}", headers=h)).status_code == 409
+
+        # Dropping one takes the product off that page only.
+        body = _sheet(base_code=sheet["base_code"], category_ids=[bowls["id"]])
+        resaved = (await client.put(f"/api/v1/admin/products/{sheet['id']}/sheet", headers=h, json=body)).json()
+        assert (resaved["category_ids"], resaved["category_id"]) == ([bowls["id"]], bowls["id"])
+        assert (await client.get("/api/v1/products/", params={"category": wood["slug"]})).json() == []
+        assert len((await client.get("/api/v1/products/", params={"category": bowls["slug"]})).json()) == 1
+    finally:
+        await client.post(
+            "/api/v1/admin/products/category", headers=h, json={"product_ids": [sheet["id"]], "category_id": None}
+        )
+        for cat in (wood, bowls):
+            await client.delete(f"/api/v1/admin/categories/{cat['id']}", headers=h)
+
+
+async def test_unknown_category_is_refused(client: AsyncClient, admin_user: User):
+    resp = await _post(client, admin_user, _sheet(category_ids=[999_999_999]))
+    assert resp.status_code == 422
+
+
+async def test_bulk_move_replaces_every_category(client: AsyncClient, admin_user: User):
+    h = auth_header(admin_user)
+    tag = uuid.uuid4().hex[:8]
+    cats = [(await client.post("/api/v1/admin/categories", headers=h, json={"name": f"K{i} {tag}"})).json() for i in range(3)]
+    sheet = (await _post(client, admin_user, _sheet(category_ids=[cats[0]["id"], cats[1]["id"]]))).json()
+    try:
+        moved = await client.post(
+            "/api/v1/admin/products/category", headers=h, json={"product_ids": [sheet["id"]], "category_id": cats[2]["id"]}
+        )
+        assert moved.json() == {"updated": 1}
+        reread = (await client.get(f"/api/v1/admin/products/{sheet['id']}/sheet", headers=h)).json()
+        assert (reread["category_ids"], reread["category_id"]) == ([cats[2]["id"]], cats[2]["id"])
+    finally:
+        await client.post(
+            "/api/v1/admin/products/category", headers=h, json={"product_ids": [sheet["id"]], "category_id": None}
+        )
+        for cat in cats:
+            await client.delete(f"/api/v1/admin/categories/{cat['id']}", headers=h)

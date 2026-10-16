@@ -144,6 +144,11 @@ class RegistrationCreate(BaseModel):
     international_kind: InternationalKind | None = None
     company: CompanyIdentity | None = None
     billing_address: AnyAddress | None = None
+    # Ticari elektronik ileti onayı (6563 sayılı Kanun): the optional, unticked
+    # by default box on the form. True stamps both channels' consent with the
+    # server's clock; False leaves them NULL, and the account can still be
+    # created — the law forbids making it a condition.
+    marketing_consent: bool = False
 
     @field_validator("email")
     @classmethod

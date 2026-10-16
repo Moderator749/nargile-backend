@@ -180,4 +180,6 @@ async def test_product_detail_is_priced_for_the_caller(client: AsyncClient, pric
 
 async def test_product_detail_404s(client: AsyncClient):
     assert (await client.get(f"/api/v1/products/{uuid.uuid4()}")).status_code == 404
-    assert (await client.get("/api/v1/products/not-a-uuid")).status_code == 422
+    # Anything else is read as a slug: unknown → 404, too long → 422.
+    assert (await client.get("/api/v1/products/not-a-known-slug")).status_code == 404
+    assert (await client.get(f"/api/v1/products/{'x' * 256}")).status_code == 422

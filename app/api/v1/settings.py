@@ -1,8 +1,10 @@
 """Shop settings: read by the storefront, written from the admin panel.
 
-Only the shipping limit lives here so far. The read is public because the cart
-shows the figure ("₺20.000 ve üzeri alışverişlerde ücretsiz") beside the option
-it governs, and a customer who is not logged in still sees the cart.
+The İstanbul delivery limit ("Teslimat Ayarları") and the store parameters
+("Parametreler": free shipping, the coal rule, the havale and ciro ladders).
+Both reads are public because the storefront states these figures — beside the
+shipping option, in the free-shipping bar, under the payment method — to
+customers who are not logged in as well.
 """
 
 from decimal import Decimal
@@ -13,12 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
 from app.models.user import User
-from app.schemas.settings import ShippingSettingsRead, ShippingSettingsUpdate
+from app.schemas.settings import ShippingSettingsRead, ShippingSettingsUpdate, StoreParametersSchema
 from app.services.shop_settings import (
     ISTANBUL_FREE_MIN_KEY,
     istanbul_free_minimum,
     save_setting,
 )
+from app.services.store_parameters import load_parameters, save_parameters
 
 router = APIRouter(tags=["settings"])
 
@@ -50,3 +53,28 @@ async def admin_update_shipping_settings(
     await save_setting(db, ISTANBUL_FREE_MIN_KEY, f"{amount}", admin.id)
     await db.commit()
     return await _shipping_settings(db)
+
+
+@router.get("/settings/parameters", response_model=StoreParametersSchema)
+async def get_store_parameters(db: AsyncSession = Depends(get_db)):
+    return StoreParametersSchema.of(await load_parameters(db))
+
+
+@router.get("/admin/settings/parameters", response_model=StoreParametersSchema)
+async def admin_get_store_parameters(
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return StoreParametersSchema.of(await load_parameters(db))
+
+
+@router.put("/admin/settings/parameters", response_model=StoreParametersSchema)
+async def admin_update_store_parameters(
+    payload: StoreParametersSchema,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Replace every parameter at once; the next cart calculation uses them."""
+    await save_parameters(db, payload.to_parameters(), admin.id)
+    await db.commit()
+    return StoreParametersSchema.of(await load_parameters(db))

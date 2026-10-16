@@ -465,3 +465,52 @@ async def test_the_order_sheet_invoices_the_firm_at_its_billing_address(
         "district": "Muratpaşa",
         "line": "Kaleiçi Mah., Atatürk Cad., No: 12, Demir Apt., Kapı No: 3",
     }
+
+
+# ── Ticari elektronik ileti onayı ────────────────────────────────────────────
+
+
+async def _login_headers(client: AsyncClient, body: dict) -> dict:
+    resp = await client.post("/api/v1/auth/login", json={"email": body["email"], "password": body["password"]})
+    assert resp.status_code == 200, resp.text
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+
+
+@pytest.mark.asyncio
+async def test_registration_without_the_consent_box_records_no_consent(client: AsyncClient, db_session: AsyncSession):
+    """Unticked — and not sent at all, as an older client would — leaves both
+    channels NULL. Consent is never assumed, and registration still succeeds."""
+    body = individual()
+    created = await register(client, body)
+    user = await db_session.get(User, uuid.UUID(created["id"]))
+    assert user.marketing_email_consent_at is None
+    assert user.marketing_sms_consent_at is None
+    prefs = await client.get("/api/v1/me/communication-preferences", headers=await _login_headers(client, body))
+    assert prefs.json() == {"email": False, "sms": False}
+
+    created = await register(client, individual(marketing_consent=False))
+    user = await db_session.get(User, uuid.UUID(created["id"]))
+    assert user.marketing_email_consent_at is None and user.marketing_sms_consent_at is None
+
+
+@pytest.mark.asyncio
+async def test_registration_with_the_consent_box_stamps_both_channels(client: AsyncClient, db_session: AsyncSession):
+    """Ticked: e-mail and SMS consent carry the server's time of registration,
+    and the account page shows both channels on."""
+    body = individual(marketing_consent=True)
+    created = await register(client, body)
+    user = await db_session.get(User, uuid.UUID(created["id"]))
+    assert user.marketing_email_consent_at is not None
+    assert user.marketing_sms_consent_at == user.marketing_email_consent_at
+    assert abs((user.marketing_email_consent_at - user.created_at).total_seconds()) < 5
+    prefs = await client.get("/api/v1/me/communication-preferences", headers=await _login_headers(client, body))
+    assert prefs.json() == {"email": True, "sms": True}
+
+
+@pytest.mark.asyncio
+async def test_consent_box_is_accepted_for_business_and_international_accounts(client: AsyncClient, db_session: AsyncSession):
+    """The box is the same on every card; a firm's contact consents for the firm."""
+    created = await register(client, business(marketing_consent=True))
+    user = await db_session.get(User, uuid.UUID(created["id"]))
+    assert user.marketing_email_consent_at is not None and user.marketing_sms_consent_at is not None
+

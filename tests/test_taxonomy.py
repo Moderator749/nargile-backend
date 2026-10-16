@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.brand import Brand
-from app.models.catalog import Category, Product
+from app.models.catalog import Category, Product, ProductCategory
 from app.models.user import User
 from app.schemas.taxonomy import slugify
 from tests.conftest import auth_header
@@ -31,6 +31,11 @@ async def cleanup(db_session: AsyncSession, tag: str):
         Product.__table__.update()
         .where(Product.category_id.in_(select(Category.id).where(Category.slug.like(f"%{tag}%"))))
         .values(category_id=None)
+    )
+    await db_session.execute(
+        delete(ProductCategory).where(
+            ProductCategory.category_id.in_(select(Category.id).where(Category.slug.like(f"%{tag}%")))
+        )
     )
     await db_session.execute(
         Category.__table__.update().where(Category.slug.like(f"%{tag}%")).values(parent_id=None)
@@ -225,3 +230,37 @@ async def test_brand_logo_rejects_unsafe_or_large(
 async def test_taxonomy_admin_requires_admin(client: AsyncClient, customer_user: User, method: str, path: str):
     resp = await client.request(method, path, headers=auth_header(customer_user), json={})
     assert resp.status_code == 403
+
+
+async def test_renamed_category_slug_redirects(client: AsyncClient, admin_user: User, tag: str, cleanup):
+    """Changing a category's address in the admin keeps the old one answering."""
+    created = await _create_category(client, admin_user, name=f"Eski {tag}", slug=f"eski-{tag}")
+    assert created.status_code == 201, created.text
+    cid = created.json()["id"]
+    resp = await client.put(
+        f"/api/v1/admin/categories/{cid}", headers=auth_header(admin_user),
+        json={"name": f"Eski {tag}", "slug": f"yeni-{tag}", "parent_id": None, "sort_order": 0, "is_active": True, "image_url": None},
+    )
+    assert resp.status_code == 200, resp.text
+
+    old = await client.get(f"/api/v1/categories/by-slug/eski-{tag}")
+    assert old.status_code == 200 and old.json()["slug"] == f"yeni-{tag}"
+    assert (await client.get(f"/api/v1/categories/by-slug/yeni-{tag}")).json()["id"] == cid
+    assert (await client.get(f"/api/v1/categories/by-slug/hic-olmayan-{tag}")).status_code == 404
+
+
+async def test_category_description(client: AsyncClient, admin_user: User, tag: str, cleanup):
+    created = await _create_category(
+        client, admin_user, name=f"Açıklamalı {tag}", slug=f"aciklamali-{tag}", description="  Uzun bir tanıtım.  "
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["description"] == "<p>Uzun bir tanıtım.</p>"
+    public = await client.get(f"/api/v1/categories/by-slug/aciklamali-{tag}")
+    assert public.json()["description"] == "<p>Uzun bir tanıtım.</p>"
+    # A save that does not mention it leaves it alone.
+    cid = created.json()["id"]
+    resp = await client.put(
+        f"/api/v1/admin/categories/{cid}", headers=auth_header(admin_user),
+        json={"name": f"Açıklamalı {tag}", "slug": f"aciklamali-{tag}", "parent_id": None, "sort_order": 0, "is_active": True, "image_url": None},
+    )
+    assert resp.json()["description"] == "<p>Uzun bir tanıtım.</p>"

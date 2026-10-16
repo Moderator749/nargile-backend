@@ -29,6 +29,12 @@ TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL") or _DEV_URL.set(
 if make_url(TEST_DATABASE_URL).database == _DEV_URL.database:
     raise RuntimeError("TEST_DATABASE_URL must not point at the dev/prod database")
 settings.DATABASE_URL = TEST_DATABASE_URL
+# Card checkout needs the gateway configured; these are dummies, and nothing in
+# the suite reaches PayTR (its HTTP call is replaced where it is exercised).
+settings.PAYTR_MERCHANT_ID = "100000"
+settings.PAYTR_MERCHANT_KEY = "test-merchant-key"
+settings.PAYTR_MERCHANT_SALT = "test-merchant-salt"
+settings.PAYTR_TEST_MODE = True
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
@@ -37,9 +43,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from app.core.database import get_db  # noqa: E402
 from app.core.security import create_access_token  # noqa: E402
 from app.main import app  # noqa: E402
-from app.services.categories import COAL_CATEGORY_SLUG  # noqa: E402
 from app.models.catalog import (  # noqa: E402
-    Category,
     Inventory,
     Product,
     ProductVariant,
@@ -221,10 +225,9 @@ async def catalog(
         warehouse_type=WarehouseType.RETAIL_STOCK, quantity=500,
     ))
 
-    # Coal: in the Kömürler category (created by the migrations), so the coal cargo rules apply.
-    coal_category_id = await db_session.scalar(select(Category.id).where(Category.slug == COAL_CATEGORY_SLUG))
+    # Coal: its "Sepet Kuralı" switch is on, so the coal cargo rules apply.
     heavy_prod = Product(
-        base_code=f"HVY-{suffix}", name="Odun Komuru", tags=["HEAVY_CARGO"], category_id=coal_category_id
+        base_code=f"HVY-{suffix}", name="Odun Komuru", tags=["HEAVY_CARGO"], is_cart_rule_applied=True
     )
     db_session.add(heavy_prod)
     await db_session.flush()

@@ -1,12 +1,12 @@
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_optional_user
+from app.api.deps import get_current_user, get_optional_user
 from app.core.database import get_db
 from app.models.catalog import CurrencyType, Product, ProductCrossSell, ProductVariant, WarehouseType
 from app.models.promotion import FlashSale
@@ -17,9 +17,12 @@ from app.schemas.catalog import (
     CatalogProductRead,
     CatalogVariantRead,
     FlashSaleInfo,
+    PriceListItem,
+    PriceListRequest,
     ProductRead,
 )
-from app.services.categories import category_subtree
+from app.services import slug_redirects
+from app.services.categories import category_subtree, memberships, products_in
 from app.services.checkout_engine import warehouse_for_segment
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
@@ -56,7 +59,7 @@ def apply_catalog_filters(stmt, *, category: str | None, q: str | None, publishe
     if published_only:
         stmt = stmt.where(Product.is_published.is_(True))
     if category:
-        stmt = stmt.where(Product.category_id.in_(category_subtree(category)))
+        stmt = stmt.where(Product.id.in_(products_in(category_subtree(category))))
     if q and q.strip():
         pattern = f"%{_escape_like(_fold_tr(q.strip()))}%"
         stmt = stmt.where(
@@ -189,15 +192,87 @@ async def list_products(
     limit: int = Query(50, ge=1, le=100),
     category: str | None = Query(None, max_length=180, description="Category slug"),
     q: str | None = Query(None, max_length=100, description="Search name, brand or code"),
+    ids: list[uuid.UUID] | None = Query(None, max_length=100, description="Only these products"),
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Catalog page, priced for the caller (see _catalog_view)."""
+    """Catalog page, priced for the caller (see _catalog_view).
+
+    `ids` narrows it to a set the page already chose (the product page's
+    "Benzer Ürünler", re-priced for a signed-in viewer)."""
     stmt = apply_catalog_filters(select(Product), category=category, q=q, published_only=True)
+    if ids:
+        stmt = stmt.where(Product.id.in_(ids))
     result = await db.execute(
         stmt.options(*_VARIANT_LOADS).order_by(Product.name, Product.id).offset(skip).limit(limit)
     )
     return await _catalog_view(db, user, list(result.scalars().all()))
+
+
+# Which price groups a B2B account may put in a catalogue for its own customers:
+# the groups below it, and retail — never a group above it, whose buying price
+# it has no business seeing. A kafe sends its own price and retail.
+PRICE_LIST_GROUPS: dict[SegmentType, frozenset[SegmentType]] = {
+    SegmentType.DEALER: frozenset({SegmentType.WHOLESALE, SegmentType.CAFE, SegmentType.RETAIL}),
+    SegmentType.WHOLESALE: frozenset({SegmentType.CAFE, SegmentType.RETAIL}),
+    SegmentType.CAFE: frozenset({SegmentType.CAFE, SegmentType.RETAIL}),
+}
+
+
+@router.post("/price-list", response_model=list[PriceListItem])
+async def price_list(
+    payload: PriceListRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Prices for a B2B account's PDF catalogue ("Fiyat Kataloğu İndir").
+
+    The products are the ones on the customer's screen, kept in their order;
+    unpublished ones are left out. Each price is the regular list price of the
+    group (no flash sales: a catalogue outlives a sale), in TRY — a price kept
+    in USD/EUR converted at the day's TCMB rate, as checkout does. Which groups
+    may be asked for depends on the account (PRICE_LIST_GROUPS), and that is
+    checked here, not only in the dialog that offers them.
+    """
+    segments = {s.code: s.id for s in (await db.execute(select(CustomerSegment))).scalars()}
+    own = next((code for code, sid in segments.items() if sid == user.segment_id), None)
+    allowed = PRICE_LIST_GROUPS.get(own) if own else None
+    if allowed is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Fiyat kataloğu yalnızca bayi, toptan ve kafe hesaplarına açıktır")
+    asked = set(payload.groups)
+    if not asked <= allowed:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Bu fiyat grubu hesabınız için kataloğa eklenemez")
+
+    rows = (
+        await db.execute(
+            select(Product)
+            .where(Product.id.in_(payload.product_ids), Product.is_published.is_(True))
+            .options(selectinload(Product.variants).selectinload(ProductVariant.prices))
+        )
+    ).scalars().all()
+    by_id = {p.id: p for p in rows}
+    rates = await _rates_if_needed(list(rows))
+    items: list[PriceListItem] = []
+    for product_id in dict.fromkeys(payload.product_ids):  # screen order, each once
+        product = by_id.get(product_id)
+        if product is None:
+            continue
+        # Prices are product-wide (the sheet writes every colour the same): the
+        # first live colour speaks for the product.
+        variant = min(
+            (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku), default=None
+        )
+        prices = {}
+        if variant is not None:
+            for group in payload.groups:
+                price, _ = _price_for(variant, segments[group], rates)
+                if price is not None and price.currency == CurrencyType.TRY:
+                    prices[group] = price
+        items.append(PriceListItem(
+            product_id=product.id, code=product.base_code, name=product.name,
+            image_url=product.image_url, prices=prices,
+        ))
+    return items
 
 
 @router.get("/flash-sales", response_model=list[CatalogProductRead])
@@ -229,19 +304,33 @@ async def list_flash_sale_products(
     return await _catalog_view(db, user, list(result.scalars().all()))
 
 
-@router.get("/{product_id}", response_model=CatalogProductDetail)
+@router.get("/{product_ref}", response_model=CatalogProductDetail)
 async def get_product(
-    product_id: uuid.UUID,
+    product_ref: str = Path(max_length=255, description="The product's slug, or its id"),
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Product detail page, priced like the catalog (caller's segment, live sale,
     stock), together with its "birlikte satılanlar" — priced the same way, so the
-    cards beside the product can be added to the cart straight from here."""
+    cards beside the product can be added to the cart straight from here.
+
+    Read by slug, which is the page's address; an id still works (links from
+    before slugs, the admin), and so does a slug the admin has since changed.
+    Either way the answer's `slug` is the current one, which is where the page
+    that asked otherwise sends its visitor for good."""
+    try:
+        match = Product.id == uuid.UUID(product_ref)
+    except ValueError:
+        slug = product_ref.lower()
+        renamed = await slug_redirects.product_id_for(db, slug)
+        match = or_(Product.slug == slug, Product.id == renamed) if renamed else Product.slug == slug
     product = await db.scalar(
         select(Product)
-        .where(Product.id == product_id, Product.is_published.is_(True))
+        .where(match, Product.is_published.is_(True))
+        # A live slug wins over a redirect that happens to share it.
+        .order_by((Product.slug == product_ref.lower()).desc())
         .options(*_VARIANT_LOADS)
+        .limit(1)
     )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -250,7 +339,7 @@ async def get_product(
         await db.execute(
             select(Product)
             .join(ProductCrossSell, ProductCrossSell.related_product_id == Product.id)
-            .where(ProductCrossSell.product_id == product_id, Product.is_published.is_(True))
+            .where(ProductCrossSell.product_id == product.id, Product.is_published.is_(True))
             .order_by(ProductCrossSell.position)
             .options(*_VARIANT_LOADS)
         )
@@ -259,4 +348,13 @@ async def get_product(
     # One view call, so every card on the page is priced against the same segment
     # and the same rates.
     views = await _catalog_view(db, user, [product, *pinned])
-    return CatalogProductDetail(**views[0].model_dump(), cross_sells=views[1:])
+    listed = memberships().subquery()
+    linked = set(
+        (await db.execute(select(listed.c.category_id).where(listed.c.product_id == product.id))).scalars()
+    )
+    primary = [product.category_id] if product.category_id in linked else []
+    return CatalogProductDetail(
+        **views[0].model_dump(),
+        cross_sells=views[1:],
+        category_ids=primary + sorted(linked - set(primary)),
+    )

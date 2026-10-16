@@ -13,7 +13,7 @@ from app.services.wallet import award_for_paid_order
 
 
 async def mark_paid(db: AsyncSession, order: Order, now: datetime) -> tuple[int, int]:
-    """Approve / mark paid, then grant ParaPuan and Kumbarapuan. Returns (parapuan, kumbara)."""
+    """Approve / mark paid, then grant Sultan Puan. Returns (standard, annual bonus)."""
     order.status = OrderStatus.APPROVED
     order.paid_at = now
     await db.flush()
@@ -37,6 +37,19 @@ async def cancel(db: AsyncSession, order: Order, user: User, reason: str, now: d
     granted when it was paid go away). `order.items` and `user.segment` must be
     loaded.
     """
+    await _release(db, order, user, reason, now, OrderStatus.CANCELLED)
+
+
+async def fail_payment(db: AsyncSession, order: Order, user: User, reason: str, now: datetime) -> None:
+    """A card payment that failed or was never completed: everything the order
+    held goes back, as on a cancellation, but the order says why
+    (PAYMENT_FAILED) so nobody mistakes it for one the shop turned down."""
+    await _release(db, order, user, reason, now, OrderStatus.PAYMENT_FAILED)
+
+
+async def _release(
+    db: AsyncSession, order: Order, user: User, reason: str, now: datetime, status: OrderStatus
+) -> None:
     warehouse = warehouse_for_segment(user.segment.code if user.segment else None)
     for item in order.items:
         inv = await db.scalar(
@@ -46,6 +59,6 @@ async def cancel(db: AsyncSession, order: Order, user: User, reason: str, now: d
             inv.quantity += item.quantity
         else:  # inventory row was deleted: recreate it
             db.add(Inventory(variant_id=item.variant_id, warehouse_type=warehouse, quantity=item.quantity))
-    order.status = OrderStatus.CANCELLED
+    order.status = status
     order.cancelled_at = now
     order.cancel_reason = reason[:300]

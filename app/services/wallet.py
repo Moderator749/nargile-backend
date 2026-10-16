@@ -1,13 +1,19 @@
-"""Point wallet (ParaPuan + Kumbarapuan): balance, expiry, and awards.
+"""Sultan Puan wallet: balance, expiry, and awards.
 
-1 point = 1.00 TRY. Points expire one year after they are earned. The ledger is
+What a point is worth, how many an order earns and the annual bonus are store
+parameters (``LoyaltyParameters``, edited under "Parametreler"); they are read
+when an order is paid, not baked in here. Points expire one year after they are
+earned.
+
+The ledger keeps its original source names: ``PARAPUAN`` is a standard Sultan
+Puan award and ``KUMBARA`` the annual bonus (which took over from Kumbarapuan),
+so rows written before the rename read the same as rows written after it. The ledger is
 append-only; the balance is derived by replaying it in order, with spending
 consuming the soonest-expiring points first (FIFO by expiry). A row whose order was
 cancelled is skipped, so points spent on it come back with their original expiry
 and points earned on it (an approved order that was later cancelled) are void.
 """
 
-import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -18,29 +24,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
-from app.models.order import Order, OrderStatus
+from app.models.order import VOID_STATUSES, Order, OrderStatus
 from app.models.user import User
 from app.services.perks import retail_perks
+from app.services.store_parameters import DEFAULT_LOYALTY, LoyaltyParameters, load_parameters
 
 POINT_LIFETIME = timedelta(days=365)
 EXPIRY_WARNING = timedelta(days=30)
 
-# ParaPuan: a single paid order in this band earns 10% of its subtotal.
-PARAPUAN_MIN = Decimal("20000.00")
-PARAPUAN_MAX = Decimal("29999.99")
-PARAPUAN_RATE = Decimal("0.10")
-# Kumbarapuan: paid orders below 20,000 accumulate; at 20,000 they earn 5%.
-KUMBARA_ORDER_CEILING = Decimal("20000.00")
-KUMBARA_TARGET = Decimal("20000.00")
-KUMBARA_RATE = Decimal("0.05")
-
 PAID_STATUSES = (OrderStatus.APPROVED, OrderStatus.SHIPPED)
 
 
-def parapuan_for(subtotal: Decimal) -> int:
-    if PARAPUAN_MIN <= subtotal <= PARAPUAN_MAX:
-        return int((subtotal * PARAPUAN_RATE).quantize(Decimal("1")))
-    return 0
+def points_for(subtotal: Decimal, loyalty: LoyaltyParameters = DEFAULT_LOYALTY) -> int:
+    """Standard Sultan Puan for a single order of this subtotal."""
+    return loyalty.points_for(subtotal)
 
 
 @dataclass
@@ -54,10 +51,23 @@ class Lot:
 
 
 @dataclass
-class KumbaraProgress:
-    accumulated: Decimal  # paid sub-20k order totals since the last Kumbarapuan grant
-    target: Decimal = KUMBARA_TARGET
-    rate: Decimal = KUMBARA_RATE
+class MilestoneProgress:
+    """Where a customer stands on the annual bonus."""
+
+    # Paid order totals counted so far: within the rolling window, and after
+    # the last bonus if there was one inside it.
+    spent: Decimal
+    target: Decimal
+    bonus_points: int
+    period_days: int
+    # Where the count starts: the window's start, or the last bonus if later.
+    counting_since: datetime
+    # True when the last bonus falls inside the window (the count restarted there).
+    restarted: bool
+
+    @property
+    def remaining(self) -> Decimal:
+        return max(self.target - self.spent, Decimal("0.00"))
 
 
 @dataclass
@@ -85,13 +95,13 @@ async def get_wallet(db: AsyncSession, user_id: uuid.UUID, now: datetime | None 
             entry.transaction_type == TransactionType.ADJUSTMENT and entry.amount > 0
         )
         if credit:
-            if order_status == OrderStatus.CANCELLED:
+            if order_status in VOID_STATUSES:
                 continue  # points earned on an order that was later cancelled are void
             lots.append(Lot(entry.id, entry.source, entry.amount, entry.amount, at, entry.expires_at))
             continue
         if entry.transaction_type == TransactionType.SPENT:
-            if order_status == OrderStatus.CANCELLED:
-                continue  # spending on a cancelled order is void
+            if order_status in VOID_STATUSES:
+                continue  # spending on a cancelled (or unpaid) order is void
             debit = entry.amount
         elif entry.transaction_type == TransactionType.ADJUSTMENT:
             debit = -entry.amount
@@ -121,35 +131,77 @@ async def get_wallet(db: AsyncSession, user_id: uuid.UUID, now: datetime | None 
     )
 
 
-async def _last_kumbara_grant(db: AsyncSession, user_id: uuid.UUID) -> datetime | None:
+async def _last_bonus(db: AsyncSession, user_id: uuid.UUID) -> datetime | None:
+    """When the last annual bonus (or Kumbarapuan, its predecessor) was granted.
+
+    A bonus whose order was later cancelled is void in the wallet, and is
+    ignored here too: the spending it was for counts again toward the next one.
+    """
     return await db.scalar(
-        select(func.max(LoyaltyLedger.created_at)).where(
-            LoyaltyLedger.user_id == user_id, LoyaltyLedger.source == PointSource.KUMBARA
+        select(func.max(LoyaltyLedger.created_at))
+        .outerjoin(Order, LoyaltyLedger.order_id == Order.id)
+        .where(
+            LoyaltyLedger.user_id == user_id,
+            LoyaltyLedger.source == PointSource.KUMBARA,
+            LoyaltyLedger.transaction_type == TransactionType.EARNED,
+            (Order.status.is_(None)) | (Order.status.not_in(VOID_STATUSES)),
         )
     )
 
 
-async def kumbara_progress(db: AsyncSession, user_id: uuid.UUID) -> KumbaraProgress:
-    since = await _last_kumbara_grant(db, user_id)
+async def milestone_progress(
+    db: AsyncSession,
+    user_id: uuid.UUID,
+    loyalty: LoyaltyParameters = DEFAULT_LOYALTY,
+    now: datetime | None = None,
+) -> MilestoneProgress:
+    """The customer's paid spending toward the annual bonus.
+
+    One indexed SUM over the customer's paid orders since the later of
+    "`annual_period_days` ago" and their last bonus — so spending that earned a
+    bonus never counts toward another, and spending older than the window drops
+    out of it. Orders at or above `annual_order_ceiling` are left out.
+    """
+    now = now or datetime.now(timezone.utc)
+    window_start = now - timedelta(days=loyalty.annual_period_days)
+    last = await _last_bonus(db, user_id)
+    restarted = last is not None and last > window_start
+    since = last if restarted else window_start
     stmt = select(func.coalesce(func.sum(Order.total_amount), 0)).where(
         Order.user_id == user_id,
         Order.status.in_(PAID_STATUSES),
-        Order.total_amount < KUMBARA_ORDER_CEILING,
-        Order.paid_at.is_not(None),
+        Order.paid_at > since,
+        Order.paid_at <= now,
     )
-    if since is not None:
-        stmt = stmt.where(Order.paid_at > since)
-    return KumbaraProgress(accumulated=Decimal(await db.scalar(stmt)))
+    if loyalty.annual_order_ceiling:
+        stmt = stmt.where(Order.total_amount < loyalty.annual_order_ceiling)
+    spent = await db.scalar(stmt)
+    return MilestoneProgress(
+        spent=Decimal(spent).quantize(Decimal("0.01")),
+        target=loyalty.annual_spend_threshold,
+        bonus_points=loyalty.annual_bonus_points,
+        period_days=loyalty.annual_period_days,
+        counting_since=since,
+        restarted=restarted,
+    )
 
 
 async def award_for_paid_order(db: AsyncSession, order: Order, now: datetime) -> tuple[int, int]:
-    """Grant points for an order that was just marked paid (order.paid_at = now,
-    already flushed). Returns (parapuan, kumbarapuan) granted. Idempotent per order.
+    """Grant Sultan Puan for an order that was just marked paid (order.paid_at =
+    now, already flushed). Returns (standard, annual bonus) granted. Idempotent
+    per order.
+
+    The rules are the live store parameters: nothing at all while the program
+    is switched off; the standard award for an order inside the band; and the
+    annual bonus when this order brings the rolling spend to the target.
 
     Points are a retail promotion, so a B2B account earns none — see
     ``app.services.perks``. Loading the buyer here rather than taking it as an
     argument keeps every caller (the admin API, the SLA job) out of the rule.
     """
+    loyalty = (await load_parameters(db)).loyalty
+    if not loyalty.enabled:
+        return 0, 0
     buyer = await db.scalar(
         select(User).where(User.id == order.user_id).options(selectinload(User.segment))
     )
@@ -164,24 +216,25 @@ async def award_for_paid_order(db: AsyncSession, order: Order, now: datetime) ->
     if already is not None:
         return 0, 0
 
-    parapuan = parapuan_for(order.total_amount)
-    if parapuan:
+    standard = loyalty.points_for(order.total_amount)
+    if standard:
+        rate = f"{loyalty.base_rate * 100:.2f}".rstrip("0").rstrip(".")
         db.add(LoyaltyLedger(
-            user_id=order.user_id, order_id=order.id, amount=parapuan,
+            user_id=order.user_id, order_id=order.id, amount=standard,
             transaction_type=TransactionType.EARNED, source=PointSource.PARAPUAN,
             created_at=now, expires_at=now + POINT_LIFETIME,
-            note=f"%10 ParaPuan · {order.order_number}",
+            note=f"%{rate} Sultan Puan · {order.order_number}",
         ))
 
-    kumbara = 0
-    if order.total_amount < KUMBARA_ORDER_CEILING:
-        progress = await kumbara_progress(db, order.user_id)  # includes this order
-        if progress.accumulated >= KUMBARA_TARGET:
-            kumbara = math.floor(progress.accumulated * KUMBARA_RATE)
+    bonus = 0
+    if loyalty.annual_bonus_points and loyalty.counts_toward_milestone(order.total_amount):
+        progress = await milestone_progress(db, order.user_id, loyalty, now)  # includes this order
+        if progress.spent >= progress.target:
+            bonus = loyalty.annual_bonus_points
             db.add(LoyaltyLedger(
-                user_id=order.user_id, order_id=order.id, amount=kumbara,
+                user_id=order.user_id, order_id=order.id, amount=bonus,
                 transaction_type=TransactionType.EARNED, source=PointSource.KUMBARA,
                 created_at=now, expires_at=now + POINT_LIFETIME,
-                note=f"%5 Kumbarapuan · ₺{progress.accumulated:,.2f} birikim",
+                note=f"Yıllık Sultan Puan bonusu · son {loyalty.annual_period_days} günde ₺{progress.spent:,.2f}",
             ))
-    return parapuan, kumbara
+    return standard, bonus

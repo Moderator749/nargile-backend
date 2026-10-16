@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -7,19 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
+from app.core.config import settings
 from app.core.database import get_db
-from app.models.order import Order
+from app.models.order import Order, PaymentMethod
 from app.models.user import User
+from app.api.v1.payments import CARD_OFF
 from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingBreakdown, VolumeTier
 from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
 from app.services.delivery import check_delivery_address
-from app.services.checkout_engine import (
-    COAL_MAX_RATIO,
-    COAL_MIN_FREE_KG,
-    FREE_SHIPPING_THRESHOLD,
-    VOLUME_TIERS,
-    CheckoutEngine,
-)
+from app.services.checkout_engine import CheckoutEngine
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -68,6 +65,9 @@ async def calculate_cart(
         raise HTTPException(status_code=422, detail=str(exc))
 
     s = cart.shipping
+    params = cart.params
+    subtotal_excl = sum((i.line_total_excl_tax for i in cart.items), Decimal("0.00"))
+    next_tier = params.next_volume_tier(cart.subtotal)
     return CartCalculateResponse(
         subtotal=cart.subtotal,
         perks_eligible=cart.perks_eligible,
@@ -76,29 +76,36 @@ async def calculate_cart(
             free=s.free,
             receiver_pays=s.receiver_pays,
             reason=s.reason,
-            free_threshold=FREE_SHIPPING_THRESHOLD,
+            free_threshold=params.free_shipping_threshold,
             coal_total=s.coal_total,
             coal_ratio=s.coal_ratio,
-            coal_max_ratio=COAL_MAX_RATIO,
+            coal_max_ratio=params.coal_max_ratio,
             coal_weight_kg=s.coal_weight_kg,
-            coal_min_kg=COAL_MIN_FREE_KG,
+            coal_min_kg=params.coal_min_kg,
             coal_weight_unknown=s.coal_weight_unknown,
+            coal_rule_basis=params.coal_rule_basis,
+            coal_quantity=s.coal_quantity,
+            coal_min_quantity=params.coal_min_quantity,
         ),
         volume_discount_rate=cart.volume_discount_rate,
         volume_discount_amount=cart.volume_discount_amount,
-        volume_next_tier=next(
-            (VolumeTier(threshold=t, rate=r) for t, r in VOLUME_TIERS if cart.subtotal < t), None
+        volume_next_tier=(
+            VolumeTier(threshold=next_tier.threshold, rate=next_tier.rate) if next_tier else None
         ),
         discount_rate=cart.discount_rate,
         discount_amount=cart.discount_amount,
         points_discount=cart.points_discount,
         net_total=cart.net_total,
+        subtotal_excl_tax=subtotal_excl,
+        vat_total=cart.subtotal - subtotal_excl,
+        vat_rates=sorted({i.vat_rate for i in cart.items}),
         loyalty_points_to_earn=cart.loyalty_points_to_earn,
         payment_method=cart.payment_method,
         items=[
             CartItemBreakdown(
                 variant_id=i.variant.id,
                 product_id=i.product.id,
+                product_slug=i.product.slug,
                 sku=i.variant.sku,
                 product_name=i.product.name,
                 color_name=i.variant.color_name,
@@ -107,6 +114,7 @@ async def calculate_cart(
                 line_total=i.line_total,
                 tags=i.tags,
                 image_url=i.product.image_url,
+                vat_rate=i.vat_rate,
             )
             for i in cart.items
         ],
@@ -122,6 +130,10 @@ async def checkout(
     """Execute the full checkout: validate, calculate, persist order, deduct inventory."""
     if payload.shipping_address is None:
         raise HTTPException(status_code=422, detail="Teslimat adresi gerekli")
+    # A card order is paid on PayTR's page; without the gateway it could only
+    # sit holding stock, so it is not taken at all.
+    if payload.payment_method == PaymentMethod.CREDIT_CARD and not settings.paytr_configured:
+        raise HTTPException(status_code=422, detail=CARD_OFF)
     user = await _with_segment(db, current_user)
     variant_quantities = _quantities(payload.items)
 

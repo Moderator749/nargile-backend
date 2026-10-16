@@ -15,8 +15,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import select
 
-from app.models.catalog import ProductVariant
+from app.models.catalog import Category, Product, ProductVariant
 from app.models.order import PaymentMethod, ShippingMethod
 from app.models.user import User
 from app.services.checkout_engine import CheckoutEngine, ResolvedCartItem
@@ -291,6 +292,44 @@ async def test_calculate_cart_coal_dominant_needs_20kg(
     assert Decimal(short["shipping"]["coal_ratio"]) > Decimal("0.5")
     enough = await quote(20)
     assert (Decimal(enough["cargo_cost"]), enough["shipping"]["reason"]) == (Decimal("0.00"), "free")
+
+
+async def test_coal_rule_follows_the_product_switch_not_the_category(
+    client: AsyncClient,
+    admin_user: User,
+    db_session,
+    catalog: tuple[ProductVariant, ProductVariant],
+):
+    """In the Kömürler category but with "Sepet Kuralı" off, coal is ordinary: free from the threshold."""
+    normal_v, coal_v = catalog
+    coal = await db_session.get(Product, coal_v.product_id)
+    coal.category_id = await db_session.scalar(select(Category.id).where(Category.slug == "nargile-komurleri"))
+    coal.is_cart_rule_applied = False
+    coal_v.weight_kg = Decimal("1")
+    await db_session.commit()
+
+    async def reason():
+        resp = await client.post(
+            "/api/v1/orders/calculate-cart",
+            headers=auth_header(admin_user),
+            json={
+                "payment_method": "CREDIT_CARD",
+                "items": [
+                    {"variant_id": str(normal_v.id), "quantity": 1},
+                    {"variant_id": str(coal_v.id), "quantity": 19},
+                ],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()["shipping"]
+
+    off = await reason()
+    assert (off["reason"], Decimal(off["coal_total"])) == ("free", Decimal("0.00"))
+
+    coal.is_cart_rule_applied = True
+    await db_session.commit()
+    on = await reason()
+    assert (on["reason"], on["receiver_pays"]) == ("coal_weight", True)
 
 
 async def test_calculate_cart_hardware_dominant_ignores_coal_weight(

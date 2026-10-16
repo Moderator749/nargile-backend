@@ -18,7 +18,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.legal_texts import DEFAULT_LEGAL, PRIVACY_NOTICE_BODY
+from app.core.legal_texts import DEFAULT_LEGAL
 from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice, WarehouseType
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
 from tests.conftest import ADDRESS, CONSENTS, auth_header
@@ -107,7 +107,7 @@ async def test_the_storefront_can_read_the_texts_without_a_login(client: AsyncCl
     assert [d["key"] for d in docs] == KEYS
     # The notice beside the payment step is the text the blueprint fixes.
     notice = next(d for d in docs if d["key"] == "PRIVACY_NOTICE")
-    assert notice["body"] == PRIVACY_NOTICE_BODY
+    assert notice["body"] == DEFAULT_LEGAL["PRIVACY_NOTICE"][1]  # the seeded text, as HTML
     # Untouched texts say so, rather than reporting the setup date as an edit.
     assert notice["edited"] is False
     assert all(d["body"] for d in docs)
@@ -120,13 +120,13 @@ async def test_an_admin_edit_is_what_the_next_buyer_reads(client: AsyncClient, a
         json={"title": "  Şartlar ve Kurallar  ", "body": "  Yeni şartlar metni.  "},
     )
     assert resp.status_code == 200, resp.text
-    assert (resp.json()["title"], resp.json()["body"]) == ("Şartlar ve Kurallar", "Yeni şartlar metni.")
+    assert (resp.json()["title"], resp.json()["body"]) == ("Şartlar ve Kurallar", "<p>Yeni şartlar metni.</p>")
     assert resp.json()["updated_at"] is not None
     assert resp.json()["edited"] is True
 
     public = await client.get("/api/v1/settings/legal")
     terms = next(d for d in public.json() if d["key"] == "TERMS")
-    assert terms["body"] == "Yeni şartlar metni."
+    assert terms["body"] == "<p>Yeni şartlar metni.</p>"
     # The documents nobody touched still read as seeded.
     privacy = next(d for d in public.json() if d["key"] == "PRIVACY")
     assert privacy["body"] == DEFAULT_LEGAL["PRIVACY"][1]

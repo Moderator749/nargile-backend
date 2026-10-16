@@ -98,7 +98,7 @@ async def test_approve_order_with_qualifying_total_awards_parapuan(
     assert resp.status_code == 200
     data = resp.json()
     assert data["loyalty_points_awarded"] == 2500
-    assert "2500 ParaPuan" in data["message"]
+    assert "2500 Sultan Puan" in data["message"]
 
     # Verify ledger entry exists in DB
     result = await db_session.execute(

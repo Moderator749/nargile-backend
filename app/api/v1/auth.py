@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, or_, select
@@ -69,6 +70,9 @@ async def register(payload: RegistrationCreate, db: AsyncSession = Depends(get_d
     if retail_id is None:
         raise HTTPException(status_code=500, detail="Default segment not configured")
 
+    # One box on the form covers both channels; the moment it was ticked is
+    # what the consent record is, so the server's clock stamps it.
+    consented_at = datetime.now(timezone.utc) if payload.marketing_consent else None
     user = User(
         email=payload.email,
         username=payload.username,
@@ -78,6 +82,8 @@ async def register(payload: RegistrationCreate, db: AsyncSession = Depends(get_d
         landline_phone=payload.landline_phone,
         account_type=payload.account_type,
         segment_id=retail_id,
+        marketing_email_consent_at=consented_at,
+        marketing_sms_consent_at=consented_at,
     )
     db.add(user)
     await db.flush()  # user.id for everything hanging off it

@@ -222,7 +222,7 @@ async def test_overspend_rejected(
         "points_to_redeem": 999,
     })
     assert resp.status_code == 422
-    assert "Insufficient ParaPuan" in resp.json()["detail"]
+    assert "Yetersiz Sultan Puan" in resp.json()["detail"]
 
 
 async def test_points_discount_capped_at_subtotal(

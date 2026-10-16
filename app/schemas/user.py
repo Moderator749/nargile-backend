@@ -24,7 +24,7 @@ class UserMe(UserRead):
     """Authenticated user's own profile, including their pricing segment."""
 
     segment_code: SegmentType | None = None
-    loyalty_balance: int = 0  # usable ParaPuan (1 point = 1 TRY)
+    loyalty_balance: int = 0  # usable Sultan Puan (worth `conversion_rate` TRY each)
 
 
 class Token(BaseModel):

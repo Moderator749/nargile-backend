@@ -410,11 +410,11 @@ async def test_description_and_seo_round_trip_to_the_storefront(
             meta_description="58 cm gövdeli elmas kesim nargile, pirinç aksamlı.",
         ),
     )
-    assert sheet["description"] == "Elmas kesim, 58 cm gövde.\nPirinç aksam."
+    assert sheet["description"] == "<p>Elmas kesim, 58 cm gövde.<br>Pirinç aksam.</p>"
     assert sheet["meta_title"] == "Elmas Kesim Nargile | Nargile Co"
 
     product = (await client.get(f"/api/v1/products/{sheet['id']}")).json()
-    assert product["description"].startswith("Elmas kesim")
+    assert product["description"].startswith("<p>Elmas kesim")
     assert product["meta_title"] == "Elmas Kesim Nargile | Nargile Co"
     assert product["meta_description"] == "58 cm gövdeli elmas kesim nargile, pirinç aksamlı."
 

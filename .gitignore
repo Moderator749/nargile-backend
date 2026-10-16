@@ -12,3 +12,7 @@ build/
 
 # Uploaded media (brand logos)
 media/
+
+# Local database dumps and migration run reports (customer data)
+backups/
+scripts/migration_reports/

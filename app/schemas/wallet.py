@@ -30,17 +30,31 @@ class WalletEntry(BaseModel):
     void: bool = False
 
 
-class KumbaraRead(BaseModel):
-    accumulated: Decimal
+class MilestoneRead(BaseModel):
+    """Progress toward the annual Sultan Puan bonus."""
+
+    # Paid spending counted so far (within the window, after the last bonus).
+    spent: Decimal
     target: Decimal
-    rate: Decimal
+    remaining: Decimal
+    bonus_points: int
+    period_days: int
+    # Orders of this subtotal or more do not count; 0 = every order counts.
+    order_ceiling: Decimal
+    counting_since: datetime
+    # The count restarted at a bonus inside the window, rather than at its start.
+    restarted: bool
 
 
 class WalletRead(BaseModel):
     balance: int
     expiring_soon: int
+    # The program's switch and a point's worth in TRY, so the wallet can say
+    # what the balance is worth — and say nothing about earning while it is off.
+    enabled: bool
+    conversion_rate: Decimal
     lots: list[WalletLot]
-    kumbara: KumbaraRead
+    milestone: MilestoneRead
     history: list[WalletEntry]
 
 

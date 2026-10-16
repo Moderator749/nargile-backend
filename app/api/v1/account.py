@@ -14,7 +14,7 @@ from app.core.database import get_db
 from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
 from app.models.loyalty import LoyaltyLedger, TransactionType
-from app.models.order import Order, OrderStatus
+from app.models.order import VOID_STATUSES, Order, OrderStatus
 from app.models.user import (
     AccountType,
     AddressKind,
@@ -25,10 +25,12 @@ from app.models.user import (
 )
 from app.schemas.address import InvoiceAddress, address_line, international_line
 from app.schemas.b2b import B2BApplicationCreate, B2BApplicationRead
+from app.schemas.communication import CommunicationPreferences
 from app.schemas.customer import SavedAddress
 from app.schemas.invoice import CorporateInvoiceDetails
-from app.schemas.wallet import BankAccountRead, KumbaraRead, WalletEntry, WalletLot, WalletRead
-from app.services.wallet import get_wallet, kumbara_progress
+from app.schemas.wallet import BankAccountRead, MilestoneRead, WalletEntry, WalletLot, WalletRead
+from app.services.store_parameters import load_parameters
+from app.services.wallet import get_wallet, milestone_progress
 
 router = APIRouter(tags=["account"])
 
@@ -36,7 +38,8 @@ router = APIRouter(tags=["account"])
 async def wallet_read(db: AsyncSession, user_id) -> WalletRead:
     now = datetime.now(timezone.utc)
     wallet = await get_wallet(db, user_id, now)
-    progress = await kumbara_progress(db, user_id)
+    loyalty = (await load_parameters(db)).loyalty
+    progress = await milestone_progress(db, user_id, loyalty, now)
     rows = (
         await db.execute(
             select(LoyaltyLedger, Order.order_number, Order.status)
@@ -55,11 +58,22 @@ async def wallet_read(db: AsyncSession, user_id) -> WalletRead:
     return WalletRead(
         balance=wallet.balance,
         expiring_soon=wallet.expiring_soon,
+        enabled=loyalty.enabled,
+        conversion_rate=loyalty.conversion_rate,
         lots=[
             WalletLot(source=l.source, amount=l.amount, remaining=l.remaining, earned_at=l.created_at, expires_at=l.expires_at)
             for l in wallet.lots
         ],
-        kumbara=KumbaraRead(accumulated=progress.accumulated, target=progress.target, rate=progress.rate),
+        milestone=MilestoneRead(
+            spent=progress.spent,
+            target=progress.target,
+            remaining=progress.remaining,
+            bonus_points=progress.bonus_points,
+            period_days=progress.period_days,
+            order_ceiling=loyalty.annual_order_ceiling,
+            counting_since=progress.counting_since,
+            restarted=progress.restarted,
+        ),
         history=[
             WalletEntry(
                 id=e.id,
@@ -70,7 +84,7 @@ async def wallet_read(db: AsyncSession, user_id) -> WalletRead:
                 note=e.note,
                 order_number=number,
                 expires_at=e.expires_at,
-                void=e.transaction_type == TransactionType.SPENT and status == OrderStatus.CANCELLED,
+                void=e.transaction_type == TransactionType.SPENT and status in VOID_STATUSES,
             )
             for e, number, status in rows
         ],
@@ -79,7 +93,7 @@ async def wallet_read(db: AsyncSession, user_id) -> WalletRead:
 
 @router.get("/me/wallet", response_model=WalletRead)
 async def my_wallet(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """ParaPuan + Kumbarapuan balance, expiry, Kumbara progress and history."""
+    """Sultan Puan balance, expiry, annual-bonus progress and history."""
     return await wallet_read(db, user.id)
 
 
@@ -371,3 +385,29 @@ def application_read(row: B2BApplication, user: User) -> B2BApplicationRead:
         created_at=row.created_at,
         decided_at=row.decided_at,
     )
+
+
+# ── Ticari elektronik ileti onayı ────────────────────────────────────────────
+
+
+@router.get("/me/communication-preferences", response_model=CommunicationPreferences)
+async def get_communication_preferences(user: User = Depends(get_current_user)):
+    return CommunicationPreferences(
+        email=user.marketing_email_consent_at is not None, sms=user.marketing_sms_consent_at is not None
+    )
+
+
+@router.put("/me/communication-preferences", response_model=CommunicationPreferences)
+async def set_communication_preferences(
+    payload: CommunicationPreferences,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Consent is dated when given; withdrawing clears it at once."""
+    now = datetime.now(timezone.utc)
+    if payload.email != (user.marketing_email_consent_at is not None):
+        user.marketing_email_consent_at = now if payload.email else None
+    if payload.sms != (user.marketing_sms_consent_at is not None):
+        user.marketing_sms_consent_at = now if payload.sms else None
+    await db.commit()
+    return payload

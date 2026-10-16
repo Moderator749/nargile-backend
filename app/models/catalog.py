@@ -17,11 +17,14 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy import false as sa_false
+from sqlalchemy import func
+from sqlalchemy import event, select
 from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, Session, mapped_column, object_session, relationship
 
 from app.core.database import Base
+from app.core.slugs import PRODUCT_SLUG_MAX, product_slug_base
 
 
 class CurrencyType(str, enum.Enum):
@@ -58,6 +61,10 @@ class Category(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
     # A cover photo for the category's showcase tile; null = borrow a product photo.
     image_url: Mapped[str | None] = mapped_column(String(500))
+    # The category page's introduction under its heading (clamped there, with
+    # "Devamını Oku") and its meta description's source; null = the
+    # storefront's built-in copy for the slug, if any.
+    description: Mapped[str | None] = mapped_column(Text)
 
     parent: Mapped["Category | None"] = relationship(
         remote_side="Category.id", back_populates="children"
@@ -68,12 +75,18 @@ class Category(Base):
 
 class Product(Base):
     __tablename__ = "products"
+    __table_args__ = (Index("ix_products_slug", "slug", unique=True),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     base_code: Mapped[str] = mapped_column(String(30), nullable=False)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The page's address: /product/<slug>. Given once, from the name, when the
+    # product is first written (see _give_product_a_slug) — or the old store's
+    # own address for an imported product — and never changed by a rename, so a
+    # link once shared or indexed keeps working.
+    slug: Mapped[str] = mapped_column(String(PRODUCT_SLUG_MAX), nullable=False)
     brand: Mapped[str | None] = mapped_column(String(100))
     # "Açıklama ve SEO" on the product sheet. `description` is the storefront's
     # own copy; the two meta fields override the page's <title>/<meta
@@ -98,6 +111,15 @@ class Product(Base):
     is_published: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=sa_true()
     )
+    # When the product row was written and last changed: the sitemap's
+    # <lastmod>. A price or stock change lives on the variant rows and does not
+    # move it; a name, text, photo or rule edit on the product sheet does.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
 
     # ── Commercial rules, per product ("Genel Kurallar" on the sheet) ─────────
     # Carriage is on the shop for this product whatever the cart total.
@@ -108,11 +130,13 @@ class Product(Base):
     has_havale_discount: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
     # Counts towards (and is discounted by) the volume discount ("ciro indirimi").
     has_volume_discount: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
-    # Earns ParaPuan/Kumbarapuan when the order is paid.
+    # Earns Sultan Puan when the order is paid.
     gives_points: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
     # Points may be spent on it.
     can_use_points: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
-    # "Ağır Kargo rakamı 3.000 TL üzeri alışverişlerde sepetin %50'sini geçemez."
+    # "Sepet Kuralı": counts as coal for the cargo rule — a cart where such products
+    # are over coal_max_ratio of the subtotal ships free only from coal_min_kg.
+    # The product's category plays no part (app.services.checkout_engine).
     is_cart_rule_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=sa_false())
 
     # ── "Fırsat" (opportunity) block of the same sheet ────────────────────────
@@ -131,7 +155,15 @@ class Product(Base):
     opp_gives_points: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
     opp_can_use_points: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
 
+    # The primary category: the first of the product's categories, the one its
+    # page's breadcrumb shows. Membership is this *and* `category_links` (see
+    # services/categories.products_in) — a product can sit in several.
     category: Mapped[Category | None] = relationship(back_populates="products")
+    category_links: Mapped[list["ProductCategory"]] = relationship(
+        order_by="ProductCategory.position",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     # The colours, in the order the admin arranged them (see ProductVariant).
     variants: Mapped[list["ProductVariant"]] = relationship(
         back_populates="product", order_by="ProductVariant.position, ProductVariant.sku"
@@ -169,6 +201,26 @@ class ProductCrossSell(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     related: Mapped["Product"] = relationship(foreign_keys=[related_product_id])
+
+
+class ProductCategory(Base):
+    """One category a product is listed under, beyond (or including) its primary.
+
+    The sheet writes every category the admin ticked here, primary first; rows
+    written before this table existed only have `products.category_id`, which is
+    why membership reads both.
+    """
+
+    __tablename__ = "product_categories"
+    __table_args__ = (Index("ix_product_categories_category", "category_id"),)
+
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), primary_key=True
+    )
+    # No cascade: a category with products cannot be deleted (admin_taxonomy).
+    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id"), primary_key=True)
+    # The order the admin ticked them in (0 = primary).
+    position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class ProductVariant(Base):
@@ -273,3 +325,68 @@ class Inventory(Base):
     quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     variant: Mapped[ProductVariant] = relationship(back_populates="inventory")
+
+
+
+class SlugRedirect(Base):
+    """An address a product or category had before an admin changed its slug.
+
+    The old address keeps answering — the storefront sends its visitor (and
+    search engines) on to the current one for good — because it may already be
+    indexed, bookmarked or printed. It points at the row, not at the new slug,
+    so a second rename needs no chain of redirects. A slug taken back into live
+    use stops being a redirect (see app.services.slug_redirects).
+    """
+
+    __tablename__ = "slug_redirects"
+    __table_args__ = (
+        UniqueConstraint("kind", "old_slug", name="uq_slug_redirect"),
+        CheckConstraint("(product_id IS NULL) <> (category_id IS NULL)", name="ck_slug_redirect_one_target"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # "product" (/product/<slug>) or "category" (/catalog/<slug>).
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    old_slug: Mapped[str] = mapped_column(String(PRODUCT_SLUG_MAX), nullable=False)
+    product_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE")
+    )
+    category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+# ── Product slugs ─────────────────────────────────────────────────────────────
+
+_PENDING_SLUGS = "pending_product_slugs"
+
+
+@event.listens_for(Product, "before_insert")
+def _give_product_a_slug(mapper, connection, target: Product) -> None:
+    """A new product without a slug gets its name's, made unique with "-2", "-3"…
+
+    Here rather than in each writer (the product sheet, the plain create
+    endpoint, the import scripts, the seeds), so none of them can forget it.
+    Slugs handed out earlier in the same flush are not in the table yet, so the
+    session remembers them until the flush is over.
+    """
+    if target.slug:
+        return
+    session = object_session(target)
+    pending: set[str] = session.info.setdefault(_PENDING_SLUGS, set()) if session is not None else set()
+    base = product_slug_base(target.name or "")
+    taken = set(
+        connection.execute(
+            select(Product.slug).where((Product.slug == base) | Product.slug.like(f"{base}-%"))
+        ).scalars()
+    ) | pending
+    slug, n = base, 2
+    while slug in taken:
+        slug, n = f"{base}-{n}", n + 1
+    pending.add(slug)
+    target.slug = slug
+
+
+@event.listens_for(Session, "after_flush")
+def _forget_pending_slugs(session, flush_context) -> None:
+    session.info.pop(_PENDING_SLUGS, None)

@@ -2,9 +2,12 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.core.rich_text import RICH_TEXT_MAX, to_rich_html
 
 from app.models.catalog import CurrencyType, WarehouseType
+from app.models.user import SegmentType
 
 # Absolute http(s) URL with no quotes, brackets or whitespace, so the frontend can
 # safely drop it into an <img src> or a CSS url().
@@ -26,22 +29,38 @@ class CategoryRead(BaseModel):
     parent_id: int | None
     sort_order: int = 0
     image_url: str | None = None
+    # The page's introduction, as the admin wrote it; null = none of its own.
+    description: str | None = None
+    # Published products listed under it or any of its subcategories (each
+    # once), and the newest `updated_at` among them: the sitemap lists a
+    # category with products, dated by its newest one. Only the public list
+    # (GET /categories/) fills them in.
+    product_count: int = 0
+    updated_at: datetime | None = None
 
 
 class ProductCreate(BaseModel):
     base_code: str
     name: str
     brand: str | None = None
-    description: str | None = None
+    # Rich text, cleaned like the product sheet's (app.core.rich_text).
+    description: str | None = Field(default=None, max_length=RICH_TEXT_MAX)
     category_id: int | None = None
     tags: list[str] | None = None
     image_url: str | None = Field(default=None, max_length=500, pattern=IMAGE_URL_PATTERN)
+
+    @field_validator("description")
+    @classmethod
+    def _clean_description(cls, text: str | None) -> str | None:
+        return to_rich_html(text)
 
 
 class ProductRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    # The page's address, /product/<slug> (GET /products/<slug> reads it too).
+    slug: str
     base_code: str
     name: str
     brand: str | None
@@ -64,6 +83,8 @@ class ProductRead(BaseModel):
     is_opportunity: bool = False
     # Badge colour for a product on offer ("Fırsat rengi"), "#rrggbb".
     opportunity_color: str | None = None
+    # Last edit of the product itself — the sitemap's <lastmod>.
+    updated_at: datetime | None = None
 
     @model_validator(mode="after")
     def _gallery_always_has_the_cover(self) -> "ProductRead":
@@ -136,6 +157,9 @@ class CatalogProductDetail(CatalogProductRead):
     """
 
     cross_sells: list[CatalogProductRead] = []
+    # Every category the product is listed under, the primary one first: the
+    # page's "İlgili Kategoriler" links.
+    category_ids: list[int] = []
 
 
 class VariantCreate(BaseModel):
@@ -182,3 +206,23 @@ class InventoryRead(BaseModel):
     variant_id: uuid.UUID
     warehouse_type: WarehouseType
     quantity: int
+
+
+# ── B2B price catalogue (PDF) ────────────────────────────────────────────────
+
+
+class PriceListRequest(BaseModel):
+    """The products on the customer's screen, in screen order, and the price
+    groups their catalogue shows."""
+
+    product_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    groups: list[SegmentType] = Field(min_length=1, max_length=4)
+
+
+class PriceListItem(BaseModel):
+    product_id: uuid.UUID
+    code: str
+    name: str
+    image_url: str | None
+    # One entry per requested group the product is sold to, in TRY.
+    prices: dict[SegmentType, CatalogPrice]

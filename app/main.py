@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import async_session
+from app.core.media_rewrite import LocalMediaRewriteMiddleware
 from app.services.order_tasks import cancel_expired_pending_orders
 
 logger = logging.getLogger(__name__)
@@ -43,9 +44,13 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+if settings.REWRITE_LOCAL_MEDIA_URLS:
+    app.add_middleware(LocalMediaRewriteMiddleware, local_origins=settings.LOCAL_MEDIA_ORIGINS)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
+    allow_origin_regex=settings.CORS_ORIGIN_REGEX,
     allow_methods=["*"],
     allow_headers=["*"],
     # Paginated admin lists report their total here.

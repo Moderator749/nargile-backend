@@ -165,6 +165,11 @@ class User(Base):
     segment_id: Mapped[int | None] = mapped_column(
         ForeignKey("customer_segments.id")
     )
+    # Ticari elektronik ileti onayı (6563 sayılı Kanun): when the customer agreed
+    # to campaign e-mail / SMS; null = no consent, so no campaign reaches them.
+    # Transactional messages (password reset, order notices) need none.
+    marketing_email_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    marketing_sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     role: Mapped[str] = mapped_column(

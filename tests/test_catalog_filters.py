@@ -42,7 +42,14 @@ async def test_list_categories_is_public(client: AsyncClient, filter_fixture):
     cat, *_ = filter_fixture
     resp = await client.get("/api/v1/categories/")
     assert resp.status_code == 200
-    assert {"id": cat.id, "name": cat.name, "slug": cat.slug, "parent_id": None, "sort_order": 0, "image_url": None} in resp.json()
+    entry = next(c for c in resp.json() if c["id"] == cat.id)
+    assert {k: entry[k] for k in ("name", "slug", "parent_id", "sort_order", "image_url")} == {
+        "name": cat.name, "slug": cat.slug, "parent_id": None, "sort_order": 0, "image_url": None,
+    }
+    # The one product filed under it, dated by its own last edit: the sitemap's
+    # <lastmod> for the category page.
+    assert entry["product_count"] == 1
+    assert entry["updated_at"] is not None
 
 
 async def test_filter_by_category_slug(client: AsyncClient, filter_fixture):
@@ -81,3 +88,24 @@ async def test_catalog_exposes_product_image_url(client: AsyncClient, filter_fix
     images = {p["id"]: p["image_url"] for p in resp.json()}
     assert images[str(inside.id)] == inside.image_url
     assert images[str(outside.id)] is None
+
+
+async def test_catalog_exposes_when_a_product_last_changed(
+    client: AsyncClient, db_session: AsyncSession, filter_fixture
+):
+    """`updated_at` is the sitemap's <lastmod>: present on every product, and
+    moved forward by an edit to the product row."""
+    from datetime import datetime
+
+    _cat, inside, _outside, _literal, suffix = filter_fixture
+
+    async def stamp() -> datetime:
+        resp = await client.get("/api/v1/products/", params={"q": suffix, "limit": 100})
+        found = {p["id"]: p["updated_at"] for p in resp.json()}
+        assert found[str(inside.id)], "every product carries updated_at"
+        return datetime.fromisoformat(found[str(inside.id)])
+
+    before = await stamp()
+    inside.description = "Yeni açıklama"
+    await db_session.commit()
+    assert await stamp() > before

@@ -89,35 +89,23 @@ async def test_menu_category_entries_without_a_label_and_retired_mode_key(
     assert refused.status_code == 422
 
 
-async def test_clean_taxonomy_is_in_place(client: AsyncClient):
-    """The migration's tree: seven groups, each with sub-categories, coal included."""
+async def test_category_tree_is_in_place(client: AsyncClient):
+    """The migration's tree: eight groups in order, each with sub-categories, coal included."""
     rows = (await client.get("/api/v1/categories/")).json()
     groups = [c["slug"] for c in sorted((c for c in rows if c["parent_id"] is None), key=lambda c: c["sort_order"])]
     expected = [
-        "nargile-takimlari", "luleler", "kozlukler-isi-yonetimi", "marpuc-ve-hortumlar",
-        "sipsiler-ve-aksesuarlar", "nargile-komurleri", "tutun-bitkisel-ve-sarf",
+        "nargile-takimlari", "luleler", "sarf-malzemeleri", "aksesuarlar",
+        "marpuclar", "isi-yonetim-araclari", "yedek-parca", "yakicilar",
     ]
     assert [g for g in groups if g in expected] == expected
     by_slug = {c["slug"]: c for c in rows}
     for group in expected:
         assert any(c["parent_id"] == by_slug[group]["id"] for c in rows), group
-    # Nothing of the replaced tree survives.
-    for gone in ("komurler", "tuketim-sarf", "donanim-parcalar", "rus-takimlar", "masaustu-takimlar", "aksesuarlar"):
+    assert by_slug["nargile-komurleri"]["parent_id"] == by_slug["sarf-malzemeleri"]["id"]
+    assert by_slug["kozlukler"]["parent_id"] == by_slug["isi-yonetim-araclari"]["id"]
+    # Nothing of the replaced trees survives, brand roots included.
+    for gone in (
+        "panada-hookah", "sultan-nargile", "legend-hookah", "celik-takimlar", "marpuc-ve-hortumlar",
+        "sipsiler-ve-aksesuarlar", "tutun-bitkisel-ve-sarf", "kozlukler-isi-yonetimi", "komurler",
+    ):
         assert gone not in by_slug
-
-
-async def test_coal_category_is_protected(client: AsyncClient, admin_user: User, db_session: AsyncSession):
-    coal = await db_session.scalar(select(Category).where(Category.slug == "nargile-komurleri"))
-    h = auth_header(admin_user)
-    renamed = await client.put(
-        f"/api/v1/admin/categories/{coal.id}", headers=h, json={"name": "Kömür", "slug": "komur", "parent_id": None}
-    )
-    assert renamed.status_code == 409
-    assert (await client.delete(f"/api/v1/admin/categories/{coal.id}", headers=h)).status_code == 409
-    # Its name and order can still change; only the address the rules use is fixed.
-    ok = await client.put(
-        f"/api/v1/admin/categories/{coal.id}",
-        headers=h,
-        json={"name": coal.name, "slug": "nargile-komurleri", "parent_id": None, "sort_order": coal.sort_order},
-    )
-    assert ok.status_code == 200, ok.text

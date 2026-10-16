@@ -3,16 +3,11 @@ import uuid
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.core.rich_text import RICH_TEXT_MAX, to_rich_html
+from app.core.slugs import slugify  # noqa: F401 (re-exported to the admin API)
 from app.schemas.catalog import IMAGE_URL_PATTERN
 
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
-_TR = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
-
-
-def slugify(text: str) -> str:
-    """Turkish-aware URL slug: "Çelik Takımlar" → "celik-takimlar"."""
-    ascii_text = text.translate(_TR).lower()
-    return re.sub(r"[^a-z0-9]+", "-", ascii_text).strip("-")
 
 
 def _valid_slug(value: str | None) -> str | None:
@@ -40,6 +35,14 @@ class CategoryWrite(BaseModel):
     is_active: bool = True
     # Cover photo for its showcase tile: an http(s) URL or a site path.
     image_url: str | None = Field(default=None, max_length=500)
+    # The page's introduction, HTML from the panel's editor (cleaned here);
+    # blank = the storefront's built-in copy.
+    description: str | None = Field(default=None, max_length=RICH_TEXT_MAX)
+
+    @field_validator("description")
+    @classmethod
+    def _clean_description(cls, v: str | None) -> str | None:
+        return to_rich_html(v)
 
     @field_validator("image_url")
     @classmethod
@@ -73,7 +76,9 @@ class AdminCategoryRead(BaseModel):
     sort_order: int
     is_active: bool
     image_url: str | None
-    # Products assigned directly to this category (not its subcategories).
+    description: str | None = None
+    # Products listed directly under this category (not its subcategories),
+    # whether it is their primary category or one more.
     product_count: int
 
 

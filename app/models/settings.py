@@ -10,7 +10,7 @@ hand-edited value can never take the storefront down.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,8 +23,9 @@ class ShopSetting(Base):
     __tablename__ = "shop_settings"
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
-    # Text on purpose; the service that owns the key decides what it means.
-    value: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Text on purpose; the service that owns the key decides what it means
+    # (a number, or a JSON list such as a discount ladder).
+    value: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
