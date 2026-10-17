@@ -5,7 +5,11 @@ import uuid
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
+from app.core.media_rewrite import LocalMediaRewriteMiddleware
 from app.main import app
 from app.models.catalog import Product
 
@@ -36,6 +40,25 @@ async def test_local_media_urls_follow_the_request_origin(db_session: AsyncSessi
     finally:
         await db_session.execute(delete(Product).where(Product.id == product.id))
         await db_session.commit()
+
+
+async def test_public_media_url_replaces_every_request_origin():
+    """Behind the storefront's proxy the request's own address is the API's, over
+    plain http; one public address answers instead, whichever Host came in."""
+
+    async def stored(request):
+        return JSONResponse({"image_url": LOCAL})
+
+    proxied = LocalMediaRewriteMiddleware(
+        Starlette(routes=[Route("/", stored)]),
+        local_origins=["http://127.0.0.1:8000"],
+        public_url="https://shop.example/api/backend/media",
+    )
+    for base_url in ("http://209.38.195.227", "http://209.38.195.227:8000", "http://127.0.0.1:8000"):
+        async with AsyncClient(transport=ASGITransport(app=proxied), base_url=base_url) as client:
+            resp = await client.get("/")
+        assert resp.json()["image_url"] == "https://shop.example/api/backend/media/products/opencart/abc.jpg"
+        assert int(resp.headers["content-length"]) == len(resp.content)
 
 
 async def _preflight(origin: str) -> str | None:

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_admin_user
 from app.models.user import User
-from app.services.media import MAX_PRODUCT_IMAGE_BYTES, InvalidImage, save_image
+from app.services.media import MAX_PRODUCT_IMAGE_BYTES, InvalidImage, media_url, save_image
 
 router = APIRouter(prefix="/admin", tags=["admin-uploads"])
 
@@ -42,5 +42,5 @@ async def upload_images(
         except InvalidImage as exc:
             name = (file.filename or "görsel").rsplit("/", 1)[-1][:60]
             raise HTTPException(status_code=422, detail=f"{name}: {exc}") from None
-        saved.append(UploadedImage(url=str(request.url_for("media", path=path)), path=path))
+        saved.append(UploadedImage(url=media_url(request, path), path=path))
     return saved

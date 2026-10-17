@@ -24,6 +24,12 @@ class Settings(BaseSettings):
     # rewriting the database. A request to the local address itself is untouched.
     REWRITE_LOCAL_MEDIA_URLS: bool = True
     LOCAL_MEDIA_ORIGINS: list[str] = ["http://127.0.0.1:8000", "http://localhost:8000"]
+    # Where browsers load /media from when that is not the address requests come
+    # in on — behind the storefront's proxy, "https://<storefront>/api/backend/media"
+    # (the request's own address is the API's, over plain http: mixed content on
+    # an HTTPS page). Uploads are answered with it, and so are stored local media
+    # URLs, from any origin. None = each request's own address.
+    PUBLIC_MEDIA_URL: str | None = None
     # Uploaded files (brand logos), served at /media.
     MEDIA_ROOT: Path = Path(__file__).resolve().parents[2] / "media"
 

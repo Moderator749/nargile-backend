@@ -22,7 +22,7 @@ from app.schemas.content import (
     PromoBoxRead,
     PromoBoxWrite,
 )
-from app.services.media import MAX_IMAGE_BYTES, InvalidImage, delete_media, save_image
+from app.services.media import MAX_IMAGE_BYTES, InvalidImage, delete_media, media_url, save_image
 
 router = APIRouter(tags=["home-content"])
 admin = APIRouter(prefix="/admin", tags=["admin-home-content"])
@@ -30,7 +30,7 @@ admin = APIRouter(prefix="/admin", tags=["admin-home-content"])
 
 def _image(row: HeroSlide | PromoBox, request: Request) -> str | None:
     if row.image_path:
-        return str(request.url_for("media", path=row.image_path))
+        return media_url(request, row.image_path)
     return row.image_url
 
 

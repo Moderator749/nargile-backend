@@ -12,6 +12,11 @@ the request did not arrive on a local origin, so local development sees the
 stored data byte for byte. The request's origin is what uvicorn reports after
 its proxy-header handling (X-Forwarded-Proto / Host from a trusted proxy such
 as cloudflared on 127.0.0.1).
+
+Behind the storefront's own proxy (Vercel's /api/backend rewrite) the request's
+origin is the API's plain-http address, which an HTTPS page refuses. There
+``public_url`` (PUBLIC_MEDIA_URL) is the replacement instead, whatever origin
+the request came in on.
 """
 
 from starlette.datastructures import Headers, MutableHeaders
@@ -26,17 +31,27 @@ def request_origin(scope: Scope) -> str | None:
 
 
 class LocalMediaRewriteMiddleware:
-    def __init__(self, app: ASGIApp, local_origins: list[str]) -> None:
+    def __init__(self, app: ASGIApp, local_origins: list[str], public_url: str | None = None) -> None:
         self.app = app
         self.local = [o.rstrip("/") for o in local_origins]
         self.needles = [f"{o}/media/".encode() for o in self.local]
+        self.public = f"{public_url.rstrip('/')}/".encode() if public_url else None
+
+    def _replacement(self, scope: Scope) -> bytes | None:
+        if scope["type"] != "http":
+            return None
+        if self.public:
+            return self.public
+        origin = request_origin(scope)
+        if origin is None or origin.rstrip("/") in self.local:
+            return None
+        return f"{origin.rstrip('/')}/media/".encode()
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        origin = request_origin(scope) if scope["type"] == "http" else None
-        if origin is None or origin.rstrip("/") in self.local:
+        replacement = self._replacement(scope)
+        if replacement is None:
             await self.app(scope, receive, send)
             return
-        replacement = f"{origin.rstrip('/')}/media/".encode()
 
         start: Message | None = None
         chunks: list[bytes] = []

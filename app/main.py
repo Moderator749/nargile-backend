@@ -10,6 +10,7 @@ from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import async_session
 from app.core.media_rewrite import LocalMediaRewriteMiddleware
+from app.core.trailing_slash import StripTrailingSlashMiddleware
 from app.services.order_tasks import cancel_expired_pending_orders
 
 logger = logging.getLogger(__name__)
@@ -42,10 +43,19 @@ app = FastAPI(
     version="0.1.0",
     debug=settings.DEBUG,
     lifespan=lifespan,
+    # Never answer with a slash redirect: its Location carries the Host the API
+    # was reached on, which behind the storefront's proxy is not the page's
+    # (see app/core/trailing_slash.py). Both spellings are served instead.
+    redirect_slashes=False,
 )
+app.add_middleware(StripTrailingSlashMiddleware)
 
 if settings.REWRITE_LOCAL_MEDIA_URLS:
-    app.add_middleware(LocalMediaRewriteMiddleware, local_origins=settings.LOCAL_MEDIA_ORIGINS)
+    app.add_middleware(
+        LocalMediaRewriteMiddleware,
+        local_origins=settings.LOCAL_MEDIA_ORIGINS,
+        public_url=settings.PUBLIC_MEDIA_URL,
+    )
 
 app.add_middleware(
     CORSMiddleware,

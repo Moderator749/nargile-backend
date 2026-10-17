@@ -36,7 +36,7 @@ async def category_by_slug(slug: str = Path(max_length=180), db: AsyncSession = 
     return found
 
 
-@router.get("/", response_model=list[CategoryRead])
+@router.get("", response_model=list[CategoryRead])
 async def list_categories(db: AsyncSession = Depends(get_db)):
     """The active categories. A subcategory of an inactive parent is hidden with
     it, so switching a parent off takes its whole branch out of the menus.

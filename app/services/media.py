@@ -3,6 +3,8 @@
 import uuid
 from pathlib import Path
 
+from starlette.requests import Request
+
 from app.core.config import settings
 
 MAX_IMAGE_BYTES = 1024 * 1024  # 1 MB: logos are small
@@ -27,6 +29,14 @@ def image_extension(data: bytes) -> str:
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
     raise InvalidImage("Only PNG, JPEG or WebP images are accepted")
+
+
+def media_url(request: Request, rel: str) -> str:
+    """The address a browser loads an uploaded file from: PUBLIC_MEDIA_URL when
+    set, else the /media route on the address the request came in on."""
+    if settings.PUBLIC_MEDIA_URL:
+        return f"{settings.PUBLIC_MEDIA_URL.rstrip('/')}/{rel}"
+    return str(request.url_for("media", path=rel))
 
 
 def save_image(data: bytes, folder: str, max_bytes: int = MAX_IMAGE_BYTES) -> str:

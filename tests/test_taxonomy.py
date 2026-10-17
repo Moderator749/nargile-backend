@@ -194,6 +194,21 @@ async def test_brand_logo_upload(client: AsyncClient, admin_user: User, tag: str
     assert list((tmp_path / "brands").iterdir()) == []
 
 
+async def test_uploads_are_addressed_through_public_media_url(
+    client: AsyncClient, admin_user: User, tag: str, cleanup, tmp_path, monkeypatch
+):
+    """Behind the storefront's proxy, not at the address the request came in on."""
+    monkeypatch.setattr(settings, "MEDIA_ROOT", tmp_path)
+    monkeypatch.setattr(settings, "PUBLIC_MEDIA_URL", "https://shop.example/api/backend/media/")
+    h = {**auth_header(admin_user), "host": "209.38.195.227"}
+    brand = (await client.post("/api/v1/admin/brands", headers=h, json={"name": f"Logo {tag}"})).json()
+    logo = await client.post(f"/api/v1/admin/brands/{brand['id']}/logo", headers=h, files={"file": ("l.png", PNG, "image/png")})
+    assert logo.json()["logo_url"].startswith("https://shop.example/api/backend/media/brands/")
+
+    [upload] = (await client.post("/api/v1/admin/uploads", headers=h, files={"files": ("p.png", PNG, "image/png")})).json()
+    assert upload["url"] == f"https://shop.example/api/backend/media/{upload['path']}"
+
+
 @pytest.mark.parametrize(
     "content",
     [
