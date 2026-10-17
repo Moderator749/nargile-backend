@@ -53,6 +53,7 @@ def _sheet(**overrides) -> dict:
             "is_free_shipping": True,
             "free_shipping_min_quantity": 3,
             "has_havale_discount": False,
+            "has_dealer_havale_discount": True,
             "has_volume_discount": False,
             "gives_points": True,
             "can_use_points": False,
@@ -126,6 +127,7 @@ async def test_sheet_save_writes_every_section(client: AsyncClient, admin_user: 
     assert sheet["variants"][1]["stock"] == {"bayi": 0, "toptan": 0, "kafe": 0, "perakende": 0}
     assert sheet["rules"]["is_cart_rule_applied"] is True
     assert sheet["rules"]["has_havale_discount"] is False
+    assert sheet["rules"]["has_dealer_havale_discount"] is True
     assert sheet["rules"]["has_volume_discount"] is False
     assert sheet["rules"]["free_shipping_min_quantity"] == 3
 
@@ -156,6 +158,16 @@ async def test_sheet_save_writes_every_section(client: AsyncClient, admin_user: 
     # The Fırsat block keeps its own copy of the rules, independent of the general ones.
     assert sheet["opportunity"]["opp_has_volume_discount"] is False
     assert sheet["opportunity"]["opp_free_shipping_min_quantity"] == 5
+
+
+async def test_dealer_havale_discount_is_off_unless_switched_on(client: AsyncClient, admin_user: User):
+    """"Bayide Havale / EFT İndirimi" is a separate switch, off when not sent."""
+    body = _sheet()
+    body["rules"] = {k: v for k, v in body["rules"].items() if k != "has_dealer_havale_discount"}
+    created = await _post(client, admin_user, body)
+    assert created.status_code == 201, created.text
+    assert created.json()["rules"]["has_dealer_havale_discount"] is False
+    assert created.json()["rules"]["has_havale_discount"] is False  # the retail switch is its own
 
 
 async def test_sheet_update_clears_a_price_and_keeps_the_sale_running(

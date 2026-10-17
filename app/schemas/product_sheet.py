@@ -129,6 +129,8 @@ class SheetRules(BaseModel):
     # "Adet şartı": free carriage only from this many units; null = no condition.
     free_shipping_min_quantity: int | None = Field(default=None, ge=1)
     has_havale_discount: bool = True
+    # "Bayide Havale / EFT İndirimi": the same discount for a bayi (DEALER) too.
+    has_dealer_havale_discount: bool = False
     # "Ciro indirimi": counts towards, and is discounted by, the volume tiers.
     has_volume_discount: bool = True
     gives_points: bool = True

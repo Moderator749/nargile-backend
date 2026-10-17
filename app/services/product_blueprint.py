@@ -66,6 +66,7 @@ RULE_FIELDS = (
     "is_free_shipping",
     "free_shipping_min_quantity",
     "has_havale_discount",
+    "has_dealer_havale_discount",
     "has_volume_discount",
     "gives_points",
     "can_use_points",
