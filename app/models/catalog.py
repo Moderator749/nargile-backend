@@ -128,10 +128,17 @@ class Product(Base):
     free_shipping_min_quantity: Mapped[int | None] = mapped_column(Integer)
     # Takes part in the havale/EFT discount.
     has_havale_discount: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
-    # "Bayide Havale / EFT İndirimi": the havale/EFT discount also applies when a
-    # bayi (DEALER) buys it. Off by default: the discount is a retail perk
-    # (app/services/perks.py), and a dealer's tier price is costed without it.
+    # "Bayide / Toptanda / Kafede Havale / EFT İndirimi": the havale/EFT discount
+    # also applies, line by line, when that B2B list buys it (checkout_engine.
+    # HAVALE_SWITCH). Off by default: the discount is a retail perk
+    # (app/services/perks.py), and a tier price is costed without it.
     has_dealer_havale_discount: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa_false()
+    )
+    has_toptan_havale_discount: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa_false()
+    )
+    has_cafe_havale_discount: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=sa_false()
     )
     # Counts towards (and is discounted by) the volume discount ("ciro indirimi").

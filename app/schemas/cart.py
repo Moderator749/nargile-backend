@@ -36,11 +36,12 @@ class CartItemBreakdown(BaseModel):
     image_url: str | None = None
     # Percent; `unit_price` and `line_total` include it.
     vat_rate: Decimal = Decimal("0")
-    # A bayi's line whose product has "Bayide Havale / EFT İndirimi" on — set
-    # whatever the payment, so the cart can say what a transfer takes off.
-    dealer_havale: bool = False
+    # A B2B line (bayi, toptan or kafe) whose product has that list's havale
+    # switch on — set whatever the payment, so the cart can say what a transfer
+    # takes off.
+    havale_eligible: bool = False
     # The havale discount on this line itself (VAT-inclusive); 0 unless it is a
-    # dealer_havale line paid by transfer. Included in `discount_amount`.
+    # havale_eligible line paid by transfer. Included in `discount_amount`.
     havale_discount: Decimal = Decimal("0.00")
 
 

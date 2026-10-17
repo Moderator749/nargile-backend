@@ -119,7 +119,7 @@ async def calculate_cart(
                 tags=i.tags,
                 image_url=i.product.image_url,
                 vat_rate=i.vat_rate,
-                dealer_havale=i.dealer_havale,
+                havale_eligible=i.havale_eligible,
                 havale_discount=i.havale_discount,
             )
             for i in cart.items

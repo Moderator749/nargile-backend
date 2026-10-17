@@ -104,6 +104,16 @@ WAREHOUSE_BY_SEGMENT = {
 }
 
 
+#: The product switch that gives each B2B list the havale discount, line by line
+#: ("Bayide / Toptanda / Kafede Havale / EFT İndirimi"). Retail has the
+#: cart-wide discount instead (app/services/perks.py).
+HAVALE_SWITCH: dict[SegmentType, str] = {
+    SegmentType.DEALER: "has_dealer_havale_discount",
+    SegmentType.WHOLESALE: "has_toptan_havale_discount",
+    SegmentType.CAFE: "has_cafe_havale_discount",
+}
+
+
 def warehouse_for_segment(code: SegmentType | None) -> WarehouseType:
     """The stock quota a segment buys from; RETAIL_STOCK when it has no segment."""
     return WAREHOUSE_BY_SEGMENT.get(code, WarehouseType.RETAIL_STOCK)
@@ -171,9 +181,9 @@ class ResolvedCartItem:
     unit_weight_kg: Decimal | None = None
     # The VAT rate (percent) the line's price includes, from its price row.
     vat_rate: Decimal = Decimal("0")
-    # A bayi buying a product with "Bayide Havale / EFT İndirimi" on: the line
-    # takes the havale discount when the order is paid by transfer.
-    dealer_havale: bool = False
+    # A B2B list buying a product with its havale switch on (HAVALE_SWITCH):
+    # the line takes the havale discount when the order is paid by transfer.
+    havale_eligible: bool = False
     # That discount on this line (VAT-inclusive, like the line); 0 otherwise.
     havale_discount: Decimal = Decimal("0.00")
 
@@ -309,10 +319,12 @@ class CheckoutEngine:
             if perks
             else (Decimal("0.00"), Decimal("0.00"))
         )
-        if segment_code == SegmentType.DEALER:
-            # A bayi has no retail perks, but a product may still give it the
-            # havale discount ("Bayide Havale / EFT İndirimi"): line by line.
-            discount_rate, discount_amount = self.apply_dealer_havale(items, subtotal, payment_method, params)
+        if segment_code in HAVALE_SWITCH:
+            # A B2B list has no retail perks, but a product may still give it the
+            # havale discount ("Bayide / Toptanda / Kafede …"): line by line.
+            discount_rate, discount_amount = self.apply_segment_havale(
+                items, segment_code, subtotal, payment_method, params
+            )
         loyalty_points = self.calculate_loyalty_earnings(subtotal, params.loyalty) if perks else 0
 
         # Points redemption: validate and cap
@@ -590,25 +602,27 @@ class CheckoutEngine:
         return rate, amount
 
     @staticmethod
-    def apply_dealer_havale(
+    def apply_segment_havale(
         items: list[ResolvedCartItem],
+        segment: SegmentType,
         subtotal: Decimal,
         payment_method: PaymentMethod,
         params: StoreParameters = DEFAULT_PARAMETERS,
     ) -> tuple[Decimal, Decimal]:
-        """A bayi's havale discount: (rate, amount), on its own lines only.
+        """A B2B list's havale discount: (rate, amount), on its own lines only.
 
-        Each line whose product has "Bayide Havale / EFT İndirimi" on is marked
-        `dealer_havale` whatever the payment (so the cart can say what a transfer
-        would take off); paid by transfer, it takes the standard havale rate on
-        its own line total — the bayi's tier price as charged — rounded per
-        line. The rate is the tier the whole cart's subtotal reaches, as for a
-        retail cart (by default 5%, 7% from 30,000 TRY). Lines without the
+        Each line whose product has that list's switch on (HAVALE_SWITCH) is
+        marked `havale_eligible` whatever the payment (so the cart can say what a
+        transfer would take off); paid by transfer, it takes the standard havale
+        rate on its own line total — the list's tier price as charged — rounded
+        per line. The rate is the tier the whole cart's subtotal reaches, as for
+        a retail cart (by default 5%, 7% from 30,000 TRY). Lines without the
         switch are charged in full; there is no cart-wide discount.
         """
-        eligible = [item for item in items if item.product.has_dealer_havale_discount]
+        switch = HAVALE_SWITCH[segment]
+        eligible = [item for item in items if getattr(item.product, switch)]
         for item in eligible:
-            item.dealer_havale = True
+            item.havale_eligible = True
         rate, _ = CheckoutEngine.calculate_discounts(subtotal, payment_method, params=params)
         if not eligible or not rate:
             return Decimal("0.00"), Decimal("0.00")
