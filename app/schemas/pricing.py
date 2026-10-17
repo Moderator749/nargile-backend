@@ -174,6 +174,7 @@ class ImportCandidate(BaseModel):
     # products that share the name exactly.
     basis: Literal["abbreviation", "similar", "same_code"]
     retail: CurrentPrice | None
+    image_url: str | None
 
 
 class ImportMatched(ImportedRow):
@@ -185,10 +186,14 @@ class ImportMatched(ImportedRow):
     alias_id: int | None
     variants: int
     old_prices: dict[SegmentType, CurrentPrice]
+    image_url: str | None
 
 
 class ImportSuggested(ImportedRow):
     candidates: list[ImportCandidate]
+    # Safe to accept in bulk ("Güvenli önerileri eşleştir"): exactly one candidate
+    # is the name spelled the other way, or close and already at this retail price.
+    recommended_id: uuid.UUID | None
 
 
 class ImportUnmatched(ImportedRow):
@@ -220,10 +225,15 @@ class ImportAliasCreate(BaseModel):
     product_id: uuid.UUID
 
 
+class ImportAliasBatch(BaseModel):
+    aliases: list[ImportAliasCreate] = Field(min_length=1, max_length=200)
+
+
 class ImportAliasRead(BaseModel):
     id: int
     excel_name: str
     product_id: uuid.UUID
     product_code: str
     product_name: str
+    image_url: str | None
     created_at: datetime

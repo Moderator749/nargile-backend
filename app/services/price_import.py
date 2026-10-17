@@ -90,6 +90,8 @@ ABBREVIATIONS = [
     {"CELIK", "ÇELIK"},
 ]
 SUGGESTIONS = 3
+# A candidate this close, already at the row's retail price, is safe to accept in bulk.
+CONFIDENT_SCORE = 0.8
 # Below this, a name with no model number has no suggestion at all.
 LOOSE_CUTOFF = 0.8
 
@@ -221,6 +223,21 @@ class Candidate:
 class Suggested:
     block: Block
     candidates: list[Candidate]
+    # The one candidate safe to accept without a second look, if there is exactly one.
+    recommended: Product | None = None
+
+
+def recommend(block: Block, candidates: list[Candidate]) -> Product | None:
+    """The candidate to accept in bulk: the name spelled the other way, or one
+    this close whose retail price today is already the row's. Only when exactly
+    one qualifies — two are a choice for the admin."""
+    retail = block.prices.get(SegmentType.RETAIL)
+    sure = [
+        c for c in candidates
+        if c.basis == "abbreviation"
+        or (c.score >= CONFIDENT_SCORE and c.retail is not None and c.retail == (CurrencyType.TRY, retail))
+    ]
+    return sure[0].product if len(sure) == 1 else None
 
 
 @dataclass
@@ -361,9 +378,10 @@ async def match_blocks(db: AsyncSession, parsed: Parsed) -> Preview:
             found.append((block, product_by_id[next(iter(ids))], matched_by, None))
         elif ids:
             same = sorted((product_by_id[i] for i in ids), key=lambda p: p.base_code)
-            suggested.append(Suggested(block, [candidate(p, 1.0, "same_code") for p in same]))
+            candidates = [candidate(p, 1.0, "same_code") for p in same]
+            suggested.append(Suggested(block, candidates, recommend(block, candidates)))
         elif candidates := suggest(code):
-            suggested.append(Suggested(block, candidates))
+            suggested.append(Suggested(block, candidates, recommend(block, candidates)))
         else:
             unmatched.append(Miss(block, "not_found"))
 

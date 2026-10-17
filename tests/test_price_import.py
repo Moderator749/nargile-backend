@@ -55,13 +55,20 @@ async def products(db_session: AsyncSession, segments: dict[SegmentType, Custome
     model = f"ZZ{random.randint(10000, 99999)}"  # a model number, as the workbook's codes have
     made = []
 
-    async def product(code: str, name: str, skus: list[str]):
-        p = Product(base_code=code, name=name, tags=[])
+    async def product(code: str, name: str, skus: list[str], retail: str | None = None):
+        p = Product(base_code=code, name=name, tags=[], image_url=f"https://www.nargilemalzemesi.com/image/{code}.jpg")
         db_session.add(p)
         await db_session.flush()
         variants = [ProductVariant(product_id=p.id, sku=sku, color_name=f"R{i}" if len(skus) > 1 else None, position=i) for i, sku in enumerate(skus)]
         db_session.add_all(variants)
         await db_session.flush()
+        if retail is not None:
+            for v in variants:
+                db_session.add(VariantPrice(
+                    variant_id=v.id, segment_id=segments[SegmentType.RETAIL].id, currency="TRY",
+                    price_excl_tax=(Decimal(retail) / Decimal("1.2")).quantize(Decimal("0.01")),
+                    price_incl_tax=Decimal(retail), vat_rate=Decimal("20.00"),
+                ))
         made.append(p)
         return p, variants
 
@@ -82,11 +89,17 @@ async def products(db_session: AsyncSession, segments: dict[SegmentType, Custome
     # Same digits further on, a different model; and a bottle of the same model.
     longer, _ = await product(f"{model}0 GOLD", "Başka Model Gold", [f"{model}0 GOLD"])
     model_bottle, _ = await product(f"SS{model}", f"{model} Nargile Şişesi", [f"SS{model}"])
+    # Close, and already at the row's retail price: one such candidate is safe, two are a choice.
+    twin_model, single_model = f"ZY{random.randint(10000, 99999)}", f"ZX{random.randint(10000, 99999)}"
+    await product(f"{twin_model} A", "İkiz A", [f"{twin_model} A"], retail="777")
+    await product(f"{twin_model} B", "İkiz B", [f"{twin_model} B"], retail="777")
+    single, _ = await product(single_model, "Tek Aday", [single_model], retail="888")
     await db_session.commit()
     yield {
         "tag": tag, "model": model, "hookah": hookah, "hookah_v": hookah_v, "coloured": coloured,
         "coloured_vs": coloured_vs, "bottle": bottle, "gold": gold, "gold_v": gold_v, "plain": plain,
-        "longer": longer, "model_bottle": model_bottle,
+        "longer": longer, "model_bottle": model_bottle, "twin_model": twin_model,
+        "single_model": single_model, "single": single,
     }
 
     ids = [p.id for p in made]
@@ -98,7 +111,7 @@ async def products(db_session: AsyncSession, segments: dict[SegmentType, Custome
     await db_session.commit()
 
 
-def _sheet(tag: str, model: str = "ZZ0") -> bytes:
+def _sheet(tag: str, model: str = "ZZ0", twin: str = "ZY0", single: str = "ZX0") -> bytes:
     return _workbook([
         ((2, 0, "", (100, 110, 120, 130)), {}),  # no name
         ((6, 0, f"LHT{tag} V1", (2155, 2545, 2930, 3450)), {}),  # code, space for the hyphen
@@ -112,6 +125,8 @@ def _sheet(tag: str, model: str = "ZZ0") -> bytes:
         ((26, 0, f"HRC{tag}", (24, 25, 29, 38)), {"vat_excluded": True}),
         ((30, 0, f"{model} GOLD", (4000, 4500, 5000, 6000)), {}),  # the catalog says "G"
         ((30, 19, f"sku{tag} SY", (1000, 1100, 1200, 1500)), {}),  # the same product, the same prices
+        ((34, 0, twin, (500, 600, 700, 777)), {}),
+        ((34, 19, f"{single} SY", (600, 700, 800, 888)), {}),
     ])
 
 
@@ -134,7 +149,7 @@ async def _prices(db: AsyncSession, variant_id) -> dict:
 
 async def test_dry_run_reports_and_changes_nothing(client: AsyncClient, admin_user: User, products, db_session):
     tag, model = products["tag"], products["model"]
-    resp = await _post(client, admin_user, _sheet(tag, model), dry_run=True)
+    resp = await _post(client, admin_user, _sheet(tag, model, products["twin_model"], products["single_model"]), dry_run=True)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["dry_run"] is True and body["updated_products"] == 0
@@ -159,6 +174,15 @@ async def test_dry_run_reports_and_changes_nothing(client: AsyncClient, admin_us
     assert str(products["plain"].id) in offered
     assert not offered & {str(products["longer"].id), str(products["model_bottle"].id)}
     assert str(products["gold"].id) not in {m["product_id"] for m in body["matched"]}
+    # Safe in bulk: the abbreviation; the one close candidate already at this price; not a tie of two.
+    assert gold["recommended_id"] == str(products["gold"].id)
+    suggested = {x["name"]: x for x in body["suggested"]}
+    assert suggested[f"{products['single_model']} SY"]["recommended_id"] == str(products["single"].id)
+    twin = suggested[products["twin_model"]]
+    assert len(twin["candidates"]) == 2 and twin["recommended_id"] is None
+    # Thumbnails for the admin to recognise the models by.
+    assert hookah["image_url"] == f"https://www.nargilemalzemesi.com/image/LHT{tag}-V1.jpg"
+    assert first["image_url"].endswith(f"{model} G.jpg")
 
     reasons = {(u["name"], u["row"], u["side"]): u["reason"] for u in body["unmatched"]}
     assert reasons[("", 2, "sol")] == "unnamed"
@@ -247,3 +271,31 @@ async def test_only_admins_and_only_workbooks(client: AsyncClient, admin_user: U
         z.writestr("hello.txt", "no workbook here")
     not_xlsx = await client.post(URL, headers=auth_header(admin_user), files={"file": ("a.xlsx", archive.getvalue())})
     assert not_xlsx.status_code == 422 and "xlsx" in not_xlsx.json()["detail"]
+
+
+async def test_batch_aliases_are_all_or_nothing(client: AsyncClient, admin_user: User, customer_user: User, products, db_session):
+    batch = "/api/v1/admin/pricing/import-aliases/batch"
+    model, single = products["model"], products["single_model"]
+    good = [
+        {"excel_name": f"{model} GOLD", "product_id": str(products["gold"].id)},
+        {"excel_name": f"{single} SY", "product_id": str(products["single"].id)},
+    ]
+    assert (await client.post(batch, json={"aliases": good}, headers=auth_header(customer_user))).status_code == 403
+
+    async def count() -> int:
+        keys = [f"{model}GOLD", f"{single}SY"]
+        return len((await db_session.scalars(
+            select(PriceImportAlias).where(PriceImportAlias.key.in_(keys)).execution_options(populate_existing=True)
+        )).all())
+
+    twice = [good[0], {**good[1], "excel_name": f"{model}-gold"}]
+    assert (await client.post(batch, json={"aliases": twice}, headers=auth_header(admin_user))).status_code == 422
+    missing = [good[0], {**good[1], "product_id": str(uuid.uuid4())}]
+    assert (await client.post(batch, json={"aliases": missing}, headers=auth_header(admin_user))).status_code == 404
+    assert await count() == 0
+
+    saved = await client.post(batch, json={"aliases": good}, headers=auth_header(admin_user))
+    assert saved.status_code == 201, saved.text
+    assert [a["product_code"] for a in saved.json()] == [f"{model} G", single]
+    assert all(a["image_url"] for a in saved.json())
+    assert await count() == 2

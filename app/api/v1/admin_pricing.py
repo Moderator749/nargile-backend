@@ -28,6 +28,7 @@ from app.models.user import User
 from app.schemas.pricing import (
     ApplyResult,
     CurrentPrice,
+    ImportAliasBatch,
     ImportAliasCreate,
     ImportAliasRead,
     ImportCandidate,
@@ -291,6 +292,7 @@ async def import_excel(
                     seg: CurrentPrice(currency=currency, price_incl_tax=price)
                     for seg, (currency, price) in m.old_prices.items()
                 },
+                image_url=m.product.image_url,
             )
             for m in preview.matched
         ],
@@ -305,9 +307,11 @@ async def import_excel(
                         score=c.score,
                         basis=c.basis,
                         retail=CurrentPrice(currency=c.retail[0], price_incl_tax=c.retail[1]) if c.retail else None,
+                        image_url=c.product.image_url,
                     )
                     for c in item.candidates
                 ],
+                recommended_id=item.recommended.id if item.recommended else None,
             )
             for item in preview.suggested
         ],
@@ -325,6 +329,7 @@ def _alias(alias: PriceImportAlias, product: Product) -> ImportAliasRead:
         product_id=product.id,
         product_code=product.base_code,
         product_name=product.name,
+        image_url=product.image_url,
         created_at=alias.created_at,
     )
 
@@ -339,30 +344,59 @@ async def list_import_aliases(_admin: User = Depends(get_current_admin_user), db
     return [_alias(alias, product) for alias, product in rows.all()]
 
 
+async def _save_aliases(db: AsyncSession, admin: User, entries: list[ImportAliasCreate]) -> list[ImportAliasRead]:
+    """Tie each name to its product; a name (as compared) already tied moves to
+    the new one. Checked as a whole before anything is written. The caller commits."""
+    keys = [normalize(entry.excel_name) for entry in entries]
+    if not all(keys):
+        raise HTTPException(status_code=422, detail="Excel'deki ad boş olamaz.")
+    if len(set(keys)) != len(keys):
+        raise HTTPException(status_code=422, detail="Aynı ad birden fazla kez gönderildi.")
+    ids = {entry.product_id for entry in entries}
+    products = {p.id: p for p in (await db.scalars(select(Product).where(Product.id.in_(ids)))).all()}
+    if missing := ids - products.keys():
+        raise HTTPException(status_code=404, detail=f"Ürün bulunamadı: {', '.join(sorted(map(str, missing)))}")
+    existing = {
+        a.key: a for a in (await db.scalars(select(PriceImportAlias).where(PriceImportAlias.key.in_(keys)))).all()
+    }
+    saved: list[tuple[PriceImportAlias, Product]] = []
+    for key, entry in zip(keys, entries):
+        product = products[entry.product_id]
+        alias = existing.get(key)
+        if alias is None:
+            alias = PriceImportAlias(key=key, excel_name=entry.excel_name.strip(), product_id=product.id, created_by=admin.id)
+            db.add(alias)
+        else:
+            alias.excel_name, alias.product_id, alias.created_by = entry.excel_name.strip(), product.id, admin.id
+            alias.created_at = datetime.now(timezone.utc)
+        saved.append((alias, product))
+    await db.flush()
+    return [_alias(alias, product) for alias, product in saved]
+
+
 @router.post("/import-aliases", response_model=ImportAliasRead, status_code=status.HTTP_201_CREATED)
 async def save_import_alias(
     payload: ImportAliasCreate,
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """A suggestion confirmed: this workbook name means this product, from now
-    on. The same name (as compared) confirmed again moves to the new product."""
-    key = normalize(payload.excel_name)
-    if not key:
-        raise HTTPException(status_code=422, detail="Excel'deki ad boş olamaz.")
-    product = await db.get(Product, payload.product_id)
-    if product is None:
-        raise HTTPException(status_code=404, detail="Ürün bulunamadı.")
-    alias = await db.scalar(select(PriceImportAlias).where(PriceImportAlias.key == key))
-    if alias is None:
-        alias = PriceImportAlias(key=key, excel_name=payload.excel_name.strip(), product_id=product.id, created_by=admin.id)
-        db.add(alias)
-    else:
-        alias.excel_name, alias.product_id, alias.created_by = payload.excel_name.strip(), product.id, admin.id
-        alias.created_at = datetime.now(timezone.utc)
+    """A suggestion confirmed (or a product found by hand): this workbook name
+    means this product from now on."""
+    [saved] = await _save_aliases(db, admin, [payload])
     await db.commit()
-    await db.refresh(alias)
-    return _alias(alias, product)
+    return saved
+
+
+@router.post("/import-aliases/batch", response_model=list[ImportAliasRead], status_code=status.HTTP_201_CREATED)
+async def save_import_aliases(
+    payload: ImportAliasBatch,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Güvenli önerileri eşleştir": several at once, all or none."""
+    saved = await _save_aliases(db, admin, payload.aliases)
+    await db.commit()
+    return saved
 
 
 @router.delete("/import-aliases/{alias_id}", status_code=status.HTTP_204_NO_CONTENT)
