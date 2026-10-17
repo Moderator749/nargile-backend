@@ -163,23 +163,36 @@ class CurrentPrice(BaseModel):
 
 
 class ImportCandidate(BaseModel):
+    """A product a row may mean, for the admin to confirm."""
+
     product_id: uuid.UUID
     code: str
     name: str
+    score: float
+    # "abbreviation": the name with a word spelled the other way (GOLD/G);
+    # "similar": a code like it, of the same model; "same_code": one of several
+    # products that share the name exactly.
+    basis: Literal["abbreviation", "similar", "same_code"]
+    retail: CurrentPrice | None
 
 
 class ImportMatched(ImportedRow):
     product_id: uuid.UUID
     product_code: str
     product_name: str
-    matched_by: Literal["code", "sku", "name"]
+    # "alias": tied to the product by the admin on an earlier upload.
+    matched_by: Literal["alias", "code", "sku", "name"]
+    alias_id: int | None
     variants: int
     old_prices: dict[SegmentType, CurrentPrice]
 
 
-class ImportUnmatched(ImportedRow):
-    reason: Literal["unnamed", "incomplete", "not_found", "ambiguous", "conflict", "no_variants"]
+class ImportSuggested(ImportedRow):
     candidates: list[ImportCandidate]
+
+
+class ImportUnmatched(ImportedRow):
+    reason: Literal["unnamed", "incomplete", "not_found", "conflict", "no_variants"]
 
 
 class ImportSkipped(BaseModel):
@@ -193,8 +206,24 @@ class ImportSkipped(BaseModel):
 class PriceImportResult(BaseModel):
     dry_run: bool
     matched: list[ImportMatched]
+    # Not priced until the admin confirms one of the candidates.
+    suggested: list[ImportSuggested]
     unmatched: list[ImportUnmatched]
     # Blocks in another currency or before VAT: not this importer's to read.
     skipped: list[ImportSkipped]
     updated_products: int
     updated_variants: int
+
+
+class ImportAliasCreate(BaseModel):
+    excel_name: str = Field(min_length=1, max_length=120)
+    product_id: uuid.UUID
+
+
+class ImportAliasRead(BaseModel):
+    id: int
+    excel_name: str
+    product_id: uuid.UUID
+    product_code: str
+    product_name: str
+    created_at: datetime

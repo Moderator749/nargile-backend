@@ -31,4 +31,4 @@ from app.models.notification import (  # noqa: F401
     PasswordResetToken,
 )
 from app.models.payment import PaymentTransaction  # noqa: F401
-from app.models.pricing import PricingFile, PricingRecord  # noqa: F401
+from app.models.pricing import PriceImportAlias, PricingFile, PricingRecord  # noqa: F401

@@ -53,3 +53,26 @@ class PricingRecord(Base):
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
+
+
+class PriceImportAlias(Base):
+    """A name from the pricing workbook the admin has tied to a product.
+
+    The workbook names products its own way ("NT10 GOLD" for the product coded
+    "NT10 G"); a suggestion confirmed once in "Toplu Fiyat" is kept here and
+    matched first on every later upload. `key` is the name as compared
+    (`price_import.normalize`), `excel_name` as it was written.
+    """
+
+    __tablename__ = "price_import_aliases"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True)
+    excel_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )

@@ -1,6 +1,7 @@
 """Toplu fiyat (Excel): the supplier's workbook read block by block, matched by code, written to all four groups."""
 
 import io
+import random
 import uuid
 import zipfile
 from decimal import Decimal
@@ -12,6 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import Product, ProductVariant, VariantPrice
+from app.models.pricing import PriceImportAlias
 from app.models.user import CustomerSegment, SegmentType, User
 from tests.conftest import auth_header
 
@@ -50,6 +52,7 @@ def _workbook(blocks) -> bytes:
 @pytest.fixture
 async def products(db_session: AsyncSession, segments: dict[SegmentType, CustomerSegment]):
     tag = uuid.uuid4().hex[:6].upper()
+    model = f"ZZ{random.randint(10000, 99999)}"  # a model number, as the workbook's codes have
     made = []
 
     async def product(code: str, name: str, skus: list[str]):
@@ -74,10 +77,20 @@ async def products(db_session: AsyncSession, segments: dict[SegmentType, Custome
     ))
     coloured, coloured_vs = await product(f"PBX{tag}", "Renkli Test Takımı", [f"SKU{tag} KR", f"SKU{tag} SY"])
     bottle, _ = await product(f"SSX{tag}", f"NTX{tag} Çantalı Nargile Şişesi", [f"SSX{tag}"])
+    gold, (gold_v,) = await product(f"{model} G", "Model Test Gold", [f"{model} G"])
+    plain, _ = await product(f"{model} KR", "Model Test Kırmızı", [f"{model} KR"])
+    # Same digits further on, a different model; and a bottle of the same model.
+    longer, _ = await product(f"{model}0 GOLD", "Başka Model Gold", [f"{model}0 GOLD"])
+    model_bottle, _ = await product(f"SS{model}", f"{model} Nargile Şişesi", [f"SS{model}"])
     await db_session.commit()
-    yield {"tag": tag, "hookah": hookah, "hookah_v": hookah_v, "coloured": coloured, "coloured_vs": coloured_vs, "bottle": bottle}
+    yield {
+        "tag": tag, "model": model, "hookah": hookah, "hookah_v": hookah_v, "coloured": coloured,
+        "coloured_vs": coloured_vs, "bottle": bottle, "gold": gold, "gold_v": gold_v, "plain": plain,
+        "longer": longer, "model_bottle": model_bottle,
+    }
 
     ids = [p.id for p in made]
+    await db_session.execute(delete(PriceImportAlias).where(PriceImportAlias.product_id.in_(ids)))
     variant_ids = select(ProductVariant.id).where(ProductVariant.product_id.in_(ids))
     await db_session.execute(delete(VariantPrice).where(VariantPrice.variant_id.in_(variant_ids)))
     await db_session.execute(delete(ProductVariant).where(ProductVariant.product_id.in_(ids)))
@@ -85,7 +98,7 @@ async def products(db_session: AsyncSession, segments: dict[SegmentType, Custome
     await db_session.commit()
 
 
-def _sheet(tag: str) -> bytes:
+def _sheet(tag: str, model: str = "ZZ0") -> bytes:
     return _workbook([
         ((2, 0, "", (100, 110, 120, 130)), {}),  # no name
         ((6, 0, f"LHT{tag} V1", (2155, 2545, 2930, 3450)), {}),  # code, space for the hyphen
@@ -97,6 +110,8 @@ def _sheet(tag: str) -> bytes:
         ((18, 0, f"USD{tag}", (24, 25, 29, 38)), {"foreign": True}),
         ((22, 0, f"NOB{tag}", (0, 170, 180, 235)), {"bayi": False}),
         ((26, 0, f"HRC{tag}", (24, 25, 29, 38)), {"vat_excluded": True}),
+        ((30, 0, f"{model} GOLD", (4000, 4500, 5000, 6000)), {}),  # the catalog says "G"
+        ((30, 19, f"sku{tag} SY", (1000, 1100, 1200, 1500)), {}),  # the same product, the same prices
     ])
 
 
@@ -118,8 +133,8 @@ async def _prices(db: AsyncSession, variant_id) -> dict:
 
 
 async def test_dry_run_reports_and_changes_nothing(client: AsyncClient, admin_user: User, products, db_session):
-    tag = products["tag"]
-    resp = await _post(client, admin_user, _sheet(tag), dry_run=True)
+    tag, model = products["tag"], products["model"]
+    resp = await _post(client, admin_user, _sheet(tag, model), dry_run=True)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["dry_run"] is True and body["updated_products"] == 0
@@ -133,6 +148,17 @@ async def test_dry_run_reports_and_changes_nothing(client: AsyncClient, admin_us
     assert hookah["old_prices"]["RETAIL"] == {"currency": "TRY", "price_incl_tax": "3000.00"}
     coloured = matched[f"sku{tag}kr"]
     assert coloured["matched_by"] == "sku" and coloured["variants"] == 2 and coloured["side"] == "sağ"
+    # Its other colour's row, with the same prices, is the same product priced once — no conflict.
+    assert f"sku{tag} SY" not in {u["name"] for u in body["unmatched"]}
+
+    # "GOLD" is "G" in the catalog: a suggestion, never a match, and only of its own model.
+    [gold] = [x for x in body["suggested"] if x["name"] == f"{model} GOLD"]
+    first = gold["candidates"][0]
+    assert first["product_id"] == str(products["gold"].id) and first["basis"] == "abbreviation" and first["score"] == 1.0
+    offered = {c["product_id"] for c in gold["candidates"]}
+    assert str(products["plain"].id) in offered
+    assert not offered & {str(products["longer"].id), str(products["model_bottle"].id)}
+    assert str(products["gold"].id) not in {m["product_id"] for m in body["matched"]}
 
     reasons = {(u["name"], u["row"], u["side"]): u["reason"] for u in body["unmatched"]}
     assert reasons[("", 2, "sol")] == "unnamed"
@@ -154,8 +180,8 @@ async def test_dry_run_reports_and_changes_nothing(client: AsyncClient, admin_us
 
 
 async def test_apply_writes_all_four_groups(client: AsyncClient, admin_user: User, products, db_session):
-    tag = products["tag"]
-    resp = await _post(client, admin_user, _sheet(tag), dry_run=False)
+    tag, model = products["tag"], products["model"]
+    resp = await _post(client, admin_user, _sheet(tag, model), dry_run=False)
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["dry_run"] is False
@@ -176,6 +202,37 @@ async def test_apply_writes_all_four_groups(client: AsyncClient, admin_user: Use
     assert await _prices(db_session, (await db_session.scalar(
         select(ProductVariant.id).where(ProductVariant.product_id == products["bottle"].id)
     ))) == {}
+    # A suggestion is not priced until it is confirmed.
+    assert await _prices(db_session, products["gold_v"].id) == {}
+
+
+async def test_a_confirmed_suggestion_is_remembered(client: AsyncClient, admin_user: User, customer_user: User, products, db_session):
+    tag, model = products["tag"], products["model"]
+    aliases = "/api/v1/admin/pricing/import-aliases"
+    body = {"excel_name": f"{model} gold", "product_id": str(products["gold"].id)}
+    assert (await client.post(aliases, json=body, headers=auth_header(customer_user))).status_code == 403
+
+    saved = await client.post(aliases, json=body, headers=auth_header(admin_user))
+    assert saved.status_code == 201, saved.text
+    alias = saved.json()
+    assert alias["product_code"] == f"{model} G"
+    # The same name, spelled otherwise, is the same alias: confirming again moves it.
+    again = await client.post(aliases, json={**body, "excel_name": f"{model}-GOLD"}, headers=auth_header(admin_user))
+    assert again.json()["id"] == alias["id"]
+
+    preview = (await _post(client, admin_user, _sheet(tag, model), dry_run=True)).json()
+    [row] = [m for m in preview["matched"] if m["name"] == f"{model} GOLD"]
+    assert row["matched_by"] == "alias" and row["alias_id"] == alias["id"] and row["product_id"] == str(products["gold"].id)
+    assert f"{model} GOLD" not in {x["name"] for x in preview["suggested"]}
+
+    assert (await _post(client, admin_user, _sheet(tag, model), dry_run=False)).status_code == 200
+    assert (await _prices(db_session, products["gold_v"].id))[("RETAIL", "TRY")] == (Decimal("6000.00"), Decimal("5000.00"))
+
+    listed = (await client.get(aliases, headers=auth_header(admin_user))).json()
+    assert alias["id"] in {a["id"] for a in listed}
+    assert (await client.delete(f"{aliases}/{alias['id']}", headers=auth_header(admin_user))).status_code == 204
+    preview = (await _post(client, admin_user, _sheet(tag, model), dry_run=True)).json()
+    assert f"{model} GOLD" in {x["name"] for x in preview["suggested"]}
 
 
 async def test_only_admins_and_only_workbooks(client: AsyncClient, admin_user: User, customer_user: User):

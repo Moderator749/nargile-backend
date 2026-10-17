@@ -7,7 +7,9 @@ push their prices to the live product.
   written to the product its "Ürün Kodu" names.
 - ``POST /admin/pricing/import-excel``: the supplier's pricing workbook, every
   block's four prices matched to a product (``dry_run``, the default, only
-  reports what would change).
+  reports what would change; suggestions are never priced).
+- ``/admin/pricing/import-aliases``: the workbook names the admin has tied to
+  products by confirming a suggestion — matched first on every later upload.
 """
 
 import uuid
@@ -21,15 +23,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
 from app.models.catalog import Product, ProductVariant
-from app.models.pricing import PricingFile, PricingRecord
+from app.models.pricing import PriceImportAlias, PricingFile, PricingRecord
 from app.models.user import User
 from app.schemas.pricing import (
     ApplyResult,
     CurrentPrice,
+    ImportAliasCreate,
+    ImportAliasRead,
     ImportCandidate,
     ImportedRow,
     ImportMatched,
     ImportSkipped,
+    ImportSuggested,
     ImportUnmatched,
     PriceImportResult,
     PricingFileCreate,
@@ -40,7 +45,7 @@ from app.schemas.pricing import (
     SaveTarget,
     SaveToFileRequest,
 )
-from app.services.price_import import ImportFileError, apply_matches, match_blocks, parse_workbook
+from app.services.price_import import ImportFileError, apply_matches, match_blocks, normalize, parse_workbook
 from app.services.pricing_sheet import ApplyError, apply_to_product, compute_sheet
 
 router = APIRouter(prefix="/admin/pricing", tags=["admin-pricing"])
@@ -280,6 +285,7 @@ async def import_excel(
                 product_code=m.product.base_code,
                 product_name=m.product.name,
                 matched_by=m.matched_by,
+                alias_id=m.alias_id,
                 variants=sum(1 for v in m.product.variants if v.is_active),
                 old_prices={
                     seg: CurrentPrice(currency=currency, price_incl_tax=price)
@@ -288,15 +294,83 @@ async def import_excel(
             )
             for m in preview.matched
         ],
-        unmatched=[
-            ImportUnmatched(
-                **_row(miss.block),
-                reason=miss.reason,
-                candidates=[ImportCandidate(product_id=p.id, code=p.base_code, name=p.name) for p in miss.candidates],
+        suggested=[
+            ImportSuggested(
+                **_row(item.block),
+                candidates=[
+                    ImportCandidate(
+                        product_id=c.product.id,
+                        code=c.product.base_code,
+                        name=c.product.name,
+                        score=c.score,
+                        basis=c.basis,
+                        retail=CurrentPrice(currency=c.retail[0], price_incl_tax=c.retail[1]) if c.retail else None,
+                    )
+                    for c in item.candidates
+                ],
             )
-            for miss in preview.unmatched
+            for item in preview.suggested
         ],
+        unmatched=[ImportUnmatched(**_row(miss.block), reason=miss.reason) for miss in preview.unmatched],
         skipped=[ImportSkipped(sheet=s.sheet, row=s.row, side=s.side, name=s.name, reason=s.reason) for s in parsed.skipped],
         updated_products=0 if dry_run else len(preview.matched),
         updated_variants=variants,
     )
+
+
+def _alias(alias: PriceImportAlias, product: Product) -> ImportAliasRead:
+    return ImportAliasRead(
+        id=alias.id,
+        excel_name=alias.excel_name,
+        product_id=product.id,
+        product_code=product.base_code,
+        product_name=product.name,
+        created_at=alias.created_at,
+    )
+
+
+@router.get("/import-aliases", response_model=list[ImportAliasRead])
+async def list_import_aliases(_admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)):
+    rows = await db.execute(
+        select(PriceImportAlias, Product)
+        .join(Product, Product.id == PriceImportAlias.product_id)
+        .order_by(PriceImportAlias.excel_name)
+    )
+    return [_alias(alias, product) for alias, product in rows.all()]
+
+
+@router.post("/import-aliases", response_model=ImportAliasRead, status_code=status.HTTP_201_CREATED)
+async def save_import_alias(
+    payload: ImportAliasCreate,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A suggestion confirmed: this workbook name means this product, from now
+    on. The same name (as compared) confirmed again moves to the new product."""
+    key = normalize(payload.excel_name)
+    if not key:
+        raise HTTPException(status_code=422, detail="Excel'deki ad boş olamaz.")
+    product = await db.get(Product, payload.product_id)
+    if product is None:
+        raise HTTPException(status_code=404, detail="Ürün bulunamadı.")
+    alias = await db.scalar(select(PriceImportAlias).where(PriceImportAlias.key == key))
+    if alias is None:
+        alias = PriceImportAlias(key=key, excel_name=payload.excel_name.strip(), product_id=product.id, created_by=admin.id)
+        db.add(alias)
+    else:
+        alias.excel_name, alias.product_id, alias.created_by = payload.excel_name.strip(), product.id, admin.id
+        alias.created_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(alias)
+    return _alias(alias, product)
+
+
+@router.delete("/import-aliases/{alias_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_import_alias(
+    alias_id: int, _admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
+):
+    alias = await db.get(PriceImportAlias, alias_id)
+    if alias is None:
+        raise HTTPException(status_code=404, detail="Eşleştirme bulunamadı.")
+    await db.delete(alias)
+    await db.commit()
