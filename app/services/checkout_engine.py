@@ -171,11 +171,25 @@ class ResolvedCartItem:
     unit_weight_kg: Decimal | None = None
     # The VAT rate (percent) the line's price includes, from its price row.
     vat_rate: Decimal = Decimal("0")
+    # A bayi buying a product with "Bayide Havale / EFT İndirimi" on: the line
+    # takes the havale discount when the order is paid by transfer.
+    dealer_havale: bool = False
+    # That discount on this line (VAT-inclusive, like the line); 0 otherwise.
+    havale_discount: Decimal = Decimal("0.00")
 
     @property
     def line_total_excl_tax(self) -> Decimal:
         """The line before VAT: prices are stored and charged VAT-inclusive."""
         return (self.line_total / (1 + self.vat_rate / 100)).quantize(Decimal("0.01"))
+
+    @property
+    def net_line_total(self) -> Decimal:
+        """What the line comes to after its own discount."""
+        return self.line_total - self.havale_discount
+
+    @property
+    def net_line_total_excl_tax(self) -> Decimal:
+        return (self.net_line_total / (1 + self.vat_rate / 100)).quantize(Decimal("0.01"))
 
     def __post_init__(self) -> None:
         self.line_total = calculate_line_total(self.unit_price, self.quantity)
@@ -295,6 +309,10 @@ class CheckoutEngine:
             if perks
             else (Decimal("0.00"), Decimal("0.00"))
         )
+        if segment_code == SegmentType.DEALER:
+            # A bayi has no retail perks, but a product may still give it the
+            # havale discount ("Bayide Havale / EFT İndirimi"): line by line.
+            discount_rate, discount_amount = self.apply_dealer_havale(items, subtotal, payment_method, params)
         loyalty_points = self.calculate_loyalty_earnings(subtotal, params.loyalty) if perks else 0
 
         # Points redemption: validate and cap
@@ -570,6 +588,33 @@ class CheckoutEngine:
 
         amount = ((subtotal if base is None else base) * rate).quantize(Decimal("0.01"))
         return rate, amount
+
+    @staticmethod
+    def apply_dealer_havale(
+        items: list[ResolvedCartItem],
+        subtotal: Decimal,
+        payment_method: PaymentMethod,
+        params: StoreParameters = DEFAULT_PARAMETERS,
+    ) -> tuple[Decimal, Decimal]:
+        """A bayi's havale discount: (rate, amount), on its own lines only.
+
+        Each line whose product has "Bayide Havale / EFT İndirimi" on is marked
+        `dealer_havale` whatever the payment (so the cart can say what a transfer
+        would take off); paid by transfer, it takes the standard havale rate on
+        its own line total — the bayi's tier price as charged — rounded per
+        line. The rate is the tier the whole cart's subtotal reaches, as for a
+        retail cart (by default 5%, 7% from 30,000 TRY). Lines without the
+        switch are charged in full; there is no cart-wide discount.
+        """
+        eligible = [item for item in items if item.product.has_dealer_havale_discount]
+        for item in eligible:
+            item.dealer_havale = True
+        rate, _ = CheckoutEngine.calculate_discounts(subtotal, payment_method, params=params)
+        if not eligible or not rate:
+            return Decimal("0.00"), Decimal("0.00")
+        for item in eligible:
+            item.havale_discount = (item.line_total * rate).quantize(Decimal("0.01"))
+        return rate, sum((item.havale_discount for item in eligible), Decimal("0.00"))
 
     # ── Cargo calculation ────────────────────────────────────────────────
 

@@ -67,6 +67,9 @@ async def calculate_cart(
     s = cart.shipping
     params = cart.params
     subtotal_excl = sum((i.line_total_excl_tax for i in cart.items), Decimal("0.00"))
+    # After each line's own discount (a bayi's havale); the same as above without one.
+    net_excl = sum((i.net_line_total_excl_tax for i in cart.items), Decimal("0.00"))
+    net_lines = sum((i.net_line_total for i in cart.items), Decimal("0.00"))
     next_tier = params.next_volume_tier(cart.subtotal)
     return CartCalculateResponse(
         subtotal=cart.subtotal,
@@ -97,7 +100,8 @@ async def calculate_cart(
         points_discount=cart.points_discount,
         net_total=cart.net_total,
         subtotal_excl_tax=subtotal_excl,
-        vat_total=cart.subtotal - subtotal_excl,
+        line_discount_excl_tax=subtotal_excl - net_excl,
+        vat_total=net_lines - net_excl,
         vat_rates=sorted({i.vat_rate for i in cart.items}),
         loyalty_points_to_earn=cart.loyalty_points_to_earn,
         payment_method=cart.payment_method,
@@ -115,6 +119,8 @@ async def calculate_cart(
                 tags=i.tags,
                 image_url=i.product.image_url,
                 vat_rate=i.vat_rate,
+                dealer_havale=i.dealer_havale,
+                havale_discount=i.havale_discount,
             )
             for i in cart.items
         ],

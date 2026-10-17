@@ -36,6 +36,12 @@ class CartItemBreakdown(BaseModel):
     image_url: str | None = None
     # Percent; `unit_price` and `line_total` include it.
     vat_rate: Decimal = Decimal("0")
+    # A bayi's line whose product has "Bayide Havale / EFT İndirimi" on — set
+    # whatever the payment, so the cart can say what a transfer takes off.
+    dealer_havale: bool = False
+    # The havale discount on this line itself (VAT-inclusive); 0 unless it is a
+    # dealer_havale line paid by transfer. Included in `discount_amount`.
+    havale_discount: Decimal = Decimal("0.00")
 
 
 class ShippingBreakdown(BaseModel):
@@ -91,15 +97,19 @@ class CartCalculateResponse(BaseModel):
     volume_discount_amount: Decimal
     # The next volume tier the cart hasn't reached (for "₺X more for 8%"); None at the top.
     volume_next_tier: VolumeTier | None
-    # Bank transfer (havale/EFT) discount, on what's left after the volume discount.
+    # Bank transfer (havale/EFT) discount: for retail on what's left after the
+    # volume discount; for a bayi the sum of its lines' `havale_discount`.
     discount_rate: Decimal
     discount_amount: Decimal
     points_discount: Decimal
     net_total: Decimal
     # The VAT inside the merchandise, for a business invoice: the lines before
-    # VAT, the VAT on them, and the rates involved. Only meaningful without
-    # discounts — which is how a B2B cart always is (see perks_eligible).
+    # VAT, the line discounts before VAT (a bayi's havale), the VAT on what the
+    # lines come to after them, and the rates involved. subtotal_excl_tax −
+    # line_discount_excl_tax + vat_total is what the lines come to. Not for a
+    # retail cart, whose discounts are cart-wide.
     subtotal_excl_tax: Decimal = Decimal("0.00")
+    line_discount_excl_tax: Decimal = Decimal("0.00")
     vat_total: Decimal = Decimal("0.00")
     vat_rates: list[Decimal] = Field(default_factory=list)
     loyalty_points_to_earn: int
