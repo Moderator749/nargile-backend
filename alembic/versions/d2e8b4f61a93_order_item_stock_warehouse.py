@@ -1,10 +1,8 @@
 """The stock quota each order line was taken from
 
-A B2B list (Bayi / Toptan / Kafe) with no quota of its own (0) now buys from
-the retail pool, so the quota a line came out of is no longer implied by the
-buyer's segment: it is kept on the line, for a cancellation to put the stock
-back where it was taken from. Lines from before stay NULL and go back to the
-buyer's own quota, as they always did.
+Kept on the line, so a cancellation puts the stock back in the quota it was
+taken from even if the account has since moved to another list. Lines from
+before stay NULL and go back to the buyer's current quota, as they always did.
 
 Revision ID: d2e8b4f61a93
 Revises: c9a1f5e3b724

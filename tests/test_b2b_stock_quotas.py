@@ -1,17 +1,18 @@
-"""B2B stock: a list's own quota when the admin sets one, else the retail pool.
+"""B2B stock: each list buys from its own quota, and from nothing else.
 
 The product sheet holds a stock quota per list (Perakende / Bayi / Toptan /
-Kafe). For Bayi, Toptan and Kafe a quota of 0 (or none at all) does not mean
-sold out: it means nothing was set aside, and the list shares the Perakende
-pool. A quota above 0 is a dedicated limit the list is held to instead.
+Kafe). A list is held to its own: a B2B quota left at 0 (or never set) is sold
+out for that list, and so is one that has run down to 0 — however much the
+retail stock, or another list's quota, still holds. A signed-in buyer is told
+how many they may order; a visitor gets the stock flag alone.
 
 Covers:
 - stock_source, the rule itself, for every combination that matters
 - the storefront flag and quantity for each B2B list, and for a visitor
 - the cart reporting each line's limit
-- checkout taking stock from the pool or the dedicated quota, refusing more
-  than either allows, and saying so in Turkish
-- Perakende unchanged: its 0 is sold out, whatever the B2B quotas hold
+- checkout taking stock from the list's own quota only, refusing more than it
+  holds (and saying so in Turkish), and a quota sold down to 0 staying sold out
+- Perakende held to the retail stock the same way
 - a cancellation putting the stock back where the order took it from
 """
 
@@ -43,18 +44,17 @@ def _rows(**quantities: int) -> list[SimpleNamespace]:
 @pytest.mark.parametrize(
     ("segment", "rows", "expected"),
     [
-        # A B2B list with a quota of its own is held to it, even below the pool.
+        # Each list reads its own quota.
         (SegmentType.WHOLESALE, _rows(B2B_STOCK=10, RETAIL_STOCK=50), (WarehouseType.B2B_STOCK, 10)),
         (SegmentType.DEALER, _rows(DEALER_STOCK=80, RETAIL_STOCK=50), (WarehouseType.DEALER_STOCK, 80)),
-        # 0, or no row at all: the retail pool.
-        (SegmentType.WHOLESALE, _rows(B2B_STOCK=0, RETAIL_STOCK=50), (RETAIL, 50)),
-        (SegmentType.CAFE, _rows(RETAIL_STOCK=50), (RETAIL, 50)),
-        # Sold out only when the pool is empty too.
-        (SegmentType.CAFE, _rows(CAFE_STOCK=0, RETAIL_STOCK=0), (RETAIL, 0)),
-        (SegmentType.DEALER, _rows(), (RETAIL, 0)),
-        # Another list's quota is no use to this one.
-        (SegmentType.CAFE, _rows(DEALER_STOCK=30, B2B_STOCK=30, RETAIL_STOCK=0), (RETAIL, 0)),
-        # Perakende never borrows: its 0 is sold out.
+        (SegmentType.CAFE, _rows(CAFE_STOCK=3), (WarehouseType.CAFE_STOCK, 3)),
+        # 0, or no row at all, is sold out for the list — the retail stock does not stand in.
+        (SegmentType.WHOLESALE, _rows(B2B_STOCK=0, RETAIL_STOCK=50), (WarehouseType.B2B_STOCK, 0)),
+        (SegmentType.CAFE, _rows(RETAIL_STOCK=50), (WarehouseType.CAFE_STOCK, 0)),
+        (SegmentType.DEALER, _rows(), (WarehouseType.DEALER_STOCK, 0)),
+        # Nor does another list's quota.
+        (SegmentType.CAFE, _rows(DEALER_STOCK=30, B2B_STOCK=30, RETAIL_STOCK=30), (WarehouseType.CAFE_STOCK, 0)),
+        # Perakende: the retail stock, and the B2B quotas are no use to it either.
         (SegmentType.RETAIL, _rows(RETAIL_STOCK=0, B2B_STOCK=10, CAFE_STOCK=10, DEALER_STOCK=10), (RETAIL, 0)),
         (SegmentType.RETAIL, _rows(RETAIL_STOCK=7), (RETAIL, 7)),
         (None, _rows(RETAIL_STOCK=7), (RETAIL, 7)),
@@ -67,7 +67,7 @@ def test_stock_source(segment, rows, expected):
 async def _product(db: AsyncSession, segments, **stock: int) -> ProductVariant:
     """Priced for every list (1,000 TRY), with the given quotas."""
     suffix = uuid.uuid4().hex[:6]
-    product = Product(base_code=f"STK-{suffix}", name=f"Havuz {suffix}", tags=[])
+    product = Product(base_code=f"STK-{suffix}", name=f"Kota {suffix}", tags=[])
     db.add(product)
     await db.flush()
     variant = ProductVariant(product_id=product.id, sku=f"STK-{suffix}")
@@ -103,52 +103,28 @@ def _own(segment: SegmentType) -> str:
 
 
 @pytest.mark.parametrize("segment", B2B, ids=lambda s: s.value)
-async def test_the_storefront_shows_the_pool_or_the_dedicated_quota(client, db_session, segments, segment):
+async def test_the_storefront_shows_the_lists_own_quota(client, db_session, segments, segment):
     firm = await _firm(client, db_session, segments, segment)
-    pool = await _product(db_session, segments, **{_own(segment): 0, "RETAIL_STOCK": 50})
-    dedicated = await _product(db_session, segments, **{_own(segment): 10, "RETAIL_STOCK": 50})
-    gone = await _product(db_session, segments, **{_own(segment): 0, "RETAIL_STOCK": 0})
+    stocked = await _product(db_session, segments, **{_own(segment): 10, "RETAIL_STOCK": 50})
+    unset = await _product(db_session, segments, **{_own(segment): 0, "RETAIL_STOCK": 50})
+    no_row = await _product(db_session, segments, RETAIL_STOCK=50)
 
-    for variant, in_stock, available in ((pool, True, 50), (dedicated, True, 10), (gone, False, 0)):
+    for variant, in_stock, available in ((stocked, True, 10), (unset, False, 0), (no_row, False, 0)):
         seen = await _storefront(client, variant, firm)
         assert (seen["in_stock"], seen["available_quantity"]) == (in_stock, available)
 
-    # A visitor buys from the retail pool and gets the flag only, never a count.
-    seen = await _storefront(client, gone)
-    assert (seen["in_stock"], seen["available_quantity"]) == (False, None)
-    seen = await _storefront(client, dedicated)
+    # A visitor buys from the retail stock and gets the flag only, never a count.
+    seen = await _storefront(client, unset)
     assert (seen["in_stock"], seen["available_quantity"]) == (True, None)
 
 
 @pytest.mark.parametrize("segment", B2B, ids=lambda s: s.value)
-async def test_a_list_without_a_quota_buys_from_the_retail_pool(client, db_session, segments, segment):
-    firm = await _firm(client, db_session, segments, segment)
-    variant = await _product(db_session, segments, **{_own(segment): 0, "RETAIL_STOCK": 50})
-
-    quote = await _quote(client, firm, [(variant, 30)])
-    assert _line(quote, variant)["available_quantity"] == 50
-
-    resp = await client.post("/api/v1/orders/checkout", headers=firm, json=_body([(variant, 30)]))
-    assert resp.status_code == 201, resp.text
-    # Out of the pool; the list's own quota stays at 0, so it keeps sharing it.
-    quotas = await _quotas(db_session, variant)
-    assert (quotas[RETAIL], quotas[warehouse_for_segment(segment)]) == (20, 0)
-    item = await db_session.scalar(select(OrderItem).where(OrderItem.variant_id == variant.id).execution_options(populate_existing=True))
-    assert item.stock_warehouse is RETAIL
-
-    # The pool is shared: what is left in it is all the list may have now.
-    assert _line(await _quote(client, firm, [(variant, 21)]), variant)["available_quantity"] == 20
-    resp = await client.post("/api/v1/orders/checkout", headers=firm, json=_body([(variant, 21)]))
-    assert resp.status_code == 422
-    assert "stokta yalnızca 20 adet var" in resp.json()["detail"]
-
-
-@pytest.mark.parametrize("segment", B2B, ids=lambda s: s.value)
-async def test_a_dedicated_quota_is_the_limit(client, db_session, segments, segment):
+async def test_a_list_buys_from_its_own_quota_until_it_runs_out(client, db_session, segments, segment):
     firm = await _firm(client, db_session, segments, segment)
     variant = await _product(db_session, segments, **{_own(segment): 10, "RETAIL_STOCK": 50})
 
-    # Not topped up from the pool: 11 is one more than was set aside.
+    assert _line(await _quote(client, firm, [(variant, 4)]), variant)["available_quantity"] == 10
+    # Not topped up from the retail stock: 11 is one more than the quota holds.
     resp = await client.post("/api/v1/orders/checkout", headers=firm, json=_body([(variant, 11)]))
     assert resp.status_code == 422
     assert "stokta yalnızca 10 adet var" in resp.json()["detail"]
@@ -156,21 +132,30 @@ async def test_a_dedicated_quota_is_the_limit(client, db_session, segments, segm
     resp = await client.post("/api/v1/orders/checkout", headers=firm, json=_body([(variant, 10)]))
     assert resp.status_code == 201, resp.text
     quotas = await _quotas(db_session, variant)
-    assert (quotas[warehouse_for_segment(segment)], quotas[RETAIL]) == (0, 50)
+    assert (quotas[warehouse_for_segment(segment)], quotas[RETAIL]) == (0, 50)  # the retail stock untouched
     item = await db_session.scalar(select(OrderItem).where(OrderItem.variant_id == variant.id).execution_options(populate_existing=True))
     assert item.stock_warehouse is warehouse_for_segment(segment)
 
-
-@pytest.mark.parametrize("segment", B2B, ids=lambda s: s.value)
-async def test_sold_out_only_when_the_pool_is_empty_too(client, db_session, segments, segment):
-    firm = await _firm(client, db_session, segments, segment)
-    variant = await _product(db_session, segments, **{_own(segment): 0, "RETAIL_STOCK": 0})
+    # Run down to 0, the quota is sold out for the list — fifty in retail or not.
+    seen = await _storefront(client, variant, firm)
+    assert (seen["in_stock"], seen["available_quantity"]) == (False, 0)
+    assert _line(await _quote(client, firm, [(variant, 1)]), variant)["available_quantity"] == 0
     resp = await client.post("/api/v1/orders/checkout", headers=firm, json=_body([(variant, 1)]))
     assert resp.status_code == 422
     assert "tükendi" in resp.json()["detail"]
 
 
-async def test_perakende_zero_is_sold_out_whatever_the_b2b_quotas_hold(client, db_session, segments):
+@pytest.mark.parametrize("segment", B2B, ids=lambda s: s.value)
+async def test_a_quota_left_at_zero_is_sold_out_for_the_list(client, db_session, segments, segment):
+    firm = await _firm(client, db_session, segments, segment)
+    variant = await _product(db_session, segments, **{_own(segment): 0, "RETAIL_STOCK": 50})
+    resp = await client.post("/api/v1/orders/checkout", headers=firm, json=_body([(variant, 1)]))
+    assert resp.status_code == 422
+    assert "tükendi" in resp.json()["detail"]
+    assert (await _quotas(db_session, variant))[RETAIL] == 50
+
+
+async def test_perakende_is_held_to_the_retail_stock(client, db_session, segments):
     shopper = await _firm(client, db_session, segments, SegmentType.RETAIL)
     variant = await _product(
         db_session, segments, RETAIL_STOCK=0, B2B_STOCK=10, CAFE_STOCK=10, DEALER_STOCK=10
@@ -184,20 +169,15 @@ async def test_perakende_zero_is_sold_out_whatever_the_b2b_quotas_hold(client, d
     }
 
 
-@pytest.mark.parametrize(
-    ("own_quota", "taken_from"),
-    [(0, RETAIL), (10, WarehouseType.B2B_STOCK)],
-    ids=["from-the-pool", "from-the-quota"],
-)
 async def test_a_cancellation_puts_the_stock_back_where_it_came_from(
-    client, db_session, segments, admin_user: User, own_quota, taken_from
+    client, db_session, segments, admin_user: User
 ):
     firm = await _firm(client, db_session, segments, SegmentType.WHOLESALE)
-    variant = await _product(db_session, segments, B2B_STOCK=own_quota, RETAIL_STOCK=50)
+    variant = await _product(db_session, segments, B2B_STOCK=10, RETAIL_STOCK=50)
     before = await _quotas(db_session, variant)
     resp = await client.post("/api/v1/orders/checkout", headers=firm, json=_body([(variant, 4)]))
     assert resp.status_code == 201, resp.text
-    assert (await _quotas(db_session, variant))[taken_from] == before[taken_from] - 4
+    assert (await _quotas(db_session, variant))[WarehouseType.B2B_STOCK] == 6
 
     cancel = await client.post(
         f"/api/v1/admin/orders/{resp.json()['id']}/cancel",

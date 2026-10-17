@@ -217,9 +217,10 @@ class OrderItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    # The stock quota the line was taken from: the buyer's own B2B quota, or the
-    # retail pool it shares when that is 0. A cancellation puts it back there.
-    # None on a request (nothing taken) and on lines from before it was kept.
+    # The stock quota the line was taken from (the buyer's list's own), so a
+    # cancellation puts it back there even if the account has since moved to
+    # another list. None on a request (nothing taken) and on lines from before
+    # it was kept.
     stock_warehouse: Mapped[WarehouseType | None] = mapped_column(Enum(WarehouseType), nullable=True)
 
     order: Mapped[Order] = relationship(back_populates="items")

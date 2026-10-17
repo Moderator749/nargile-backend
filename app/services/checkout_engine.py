@@ -122,17 +122,14 @@ def warehouse_for_segment(code: SegmentType | None) -> WarehouseType:
 def stock_source(inventory: Iterable[Inventory], code: SegmentType | None) -> tuple[WarehouseType, int]:
     """Where a segment's purchase of a variant comes out of, and how many it may buy.
 
-    Perakende buys from RETAIL_STOCK, and 0 there is sold out. A B2B list (Bayi /
-    Toptan / Kafe) buys from its own quota only when the admin has set one aside
-    — more than 0 — and is then held to it. Otherwise (0, or no row at all) it
-    shares the retail pool: 0 on a B2B quota means "nothing set aside", not
-    "none left". Sold out for B2B only when the retail pool is empty too.
+    Each list buys from its own quota and nothing else: Perakende from
+    RETAIL_STOCK, Bayi / Toptan / Kafe from theirs. A quota left at 0 (or never
+    set) is sold out for that list, as is one that has run down to 0 — never
+    topped up from another list's, the retail stock included.
     """
-    on_hand = {WarehouseType(i.warehouse_type): i.quantity for i in inventory}
     own = warehouse_for_segment(code)
-    if own is not WarehouseType.RETAIL_STOCK and on_hand.get(own, 0) > 0:
-        return own, on_hand[own]
-    return WarehouseType.RETAIL_STOCK, max(on_hand.get(WarehouseType.RETAIL_STOCK, 0), 0)
+    on_hand = next((i.quantity for i in inventory if WarehouseType(i.warehouse_type) is own), 0)
+    return own, max(on_hand, 0)
 
 
 # What each kind of account may be shipped by. A bireysel parcel goes to a door
@@ -203,7 +200,7 @@ class ResolvedCartItem:
     # That discount on this line (VAT-inclusive, like the line); 0 otherwise.
     havale_discount: Decimal = Decimal("0.00")
     # How many of this variant the buyer's segment may have right now, and the
-    # quota they come out of (stock_source): its own, or the shared retail pool.
+    # quota they come out of (stock_source): the segment's own, always.
     available: int = 0
     stock_warehouse: WarehouseType = WarehouseType.RETAIL_STOCK
 
@@ -850,19 +847,19 @@ class CheckoutEngine:
         items: list[ResolvedCartItem],
         segment_code: SegmentType | None,
     ) -> None:
-        """Validate stock and deduct it, line by line, from the quota each line
-        buys from (stock_source): the segment's own, or the shared retail pool.
+        """Validate stock and deduct it, line by line, from the buyer's own quota
+        (stock_source) — never from another list's.
 
-        The rows are read again under a lock, so two orders cannot both take the
-        last units, and the source is decided on what is there now; it is
-        recorded on the line for a cancellation to put back.
+        The row is read again under a lock, so two orders cannot both take the
+        last units; the quota is recorded on the line for a cancellation to put
+        back.
         """
-        quotas = {warehouse_for_segment(segment_code), WarehouseType.RETAIL_STOCK}
+        own = warehouse_for_segment(segment_code)
         for item in items:
             rows = (
                 await self._db.execute(
                     select(Inventory)
-                    .where(Inventory.variant_id == item.variant.id, Inventory.warehouse_type.in_(quotas))
+                    .where(Inventory.variant_id == item.variant.id, Inventory.warehouse_type == own)
                     .with_for_update()
                 )
             ).scalars().all()

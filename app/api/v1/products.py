@@ -155,7 +155,7 @@ async def _catalog_view(
             (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku)
         ):
             price, origin = _price_for(v, segment_id, rates)
-            # The segment's own quota, or the retail pool a B2B list shares when it has none.
+            # The segment's own quota only.
             _, available = stock_source(v.inventory, segment)
             variants.append(
                 CatalogVariantRead(
