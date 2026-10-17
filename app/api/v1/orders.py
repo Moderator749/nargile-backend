@@ -121,6 +121,7 @@ async def calculate_cart(
                 vat_rate=i.vat_rate,
                 havale_eligible=i.havale_eligible,
                 havale_discount=i.havale_discount,
+                available_quantity=i.available,
             )
             for i in cart.items
         ],

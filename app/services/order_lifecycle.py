@@ -50,8 +50,12 @@ async def fail_payment(db: AsyncSession, order: Order, user: User, reason: str, 
 async def _release(
     db: AsyncSession, order: Order, user: User, reason: str, now: datetime, status: OrderStatus
 ) -> None:
-    warehouse = warehouse_for_segment(user.segment.code if user.segment else None)
+    # Lines from before the source was recorded go back to the buyer's quota.
+    legacy = warehouse_for_segment(user.segment.code if user.segment else None)
     for item in order.items:
+        warehouse = item.stock_warehouse or (None if order.is_quote else legacy)
+        if warehouse is None:  # a request took nothing out of stock
+            continue
         inv = await db.scalar(
             select(Inventory).where(Inventory.variant_id == item.variant_id, Inventory.warehouse_type == warehouse)
         )

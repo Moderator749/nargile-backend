@@ -43,6 +43,9 @@ class CartItemBreakdown(BaseModel):
     # The havale discount on this line itself (VAT-inclusive); 0 unless it is a
     # havale_eligible line paid by transfer. Included in `discount_amount`.
     havale_discount: Decimal = Decimal("0.00")
+    # How many the buyer may have (their quota, or the shared retail pool): a
+    # line above it cannot be ordered, and the cart says so before checkout.
+    available_quantity: int = 0
 
 
 class ShippingBreakdown(BaseModel):

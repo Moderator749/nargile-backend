@@ -225,7 +225,8 @@ async def test_each_colour_sells_from_its_own_segment_quota(
     db_session: AsyncSession,
     segments: dict[SegmentType, CustomerSegment],
 ):
-    """A cafe buyer sees the cafe quota of the colour they picked, not the retail one."""
+    """A cafe buyer sees the cafe quota of the colour they picked when it has
+    one, and the retail pool it shares when it has none."""
     sheet = await _create(
         client,
         admin_user,
@@ -258,9 +259,15 @@ async def test_each_colour_sells_from_its_own_segment_quota(
     await db_session.commit()
 
     page = (await client.get(f"/api/v1/products/{sheet['id']}", headers=auth_header(cafe))).json()
-    # Beyaz has nine in the retail quota and none in the cafe one, so for a cafe
-    # buyer it is the sold-out colour — the other way round from an anonymous visitor.
-    assert [(v["color_name"], v["in_stock"]) for v in page["variants"]] == [("Siyah", True), ("Beyaz", False)]
+    # Siyah: the four set aside for cafes. Beyaz: no cafe quota, so the cafe
+    # buyer shares the nine in the retail pool.
+    assert [(v["color_name"], v["in_stock"], v["available_quantity"]) for v in page["variants"]] == [
+        ("Siyah", True, 4),
+        ("Beyaz", True, 9),
+    ]
+    # An anonymous visitor buys from the retail pool only, where Siyah has none.
+    public = (await client.get(f"/api/v1/products/{sheet['id']}")).json()
+    assert [(v["color_name"], v["in_stock"]) for v in public["variants"]] == [("Siyah", False), ("Beyaz", True)]
 
     resp = await client.post(
         "/api/v1/orders/checkout",

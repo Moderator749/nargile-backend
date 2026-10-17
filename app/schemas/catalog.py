@@ -141,8 +141,13 @@ class CatalogVariantRead(BaseModel):
     list_price: CatalogPrice | None  # public RETAIL price, for "was/now" display
     # Live sale that beats `price` for this caller; None when there is none.
     flash_sale: FlashSaleInfo | None = None
-    # Stock in the caller's warehouse (a flag only: quantities stay private).
+    # Whether the caller can buy it: their B2B list's own quota when the admin
+    # set one aside, else the retail pool it shares (stock_source).
     in_stock: bool = True
+    # How many of it, for a signed-in caller only — the most the product page
+    # lets them order. A visitor gets the flag alone: quantities stay private
+    # to those who can order, and checkout holds everyone to them anyway.
+    available_quantity: int | None = None
 
 
 class CatalogProductRead(ProductRead):

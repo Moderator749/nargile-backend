@@ -8,7 +8,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_optional_user
 from app.core.database import get_db
-from app.models.catalog import CurrencyType, Product, ProductCrossSell, ProductVariant, WarehouseType
+from app.models.catalog import CurrencyType, Product, ProductCrossSell, ProductVariant
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.catalog import (
@@ -23,7 +23,7 @@ from app.schemas.catalog import (
 )
 from app.services import slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
-from app.services.checkout_engine import warehouse_for_segment
+from app.services.checkout_engine import stock_source
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
@@ -128,10 +128,6 @@ def _flash_sale_for(price: CatalogPrice | None, sale: FlashSale | None) -> Flash
     )
 
 
-def _in_stock(variant: ProductVariant, warehouse: WarehouseType) -> bool:
-    return any(i.warehouse_type == warehouse and i.quantity > 0 for i in variant.inventory)
-
-
 async def _catalog_view(
     db: AsyncSession, user: User | None, products: list[Product]
 ) -> list[CatalogProductRead]:
@@ -146,7 +142,7 @@ async def _catalog_view(
     segments = {s.id: s.code for s in (await db.execute(select(CustomerSegment))).scalars()}
     retail_id = next(sid for sid, code in segments.items() if code == SegmentType.RETAIL)
     segment_id = (user.segment_id if user else None) or retail_id
-    warehouse = warehouse_for_segment(segments.get(segment_id))
+    segment = segments.get(segment_id)
     rates = await _rates_if_needed(products)
     sales = await live_flash_sales(
         db, (v.id for p in products for v in p.variants), datetime.now(timezone.utc)
@@ -159,6 +155,8 @@ async def _catalog_view(
             (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku)
         ):
             price, origin = _price_for(v, segment_id, rates)
+            # The segment's own quota, or the retail pool a B2B list shares when it has none.
+            _, available = stock_source(v.inventory, segment)
             variants.append(
                 CatalogVariantRead(
                     id=v.id,
@@ -169,7 +167,8 @@ async def _catalog_view(
                     origin_price=origin,
                     list_price=_price_for(v, retail_id, rates)[0],
                     flash_sale=_flash_sale_for(price, sales.get(v.id)),
-                    in_stock=_in_stock(v, warehouse),
+                    in_stock=available > 0,
+                    available_quantity=available if user else None,
                 )
             )
         view = ProductRead.model_validate(product).model_dump()

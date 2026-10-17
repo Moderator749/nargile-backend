@@ -207,7 +207,7 @@ async def test_a_domestic_order_still_cannot_exceed_its_stock(
         },
     })
     assert refused.status_code == 422
-    assert "stock" in refused.json()["detail"].lower()
+    assert f"stokta yalnızca {IN_STOCK} adet var" in refused.json()["detail"]
 
 
 async def test_a_domestic_order_still_takes_its_stock(

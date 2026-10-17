@@ -119,6 +119,22 @@ def warehouse_for_segment(code: SegmentType | None) -> WarehouseType:
     return WAREHOUSE_BY_SEGMENT.get(code, WarehouseType.RETAIL_STOCK)
 
 
+def stock_source(inventory: Iterable[Inventory], code: SegmentType | None) -> tuple[WarehouseType, int]:
+    """Where a segment's purchase of a variant comes out of, and how many it may buy.
+
+    Perakende buys from RETAIL_STOCK, and 0 there is sold out. A B2B list (Bayi /
+    Toptan / Kafe) buys from its own quota only when the admin has set one aside
+    — more than 0 — and is then held to it. Otherwise (0, or no row at all) it
+    shares the retail pool: 0 on a B2B quota means "nothing set aside", not
+    "none left". Sold out for B2B only when the retail pool is empty too.
+    """
+    on_hand = {WarehouseType(i.warehouse_type): i.quantity for i in inventory}
+    own = warehouse_for_segment(code)
+    if own is not WarehouseType.RETAIL_STOCK and on_hand.get(own, 0) > 0:
+        return own, on_hand[own]
+    return WarehouseType.RETAIL_STOCK, max(on_hand.get(WarehouseType.RETAIL_STOCK, 0), 0)
+
+
 # What each kind of account may be shipped by. A bireysel parcel goes to a door
 # or to a branch. A firm's goes to its door by Yurtiçi, to a nakliye ambarı, or
 # — in İstanbul only, and then free — on the shop's own van. An export order
@@ -186,6 +202,10 @@ class ResolvedCartItem:
     havale_eligible: bool = False
     # That discount on this line (VAT-inclusive, like the line); 0 otherwise.
     havale_discount: Decimal = Decimal("0.00")
+    # How many of this variant the buyer's segment may have right now, and the
+    # quota they come out of (stock_source): its own, or the shared retail pool.
+    available: int = 0
+    stock_warehouse: WarehouseType = WarehouseType.RETAIL_STOCK
 
     @property
     def line_total_excl_tax(self) -> Decimal:
@@ -293,7 +313,7 @@ class CheckoutEngine:
         params = await load_parameters(self._db)
 
         segment_id = user.segment_id or 1  # default to RETAIL
-        items = await self._load_items(variant_quantities, segment_id)
+        items = await self._load_items(variant_quantities, segment_id, segment_code)
 
         subtotal = sum((i.line_total for i in items), Decimal("0.00"))
         # The van is free from a limit the admin sets, and below it the option is
@@ -469,15 +489,12 @@ class CheckoutEngine:
                 )
             consent_at = datetime.now(timezone.utc)
 
-        # Determine warehouse type from user segment
-        warehouse = self._warehouse_for_segment(user)
-
         # Validate inventory and deduct — but not for a request. A quote is a
         # question about quantities the shop may or may not be able to meet;
         # answering it is the admin's job, and taking the goods out of the
         # warehouse before anyone has agreed a price would be the wrong answer.
         if not quote:
-            await self._deduct_inventory(cart.items, warehouse)
+            await self._deduct_inventory(cart.items, user.segment.code if user.segment else None)
             self._spend_offer_stock(cart.items)
 
         # Build order: discount_amount is volume + bank transfer + points
@@ -488,6 +505,9 @@ class CheckoutEngine:
                 quantity=item.quantity,
                 unit_price=item.unit_price,
                 line_total=item.line_total,
+                # Where its stock came from, for a cancellation to put it back;
+                # a request took none.
+                stock_warehouse=None if quote else item.stock_warehouse,
             )
             for item in cart.items
         ]
@@ -770,8 +790,9 @@ class CheckoutEngine:
         self,
         variant_quantities: dict[uuid.UUID, int],
         segment_id: int,
+        segment_code: SegmentType | None = None,
     ) -> list[ResolvedCartItem]:
-        """Load variants with their products and segment prices."""
+        """Load variants with their products, segment prices and stock."""
         variant_ids = list(variant_quantities.keys())
 
         result = await self._db.execute(
@@ -780,6 +801,7 @@ class CheckoutEngine:
             .options(
                 selectinload(ProductVariant.product),
                 selectinload(ProductVariant.prices),
+                selectinload(ProductVariant.inventory),
             )
         )
         variants = {v.id: v for v in result.scalars().all()}
@@ -805,6 +827,7 @@ class CheckoutEngine:
                 raise ValueError(f"{variant.sku} için güncel döviz kuru alınamadı, lütfen sonra deneyin")
 
             sale_price = discounted_price(unit_price, sales.get(vid))
+            warehouse, available = stock_source(variant.inventory, segment_code)
             items.append(
                 ResolvedCartItem(
                     variant=variant,
@@ -815,36 +838,42 @@ class CheckoutEngine:
                     is_coal=variant.product.is_cart_rule_applied,
                     unit_weight_kg=variant.weight_kg,
                     vat_rate=price_row.vat_rate,
+                    available=available,
+                    stock_warehouse=warehouse,
                 )
             )
 
         return items
 
-    @staticmethod
-    def _warehouse_for_segment(user: User) -> WarehouseType:
-        return warehouse_for_segment(user.segment.code if user.segment else None)
-
     async def _deduct_inventory(
         self,
         items: list[ResolvedCartItem],
-        warehouse: WarehouseType,
+        segment_code: SegmentType | None,
     ) -> None:
-        """Validate stock and deduct quantities atomically."""
+        """Validate stock and deduct it, line by line, from the quota each line
+        buys from (stock_source): the segment's own, or the shared retail pool.
+
+        The rows are read again under a lock, so two orders cannot both take the
+        last units, and the source is decided on what is there now; it is
+        recorded on the line for a cancellation to put back.
+        """
+        quotas = {warehouse_for_segment(segment_code), WarehouseType.RETAIL_STOCK}
         for item in items:
-            result = await self._db.execute(
-                select(Inventory).where(
-                    Inventory.variant_id == item.variant.id,
-                    Inventory.warehouse_type == warehouse,
+            rows = (
+                await self._db.execute(
+                    select(Inventory)
+                    .where(Inventory.variant_id == item.variant.id, Inventory.warehouse_type.in_(quotas))
+                    .with_for_update()
                 )
-            )
-            inv = result.scalar_one_or_none()
-
-            if inv is None or inv.quantity < item.quantity:
+            ).scalars().all()
+            warehouse, available = stock_source(rows, segment_code)
+            if available < item.quantity:
+                name = item.product.name + (f" ({item.variant.color_name})" if item.variant.color_name else "")
                 raise ValueError(
-                    f"Insufficient stock for {item.variant.sku}: "
-                    f"requested {item.quantity}, "
-                    f"available {inv.quantity if inv else 0} "
-                    f"in {warehouse.value}"
+                    f"{name} için stokta yalnızca {available} adet var; sepetinizde {item.quantity} adet bulunuyor"
+                    if available
+                    else f"{name} tükendi; lütfen sepetinizden çıkarın"
                 )
-
+            inv = next(r for r in rows if WarehouseType(r.warehouse_type) is warehouse)
             inv.quantity -= item.quantity
+            item.stock_warehouse = warehouse

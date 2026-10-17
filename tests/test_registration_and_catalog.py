@@ -145,8 +145,11 @@ async def test_catalog_never_exposes_other_segment_prices(client: AsyncClient, p
         "list_price",
         "flash_sale",
         "in_stock",
+        "available_quantity",
     }
     assert "800.00" not in json.dumps(v)
+    # A visitor gets the stock flag alone, never a count.
+    assert v["available_quantity"] is None
 
 
 async def test_catalog_rejects_invalid_token(client: AsyncClient):
