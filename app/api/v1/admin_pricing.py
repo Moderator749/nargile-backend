@@ -5,12 +5,16 @@ push their prices to the live product.
 - ``POST /admin/pricing/file``: a row into an existing file, or a new one.
 - ``POST /admin/pricing/apply-to-product``: the same, then the row's prices
   written to the product its "Ürün Kodu" names.
+- ``POST /admin/pricing/import-excel``: the supplier's pricing workbook, every
+  block's four prices matched to a product (``dry_run``, the default, only
+  reports what would change).
 """
 
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +25,13 @@ from app.models.pricing import PricingFile, PricingRecord
 from app.models.user import User
 from app.schemas.pricing import (
     ApplyResult,
+    CurrentPrice,
+    ImportCandidate,
+    ImportedRow,
+    ImportMatched,
+    ImportSkipped,
+    ImportUnmatched,
+    PriceImportResult,
     PricingFileCreate,
     PricingFileRead,
     PricingRecordRead,
@@ -29,6 +40,7 @@ from app.schemas.pricing import (
     SaveTarget,
     SaveToFileRequest,
 )
+from app.services.price_import import ImportFileError, apply_matches, match_blocks, parse_workbook
 from app.services.pricing_sheet import ApplyError, apply_to_product, compute_sheet
 
 router = APIRouter(prefix="/admin/pricing", tags=["admin-pricing"])
@@ -220,4 +232,71 @@ async def save_and_apply(
         variants_updated=applied.variants,
         prices=applied.prices,
         skipped=applied.skipped,
+    )
+
+
+MAX_WORKBOOK_BYTES = 10 * 1024 * 1024
+
+
+def _row(block) -> dict:
+    return ImportedRow(
+        sheet=block.sheet, row=block.row, side=block.side, section=block.section, name=block.name, prices=block.prices
+    ).model_dump()
+
+
+@router.post("/import-excel", response_model=PriceImportResult)
+async def import_excel(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(True, description="Only report what would change"),
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Toplu fiyat: the four group prices of every block in the workbook, written
+    to the products their codes name — or, with ``dry_run``, only matched and
+    reported (see ``app/services/price_import``). All or nothing."""
+    data = await file.read(MAX_WORKBOOK_BYTES + 1)
+    if len(data) > MAX_WORKBOOK_BYTES:
+        raise HTTPException(status_code=413, detail="Dosya en fazla 10 MB olabilir.")
+    # An .xlsx is a zip archive; anything else is refused before it is opened.
+    if not data.startswith(b"PK\x03\x04"):
+        raise HTTPException(status_code=422, detail="Yalnızca .xlsx biçimindeki Excel dosyaları okunabilir.")
+    try:
+        parsed = await run_in_threadpool(parse_workbook, data)
+    except ImportFileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    preview = await match_blocks(db, parsed)
+    variants = 0
+    if not dry_run and preview.matched:
+        variants = await apply_matches(db, preview)
+        await db.commit()
+
+    return PriceImportResult(
+        dry_run=dry_run,
+        matched=[
+            ImportMatched(
+                **_row(m.block),
+                product_id=m.product.id,
+                product_code=m.product.base_code,
+                product_name=m.product.name,
+                matched_by=m.matched_by,
+                variants=sum(1 for v in m.product.variants if v.is_active),
+                old_prices={
+                    seg: CurrentPrice(currency=currency, price_incl_tax=price)
+                    for seg, (currency, price) in m.old_prices.items()
+                },
+            )
+            for m in preview.matched
+        ],
+        unmatched=[
+            ImportUnmatched(
+                **_row(miss.block),
+                reason=miss.reason,
+                candidates=[ImportCandidate(product_id=p.id, code=p.base_code, name=p.name) for p in miss.candidates],
+            )
+            for miss in preview.unmatched
+        ],
+        skipped=[ImportSkipped(sheet=s.sheet, row=s.row, side=s.side, name=s.name, reason=s.reason) for s in parsed.skipped],
+        updated_products=0 if dry_run else len(preview.matched),
+        updated_variants=variants,
     )

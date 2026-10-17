@@ -130,10 +130,7 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
     if not variants:
         raise ApplyError("Ürünün satıştaki rengi yok")
 
-    segment_ids = {
-        SegmentType(code): seg_id
-        for seg_id, code in (await db.execute(select(CustomerSegment.id, CustomerSegment.code))).all()
-    }
+    segments = await segment_ids(db)
     vat_rate = sheet.retail.vat_rate
     targets: list[tuple[str, SegmentType, CurrencyType, Decimal, str]] = []
     skipped: list[str] = []
@@ -150,6 +147,38 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
         # Retail is after VAT whatever the cost basis (see compute_sheet).
         targets.append((retail["label"], SegmentType.RETAIL, sheet.currency, Decimal(retail["price"]), "INCL"))
 
+    applied: list[AppliedPrice] = []
+    rows: list[tuple[int, CurrencyType, Decimal, Decimal]] = []
+    for label, segment, currency, price, basis in targets:
+        segment_id = segments.get(segment)
+        if segment_id is None:
+            raise ApplyError(f"Müşteri grubu tanımlı değil: {segment.value}")
+        excl, incl = _both_sides(price, basis, vat_rate)
+        rows.append((segment_id, currency, excl, incl))
+        applied.append(AppliedPrice(
+            label=label, segment=segment, currency=currency, price_excl_tax=excl, price_incl_tax=incl,
+        ))
+    await write_prices(db, variants, rows, vat_rate)
+    return Applied(product=product, variants=len(variants), prices=applied, skipped=skipped)
+
+
+async def segment_ids(db: AsyncSession) -> dict[SegmentType, int]:
+    return {
+        SegmentType(code): seg_id
+        for seg_id, code in (await db.execute(select(CustomerSegment.id, CustomerSegment.code))).all()
+    }
+
+
+async def write_prices(
+    db: AsyncSession,
+    variants: list[ProductVariant],
+    prices: list[tuple[int, CurrencyType, Decimal, Decimal]],
+    vat_rate: Decimal,
+) -> None:
+    """Give every one of these colours each (segment, currency, excl, incl)
+    price: the group's row in that currency is updated or added, and its rows
+    in the other currencies are removed — checkout charges a TRY row whenever
+    there is one, so an old one would quietly win over the new price."""
     # Read fresh rather than through `variant.prices`: a collection loaded
     # earlier in the session would not show rows written since.
     rows_by_variant: dict = {v.id: [] for v in variants}
@@ -162,12 +191,7 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
     ).scalars():
         rows_by_variant[row.variant_id].append(row)
 
-    applied: list[AppliedPrice] = []
-    for label, segment, currency, price, basis in targets:
-        segment_id = segment_ids.get(segment)
-        if segment_id is None:
-            raise ApplyError(f"Müşteri grubu tanımlı değil: {segment.value}")
-        excl, incl = _both_sides(price, basis, vat_rate)
+    for segment_id, currency, excl, incl in prices:
         for variant in variants:
             kept = None
             for row in [p for p in rows_by_variant[variant.id] if p.segment_id == segment_id]:
@@ -182,7 +206,3 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
                 ))
             else:
                 kept.price_excl_tax, kept.price_incl_tax, kept.vat_rate = excl, incl, vat_rate
-        applied.append(AppliedPrice(
-            label=label, segment=segment, currency=currency, price_excl_tax=excl, price_incl_tax=incl,
-        ))
-    return Applied(product=product, variants=len(variants), prices=applied, skipped=skipped)

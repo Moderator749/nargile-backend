@@ -141,3 +141,60 @@ class ApplyResult(BaseModel):
     prices: list[AppliedPrice]
     # Columns left out: no customer group chosen for them.
     skipped: list[str]
+
+
+# ── Toplu fiyat (Excel) ───────────────────────────────────────────────────────
+
+
+class ImportedRow(BaseModel):
+    """One block of the workbook: where it is, and its four prices (TL, VAT included)."""
+
+    sheet: str
+    row: int
+    side: Literal["sol", "sağ"]
+    section: str | None
+    name: str
+    prices: dict[SegmentType, Decimal | None]
+
+
+class CurrentPrice(BaseModel):
+    currency: CurrencyType
+    price_incl_tax: Decimal
+
+
+class ImportCandidate(BaseModel):
+    product_id: uuid.UUID
+    code: str
+    name: str
+
+
+class ImportMatched(ImportedRow):
+    product_id: uuid.UUID
+    product_code: str
+    product_name: str
+    matched_by: Literal["code", "sku", "name"]
+    variants: int
+    old_prices: dict[SegmentType, CurrentPrice]
+
+
+class ImportUnmatched(ImportedRow):
+    reason: Literal["unnamed", "incomplete", "not_found", "ambiguous", "conflict", "no_variants"]
+    candidates: list[ImportCandidate]
+
+
+class ImportSkipped(BaseModel):
+    sheet: str
+    row: int
+    side: Literal["sol", "sağ"]
+    name: str
+    reason: Literal["foreign_currency", "vat_excluded", "no_dealer_price"]
+
+
+class PriceImportResult(BaseModel):
+    dry_run: bool
+    matched: list[ImportMatched]
+    unmatched: list[ImportUnmatched]
+    # Blocks in another currency or before VAT: not this importer's to read.
+    skipped: list[ImportSkipped]
+    updated_products: int
+    updated_variants: int
