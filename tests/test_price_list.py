@@ -1,4 +1,5 @@
-"""The B2B PDF price catalogue's data: POST /products/price-list.
+"""The PDF price catalogue's data: POST /products/price-list (a B2B account's)
+and POST /admin/pricing/custom-catalog (an admin's, from the storefront).
 
 Covers:
 - Which groups each account may put in a catalogue: Bayi → Toptan/Kafe/Perakende,
@@ -6,6 +7,8 @@ Covers:
   above that, and nothing at all for retail or anonymous callers
 - Screen order kept, unpublished products left out, missing prices omitted
 - Both VAT sides returned, in TRY
+- The admin's catalogue: any one group, Bayi included, for a section's products
+  in screen order; refused to every account that is not an admin
 """
 
 import uuid
@@ -20,6 +23,7 @@ from app.models.user import CustomerSegment, SegmentType, User, UserRole
 from tests.conftest import auth_header
 
 URL = "/api/v1/products/price-list"
+ADMIN_URL = "/api/v1/admin/pricing/custom-catalog"
 PRICES = {  # incl. VAT at 20%
     SegmentType.DEALER: Decimal("1200.00"),
     SegmentType.WHOLESALE: Decimal("1320.00"),
@@ -107,3 +111,63 @@ async def test_screen_order_published_only_and_both_vat_sides(
         "TRY", Decimal("1200.00"), Decimal("1440.00"),
     )
     assert items[0]["image_url"].startswith("https://cdn.example.com/")
+
+
+@pytest.mark.parametrize("group", list(PRICES))
+async def test_an_admin_gets_any_one_group(
+    client: AsyncClient, db_session: AsyncSession, segments, admin_user: User, group: SegmentType
+):
+    product = await _product(db_session, segments)
+    resp = await client.post(
+        ADMIN_URL, headers=auth_header(admin_user), json={"product_ids": [str(product.id)], "segment": group.value}
+    )
+    assert resp.status_code == 200, resp.text
+    [item] = resp.json()
+    assert list(item["prices"]) == [group.value]  # that group only, Bayi too
+    price = item["prices"][group.value]
+    assert (price["currency"], Decimal(price["price_incl_tax"])) == ("TRY", PRICES[group])
+    assert (item["code"], item["name"]) == (product.base_code, product.name)
+
+
+async def test_the_admin_catalogue_keeps_the_section_as_shown(
+    client: AsyncClient, db_session: AsyncSession, segments, admin_user: User
+):
+    first = await _product(db_session, segments)
+    hidden = await _product(db_session, segments, published=False)
+    retail_only = await _product(db_session, segments, prices={SegmentType.RETAIL: Decimal("600.00")})
+    last = await _product(db_session, segments)
+    ids = [last.id, hidden.id, retail_only.id, first.id, last.id, uuid.uuid4()]
+    resp = await client.post(
+        ADMIN_URL, headers=auth_header(admin_user), json={"product_ids": [str(i) for i in ids], "segment": "DEALER"}
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()
+    # Screen order, each once; unpublished and unknown ones out.
+    assert [i["product_id"] for i in items] == [str(last.id), str(retail_only.id), str(first.id)]
+    assert items[1]["prices"] == {}  # not sold to bayi: the catalogue leaves it off
+
+
+async def test_only_an_admin_gets_the_storefront_catalogue(
+    client: AsyncClient, db_session: AsyncSession, segments, customer_user: User
+):
+    product = await _product(db_session, segments)
+    body = {"product_ids": [str(product.id)], "segment": "DEALER"}
+    for code in (SegmentType.DEALER, SegmentType.WHOLESALE, SegmentType.CAFE):
+        user = await _account(db_session, segments, code)
+        assert (await client.post(ADMIN_URL, headers=auth_header(user), json=body)).status_code == 403, code
+    assert (await client.post(ADMIN_URL, headers=auth_header(customer_user), json=body)).status_code == 403
+    assert (await client.post(ADMIN_URL, json=body)).status_code in (401, 403)
+
+
+async def test_the_admin_catalogue_takes_one_known_group_and_a_bounded_list(
+    client: AsyncClient, db_session: AsyncSession, segments, admin_user: User
+):
+    product = await _product(db_session, segments)
+    h = auth_header(admin_user)
+    for body in (
+        {"product_ids": [str(product.id)], "segment": "VIP"},
+        {"product_ids": [str(product.id)]},
+        {"product_ids": [], "segment": "RETAIL"},
+        {"product_ids": [str(uuid.uuid4()) for _ in range(201)], "segment": "RETAIL"},
+    ):
+        assert (await client.post(ADMIN_URL, headers=h, json=body)).status_code == 422, body

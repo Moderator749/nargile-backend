@@ -219,6 +219,14 @@ class PriceListRequest(BaseModel):
     groups: list[SegmentType] = Field(min_length=1, max_length=4)
 
 
+class AdminCatalogRequest(BaseModel):
+    """An admin's catalogue from the storefront ("PDF Oluştur"): the products of
+    one section, in screen order, at one price group's prices — any group."""
+
+    product_ids: list[uuid.UUID] = Field(min_length=1, max_length=200)
+    segment: SegmentType
+
+
 class PriceListItem(BaseModel):
     product_id: uuid.UUID
     code: str

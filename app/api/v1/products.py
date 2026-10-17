@@ -242,18 +242,29 @@ async def price_list(
     asked = set(payload.groups)
     if not asked <= allowed:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Bu fiyat grubu hesabınız için kataloğa eklenemez")
+    return await build_price_list(db, payload.product_ids, payload.groups)
 
+
+async def build_price_list(
+    db: AsyncSession, product_ids: list[uuid.UUID], groups: list[SegmentType]
+) -> list[PriceListItem]:
+    """A price catalogue's rows: the published products among these, in the
+    order given (each once), with each group's regular list price in TRY (no
+    flash sales: a catalogue outlives a sale; USD/EUR at the day's TCMB rate).
+    A group the product is not sold to is left out of its prices. Who may ask
+    for which group is the caller's to decide."""
+    segments = {s.code: s.id for s in (await db.execute(select(CustomerSegment))).scalars()}
     rows = (
         await db.execute(
             select(Product)
-            .where(Product.id.in_(payload.product_ids), Product.is_published.is_(True))
+            .where(Product.id.in_(product_ids), Product.is_published.is_(True))
             .options(selectinload(Product.variants).selectinload(ProductVariant.prices))
         )
     ).scalars().all()
     by_id = {p.id: p for p in rows}
     rates = await _rates_if_needed(list(rows))
     items: list[PriceListItem] = []
-    for product_id in dict.fromkeys(payload.product_ids):  # screen order, each once
+    for product_id in dict.fromkeys(product_ids):  # screen order, each once
         product = by_id.get(product_id)
         if product is None:
             continue
@@ -264,7 +275,7 @@ async def price_list(
         )
         prices = {}
         if variant is not None:
-            for group in payload.groups:
+            for group in groups:
                 price, _ = _price_for(variant, segments[group], rates)
                 if price is not None and price.currency == CurrencyType.TRY:
                     prices[group] = price

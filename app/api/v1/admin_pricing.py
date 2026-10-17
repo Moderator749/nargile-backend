@@ -8,6 +8,9 @@ push their prices to the live product.
 - ``POST /admin/pricing/import-excel``: the supplier's pricing workbook, every
   block's four prices matched to a product (``dry_run``, the default, only
   reports what would change; suggestions are never priced).
+- ``POST /admin/pricing/custom-catalog``: a storefront section's products at
+  one price group's prices, for the same printable catalogue a B2B account
+  downloads ("PDF Oluştur").
 - ``/admin/pricing/import-aliases``: the workbook names the admin has tied to
   products by confirming a suggestion — matched first on every later upload.
 """
@@ -23,8 +26,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
 from app.models.catalog import Product, ProductVariant
+from app.api.v1.products import build_price_list
 from app.models.pricing import PriceImportAlias, PricingFile, PricingRecord
 from app.models.user import User
+from app.schemas.catalog import AdminCatalogRequest, PriceListItem
 from app.schemas.pricing import (
     ApplyResult,
     CurrentPrice,
@@ -408,3 +413,17 @@ async def delete_import_alias(
         raise HTTPException(status_code=404, detail="Eşleştirme bulunamadı.")
     await db.delete(alias)
     await db.commit()
+
+
+@router.post("/custom-catalog", response_model=list[PriceListItem])
+async def custom_catalog(
+    payload: AdminCatalogRequest,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"PDF Oluştur" on the storefront: the products of the section the admin
+    is looking at, at the chosen group's prices — the rows of the same price
+    catalogue a B2B account downloads (``/products/price-list``), which the
+    storefront prints. Any group: unlike an account, an admin may send a
+    customer the price of any list."""
+    return await build_price_list(db, payload.product_ids, [payload.segment])
