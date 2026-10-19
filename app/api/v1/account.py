@@ -14,7 +14,7 @@ from app.core.database import get_db
 from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
 from app.models.loyalty import LoyaltyLedger, TransactionType
-from app.models.order import VOID_STATUSES, Order, OrderStatus
+from app.models.order import VOID_STATUSES, Order
 from app.models.user import (
     AccountType,
     AddressKind,

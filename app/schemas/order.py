@@ -20,17 +20,6 @@ from app.schemas.address import InvoiceAddress, ShippingAddress, valid_contact_p
 YURTICI = (ShippingMethod.YURTICI_DOOR, ShippingMethod.YURTICI_BRANCH)
 
 
-class OrderItemCreate(BaseModel):
-    variant_id: uuid.UUID
-    quantity: int
-    unit_price: Decimal
-
-
-class OrderCreate(BaseModel):
-    payment_method: PaymentMethod
-    items: list[OrderItemCreate]
-
-
 class CartItemInput(BaseModel):
     variant_id: uuid.UUID
     # Must be positive: a negative quantity would lower the total and add stock.

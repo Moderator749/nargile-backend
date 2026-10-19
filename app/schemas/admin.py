@@ -5,46 +5,15 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.catalog import CurrencyType, WarehouseType
 from app.models.order import Carrier, OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer, TransportMode
 from app.models.user import SegmentType
-from app.schemas.catalog import IMAGE_URL_PATTERN
 from app.schemas.order import OrderItemRead
 
 
 # ── Catalog management ───────────────────────────────────────────────────────
-
-class AdminProductCreate(BaseModel):
-    base_code: str
-    name: str
-    brand: str | None = None
-    description: str | None = None
-    category_id: int | None = None
-    tags: list[str] | None = None
-    image_url: str | None = Field(default=None, max_length=500, pattern=IMAGE_URL_PATTERN)
-
-
-class AdminVariantCreate(BaseModel):
-    sku: str
-    barcode: str | None = None
-    attributes: dict | None = None
-    cost_price: Decimal | None = None
-    initial_retail_stock: int = 0
-    initial_b2b_stock: int = 0
-
-
-class AdminVariantRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    product_id: uuid.UUID
-    sku: str
-    barcode: str | None
-    attributes: dict | None
-    cost_price: Decimal | None
-    inventory: list["AdminInventoryRead"] = []
 
 
 class AdminInventoryRead(BaseModel):
@@ -56,31 +25,6 @@ class AdminInventoryRead(BaseModel):
 
 
 # ── Pricing matrix ───────────────────────────────────────────────────────────
-
-class SegmentPriceInput(BaseModel):
-    """Price definition for a single segment."""
-    segment_id: int
-    price_excl_tax: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
-    price_incl_tax: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
-    vat_rate: Decimal = Field(ge=0, le=99.99, max_digits=4, decimal_places=2)
-
-    @model_validator(mode="after")
-    def _incl_not_below_excl(self) -> "SegmentPriceInput":
-        if self.price_incl_tax < self.price_excl_tax:
-            raise ValueError("price_incl_tax cannot be lower than price_excl_tax")
-        return self
-
-
-class PricingMatrixUpdate(BaseModel):
-    """Defines prices for a variant across all segments in one request."""
-    currency: CurrencyType = CurrencyType.TRY
-    prices: list[SegmentPriceInput] = Field(min_length=1)
-
-
-class PricingMatrixRead(BaseModel):
-    variant_id: uuid.UUID
-    currency: CurrencyType
-    prices: list["SegmentPriceRow"]
 
 
 class SegmentPriceRow(BaseModel):
@@ -94,21 +38,6 @@ class SegmentPriceRow(BaseModel):
 
 
 # ── Order management ─────────────────────────────────────────────────────────
-
-class AdminOrderRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    order_number: str
-    user_id: uuid.UUID
-    total_amount: Decimal
-    shipping_cost: Decimal
-    discount_amount: Decimal
-    payment_method: str
-    status: str
-    tracking_code: str | None
-    created_at: str
-    updated_at: str
 
 
 class OrderApproveResponse(BaseModel):
@@ -144,18 +73,6 @@ class AdminVariantDetail(BaseModel):
     weight_kg: Decimal | None = None
     prices: list["AdminVariantPrice"]
     inventory: list[AdminInventoryRead]
-
-
-class VariantWeightUpdate(BaseModel):
-    """kg per unit; null clears it (coal then counts as 0 kg toward free shipping)."""
-
-    weight_kg: Decimal | None = Field(default=None, gt=0, le=1000, max_digits=8, decimal_places=3)
-
-
-class VariantWeightRead(BaseModel):
-    id: uuid.UUID
-    sku: str
-    weight_kg: Decimal | None
 
 
 class AdminVariantPrice(BaseModel):

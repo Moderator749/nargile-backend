@@ -22,7 +22,6 @@ from app.schemas.address import address_line, international_line
 from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse
 from app.schemas.order import OrderItemRead, OrderRead
 from app.services import mailer, order_emails, order_lifecycle, shipping
-from app.services.shipping import yurtici
 
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 

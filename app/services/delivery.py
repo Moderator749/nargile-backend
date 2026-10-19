@@ -19,7 +19,6 @@ the branch's name, which is what the order records.
 A bireysel account is not restricted at all: it ships wherever it likes.
 """
 
-import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -102,9 +101,3 @@ async def delivers_in_istanbul(db: AsyncSession, user: User) -> bool:
     return any(place_key(city) == place_key(ISTANBUL) for city in rows.scalars())
 
 
-async def registered_cities(db: AsyncSession, user_id: uuid.UUID) -> list[str]:
-    """The cities this account has on file, for a message that names them."""
-    rows = await db.execute(
-        select(CustomerAddress.city).where(CustomerAddress.user_id == user_id)
-    )
-    return sorted({city for city in rows.scalars() if city})

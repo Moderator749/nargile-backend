@@ -23,7 +23,6 @@ router = APIRouter(tags=["announcements"])
 
 
 @router.get("/banners/active", response_model=AnnouncementRead | None)
-@router.get("/announcement", response_model=AnnouncementRead | None)
 async def get_active_announcement(db: AsyncSession = Depends(get_db)):
     """The live banner, or null when none is active or it has expired.
 

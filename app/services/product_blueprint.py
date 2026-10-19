@@ -20,7 +20,6 @@ That keeps one writer, so the storefront price and the sheet can't drift apart.
 import re
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -156,12 +155,6 @@ def sheet_variants(product: Product) -> list[ProductVariant]:
     return sorted(
         (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku)
     )
-
-
-def sheet_variant(product: Product) -> ProductVariant | None:
-    """The first live colour — the only one on a colourless product."""
-    live = sheet_variants(product)
-    return live[0] if live else None
 
 
 async def _fetch_variants(db: AsyncSession, product: Product) -> list[ProductVariant]:

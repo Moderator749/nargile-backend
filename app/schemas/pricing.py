@@ -97,10 +97,6 @@ class SaveToFileRequest(SaveTarget):
     sheet: PricingSheetIn
 
 
-class PricingFileCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
-
-
 class PricingFileRead(BaseModel):
     id: int
     name: str

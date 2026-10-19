@@ -1,7 +1,6 @@
 """Uploaded image storage under MEDIA_ROOT, served at /media."""
 
 import uuid
-from pathlib import Path
 
 from starlette.requests import Request
 
@@ -61,5 +60,3 @@ def delete_media(rel: str | None) -> None:
         path.unlink(missing_ok=True)
 
 
-def media_path(rel: str) -> Path:
-    return settings.MEDIA_ROOT / rel

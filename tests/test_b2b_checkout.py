@@ -324,6 +324,14 @@ async def test_the_limit_is_published_without_a_login(client: AsyncClient):
     assert Decimal(resp.json()["istanbul_free_min_subtotal"]) == ISTANBUL_FREE_MIN_DEFAULT
 
 
+async def _set_istanbul_limit(client: AsyncClient, admin: User, value: str):
+    """Set the İstanbul van's minimum as "Parametreler" does: the whole set, this one figure changed."""
+    h = auth_header(admin)
+    params = (await client.get("/api/v1/admin/settings/parameters", headers=h)).json()
+    return await client.put(
+        "/api/v1/admin/settings/parameters", headers=h, json={**params, "istanbul_free_min_subtotal": value}
+    )
+
 async def test_an_admin_lowers_the_limit_and_checkout_follows(
     client: AsyncClient, db_session: AsyncSession, segments, admin_user: User
 ):
@@ -335,11 +343,7 @@ async def test_an_admin_lowers_the_limit_and_checkout_follows(
         client, headers, variant, quantity=1, shipping_method="ISTANBUL_FREE"
     )).status_code == 422
 
-    saved = await client.put(
-        "/api/v1/admin/settings/shipping",
-        headers=auth_header(admin_user),
-        json={"istanbul_free_min_subtotal": "5000"},
-    )
+    saved = await _set_istanbul_limit(client, admin_user, "5000")
     assert saved.status_code == 200, saved.text
     assert Decimal(saved.json()["istanbul_free_min_subtotal"]) == Decimal("5000.00")
 
@@ -351,11 +355,7 @@ async def test_an_admin_lowers_the_limit_and_checkout_follows(
     assert Decimal(public.json()["istanbul_free_min_subtotal"]) == Decimal("5000.00")
 
     # Raising it again closes the option on the same cart.
-    await client.put(
-        "/api/v1/admin/settings/shipping",
-        headers=auth_header(admin_user),
-        json={"istanbul_free_min_subtotal": "30000.00"},
-    )
+    await _set_istanbul_limit(client, admin_user, "30000.00")
     assert (await _quote(
         client, headers, variant, quantity=2, shipping_method="ISTANBUL_FREE"
     )).status_code == 422
@@ -364,11 +364,7 @@ async def test_an_admin_lowers_the_limit_and_checkout_follows(
 async def test_the_saved_limit_records_who_changed_it(
     client: AsyncClient, db_session: AsyncSession, admin_user: User
 ):
-    await client.put(
-        "/api/v1/admin/settings/shipping",
-        headers=auth_header(admin_user),
-        json={"istanbul_free_min_subtotal": "12500.50"},
-    )
+    await _set_istanbul_limit(client, admin_user, "12500.50")
     row = await db_session.get(ShopSetting, ISTANBUL_FREE_MIN_KEY)
     await db_session.refresh(row)
     assert (row.value, row.updated_by) == ("12500.50", admin_user.id)
@@ -378,11 +374,7 @@ async def test_the_saved_limit_records_who_changed_it(
 async def test_an_impossible_limit_is_refused(
     client: AsyncClient, admin_user: User, value: str
 ):
-    resp = await client.put(
-        "/api/v1/admin/settings/shipping",
-        headers=auth_header(admin_user),
-        json={"istanbul_free_min_subtotal": value},
-    )
+    resp = await _set_istanbul_limit(client, admin_user, value)
     assert resp.status_code == 422, resp.text
 
 
@@ -391,11 +383,11 @@ async def test_a_customer_cannot_change_the_limit(
 ):
     headers = await _firm(client)
     resp = await client.put(
-        "/api/v1/admin/settings/shipping", headers=headers,
+        "/api/v1/admin/settings/parameters", headers=headers,
         json={"istanbul_free_min_subtotal": "0"},
     )
     assert resp.status_code == 403, resp.text
-    assert (await client.get("/api/v1/admin/settings/shipping", headers=headers)).status_code == 403
+    assert (await client.get("/api/v1/admin/settings/parameters", headers=headers)).status_code == 403
 
 
 async def test_an_unreadable_stored_limit_falls_back_to_the_default(

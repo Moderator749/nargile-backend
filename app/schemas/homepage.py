@@ -75,7 +75,7 @@ class Sections(_Strict):
     brands: bool = True  # the brand ticker
     showcase: bool = True  # "Premium Ürün Yelpazesi"
     advantages: bool = True  # "Ayrıcalıklar & Avantajlar"
-    about: bool = True  # the corporate close ("17+ Yıllık Tecrübe")
+    about: bool = True  # the homepage's closing passage ("Alt SEO Metni", seo_intro)
     footer: bool = True
 
 
@@ -159,17 +159,6 @@ class Advantages(_Strict):
     cards: list[AdvantageCard] = Field(max_length=12)
 
 
-class Stat(_Strict):
-    value: _text(12, required=True)
-    label: _text(40, required=True)
-
-
-class About(_Strict):
-    stats: list[Stat] = Field(max_length=6)
-    text: _text(1500)
-    badges: list[_text(40, required=True)] = Field(max_length=6)
-
-
 class SeoIntro(_Strict):
     """"Alt SEO Metni": the passage that closes the homepage and every catalog
     listing above the footer. A field left empty falls back to the storefront's
@@ -243,7 +232,6 @@ class HomepageDocument(_Strict):
     brands: Brands | None = None
     showcase: Showcase | None = None
     advantages: Advantages | None = None
-    about: About | None = None
     seo_intro: SeoIntro | None = None
     footer: Footer | None = None
 

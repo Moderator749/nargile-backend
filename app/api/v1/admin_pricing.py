@@ -43,7 +43,6 @@ from app.schemas.pricing import (
     ImportSuggested,
     ImportUnmatched,
     PriceImportResult,
-    PricingFileCreate,
     PricingFileRead,
     PricingRecordRead,
     PricingSheetIn,
@@ -134,17 +133,6 @@ async def list_files(_admin: User = Depends(get_current_admin_user), db: AsyncSe
         PricingFileRead(id=f.id, name=f.name, created_at=f.created_at, updated_at=f.updated_at, record_count=n)
         for f, n in rows
     ]
-
-
-@router.post("/files", response_model=PricingFileRead, status_code=status.HTTP_201_CREATED)
-async def create_file(
-    payload: PricingFileCreate,
-    admin: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    file = await _file_for(db, SaveTarget(file_name=payload.name), admin)
-    await db.commit()
-    return PricingFileRead(id=file.id, name=file.name, created_at=file.created_at, updated_at=file.updated_at)
 
 
 @router.delete("/files/{file_id}", status_code=status.HTTP_204_NO_CONTENT)

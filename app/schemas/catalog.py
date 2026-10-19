@@ -2,22 +2,14 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.core.rich_text import RICH_TEXT_MAX, to_rich_html
-
-from app.models.catalog import CurrencyType, WarehouseType
+from app.models.catalog import CurrencyType
 from app.models.user import SegmentType
 
 # Absolute http(s) URL with no quotes, brackets or whitespace, so the frontend can
 # safely drop it into an <img src> or a CSS url().
 IMAGE_URL_PATTERN = r"^https?://[^\s\"'()<>\\]+$"
-
-
-class CategoryCreate(BaseModel):
-    name: str
-    slug: str
-    parent_id: int | None = None
 
 
 class CategoryRead(BaseModel):
@@ -37,22 +29,6 @@ class CategoryRead(BaseModel):
     # (GET /categories/) fills them in.
     product_count: int = 0
     updated_at: datetime | None = None
-
-
-class ProductCreate(BaseModel):
-    base_code: str
-    name: str
-    brand: str | None = None
-    # Rich text, cleaned like the product sheet's (app.core.rich_text).
-    description: str | None = Field(default=None, max_length=RICH_TEXT_MAX)
-    category_id: int | None = None
-    tags: list[str] | None = None
-    image_url: str | None = Field(default=None, max_length=500, pattern=IMAGE_URL_PATTERN)
-
-    @field_validator("description")
-    @classmethod
-    def _clean_description(cls, text: str | None) -> str | None:
-        return to_rich_html(text)
 
 
 class ProductRead(BaseModel):
@@ -165,52 +141,6 @@ class CatalogProductDetail(CatalogProductRead):
     # Every category the product is listed under, the primary one first: the
     # page's "İlgili Kategoriler" links.
     category_ids: list[int] = []
-
-
-class VariantCreate(BaseModel):
-    sku: str
-    barcode: str | None = None
-    attributes: dict | None = None
-    cost_price: Decimal | None = None
-
-
-class VariantRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: uuid.UUID
-    product_id: uuid.UUID
-    sku: str
-    barcode: str | None
-    attributes: dict | None
-
-
-class VariantPriceCreate(BaseModel):
-    segment_id: int
-    currency: CurrencyType = CurrencyType.TRY
-    price_excl_tax: Decimal
-    price_incl_tax: Decimal
-    vat_rate: Decimal
-
-
-class VariantPriceRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    variant_id: uuid.UUID
-    segment_id: int
-    currency: CurrencyType
-    price_excl_tax: Decimal
-    price_incl_tax: Decimal
-    vat_rate: Decimal
-
-
-class InventoryRead(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    variant_id: uuid.UUID
-    warehouse_type: WarehouseType
-    quantity: int
 
 
 # ── B2B price catalogue (PDF) ────────────────────────────────────────────────

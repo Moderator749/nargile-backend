@@ -1,13 +1,12 @@
 """Shop settings: read by the storefront, written from the admin panel.
 
-The İstanbul delivery limit ("Teslimat Ayarları") and the store parameters
-("Parametreler": free shipping, the coal rule, the havale and ciro ladders).
+The İstanbul delivery limit (public read; edited with the store parameters)
+and the store parameters ("Parametreler": free shipping, the İstanbul van, the
+coal rule, the havale and ciro ladders).
 Both reads are public because the storefront states these figures — beside the
 shipping option, in the free-shipping bar, under the payment method — to
 customers who are not logged in as well.
 """
-
-from decimal import Decimal
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,12 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
 from app.models.user import User
-from app.schemas.settings import ShippingSettingsRead, ShippingSettingsUpdate, StoreParametersSchema
-from app.services.shop_settings import (
-    ISTANBUL_FREE_MIN_KEY,
-    istanbul_free_minimum,
-    save_setting,
-)
+from app.schemas.settings import ShippingSettingsRead, StoreParametersSchema
+from app.services.shop_settings import istanbul_free_minimum
 from app.services.store_parameters import load_parameters, save_parameters
 
 router = APIRouter(tags=["settings"])
@@ -32,26 +27,6 @@ async def _shipping_settings(db: AsyncSession) -> ShippingSettingsRead:
 
 @router.get("/settings/shipping", response_model=ShippingSettingsRead)
 async def get_shipping_settings(db: AsyncSession = Depends(get_db)):
-    return await _shipping_settings(db)
-
-
-@router.get("/admin/settings/shipping", response_model=ShippingSettingsRead)
-async def admin_get_shipping_settings(
-    _admin: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    return await _shipping_settings(db)
-
-
-@router.put("/admin/settings/shipping", response_model=ShippingSettingsRead)
-async def admin_update_shipping_settings(
-    payload: ShippingSettingsUpdate,
-    admin: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    amount: Decimal = payload.istanbul_free_min_subtotal.quantize(Decimal("0.01"))
-    await save_setting(db, ISTANBUL_FREE_MIN_KEY, f"{amount}", admin.id)
-    await db.commit()
     return await _shipping_settings(db)
 
 

@@ -55,7 +55,6 @@ from app.models.catalog import (
     Inventory,
     Product,
     ProductVariant,
-    VariantPrice,
     WarehouseType,
 )
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType

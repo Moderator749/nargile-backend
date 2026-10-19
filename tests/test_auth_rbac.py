@@ -5,6 +5,7 @@ from httpx import AsyncClient
 
 from app.models.user import User
 from tests.conftest import auth_header
+from tests.test_product_sheet import _sheet
 
 
 # ── Unauthenticated access ───────────────────────────────────────────────────
@@ -14,7 +15,7 @@ async def test_admin_endpoints_reject_unauthenticated(client: AsyncClient):
     """All admin endpoints must reject requests without a Bearer token."""
     routes = [
         ("GET", "/api/v1/admin/orders"),
-        ("POST", "/api/v1/admin/products"),
+        ("POST", "/api/v1/admin/products/sheet"),
     ]
     for method, path in routes:
         resp = await client.request(method, path)
@@ -40,9 +41,9 @@ async def test_customer_cannot_create_product(
     client: AsyncClient, customer_user: User
 ):
     resp = await client.post(
-        "/api/v1/admin/products",
+        "/api/v1/admin/products/sheet",
         headers=auth_header(customer_user),
-        json={"base_code": "X", "name": "X"},
+        json=_sheet(),
     )
     assert resp.status_code == 403
 
@@ -70,14 +71,15 @@ async def test_admin_can_list_orders(client: AsyncClient, admin_user: User):
 
 
 async def test_admin_can_create_product(client: AsyncClient, admin_user: User):
+    body = _sheet(name="RBAC Test Product")
     resp = await client.post(
-        "/api/v1/admin/products",
+        "/api/v1/admin/products/sheet",
         headers=auth_header(admin_user),
-        json={"base_code": "RBAC01", "name": "RBAC Test Product"},
+        json=body,
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 201, resp.text
     data = resp.json()
-    assert data["base_code"] == "RBAC01"
+    assert data["base_code"] == body["base_code"]
     assert data["name"] == "RBAC Test Product"
 
 

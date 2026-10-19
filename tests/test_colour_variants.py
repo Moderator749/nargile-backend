@@ -264,7 +264,7 @@ async def test_each_colour_sells_from_its_own_segment_quota(
         ("Siyah", True, 4),
         ("Beyaz", False, 0),
     ]
-    # An anonymous visitor buys from the retail pool only, where Siyah has none.
+    # An anonymous visitor buys from the Perakende quota, where Siyah has none.
     public = (await client.get(f"/api/v1/products/{sheet['id']}")).json()
     assert [(v["color_name"], v["in_stock"]) for v in public["variants"]] == [("Siyah", False), ("Beyaz", True)]
 

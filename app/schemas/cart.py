@@ -8,18 +8,6 @@ from pydantic import BaseModel, Field
 from app.models.order import PaymentMethod
 
 
-class CartItem(BaseModel):
-    variant_id: uuid.UUID
-    quantity: int = Field(gt=0)
-
-
-class CartCalculateRequest(BaseModel):
-    """The customer is always the authenticated user — never taken from the body."""
-
-    payment_method: PaymentMethod
-    items: list[CartItem] = Field(min_length=1)
-
-
 class CartItemBreakdown(BaseModel):
     variant_id: uuid.UUID
     product_id: uuid.UUID | None = None

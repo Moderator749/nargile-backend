@@ -73,7 +73,7 @@ async def test_announcement_lifecycle(
     assert put.status_code == 200
     assert put.json()["message"] == text  # trimmed
 
-    public = await client.get("/api/v1/announcement")
+    public = await client.get("/api/v1/banners/active")
     assert public.status_code == 200
     assert public.json()["message"] == text
 
@@ -83,7 +83,7 @@ async def test_announcement_lifecycle(
         json={"message": text, "is_active": False},
     )
     assert off.status_code == 200
-    assert (await client.get("/api/v1/announcement")).json() is None
+    assert (await client.get("/api/v1/banners/active")).json() is None
 
     # The admin still sees the saved draft.
     settings = await client.get("/api/v1/admin/announcement", headers=auth_header(admin_user))
@@ -132,7 +132,7 @@ async def test_banner_visual_fields_round_trip(
     )
     assert put.status_code == 200, put.text
 
-    for path in ("/api/v1/banners/active", "/api/v1/announcement"):
+    for path in ("/api/v1/banners/active",):
         body = (await client.get(path)).json()
         assert body["show_countdown"] is True
         assert body["background_style"] == "dark_luxury"
@@ -179,7 +179,7 @@ async def test_expired_banner_is_hidden_from_public(
     assert put.status_code == 200
 
     assert (await client.get("/api/v1/banners/active")).json() is None
-    assert (await client.get("/api/v1/announcement")).json() is None
+    assert (await client.get("/api/v1/banners/active")).json() is None
     # The admin still sees the saved (expired) banner.
     settings = await client.get("/api/v1/admin/announcement", headers=auth_header(admin_user))
     assert settings.json()["is_active"] is True
@@ -296,54 +296,9 @@ async def test_admin_orders_include_customer(
     assert order["status"] == "AWAITING_TRANSFER"  # havale orders wait for the transfer
 
 
-@pytest.mark.parametrize(
-    "price",
-    [
-        {"price_excl_tax": "-1.00", "price_incl_tax": "0.00", "vat_rate": "20.00"},
-        {"price_excl_tax": "100.00", "price_incl_tax": "90.00", "vat_rate": "20.00"},
-        {"price_excl_tax": "100.00", "price_incl_tax": "120.00", "vat_rate": "150.00"},
-    ],
-)
-async def test_pricing_update_rejects_invalid_prices(
-    client: AsyncClient, admin_user: User, catalog, segments, price: dict
-):
-    normal_v, _ = catalog
-    retail_id = next(s.id for code, s in segments.items() if code.value == "RETAIL")
-    resp = await client.put(
-        f"/api/v1/admin/variants/{normal_v.id}/pricing",
-        headers=auth_header(admin_user),
-        json={"prices": [{"segment_id": retail_id, **price}]},
-    )
-    assert resp.status_code == 422
-
-
 async def test_approve_invalid_order_id_is_422(client: AsyncClient, admin_user: User):
     resp = await client.post("/api/v1/admin/orders/not-a-uuid/approve", headers=auth_header(admin_user))
     assert resp.status_code == 422
-
-
-# ── Variant weight (coal free-shipping rule) ─────────────────────────────────
-
-
-async def test_admin_sets_and_clears_variant_weight(
-    client: AsyncClient, admin_user: User, customer_user: User, catalog
-):
-    _, coal_v = catalog
-    url = f"/api/v1/admin/variants/{coal_v.id}"
-    h = auth_header(admin_user)
-
-    set_ = await client.patch(url, headers=h, json={"weight_kg": "1.250"})
-    assert set_.status_code == 200, set_.text
-    assert set_.json()["weight_kg"] == "1.250"
-
-    listed = await client.get("/api/v1/admin/products", headers=h, params={"q": coal_v.sku})
-    assert listed.json()[0]["variants"][0]["weight_kg"] == "1.250"
-
-    assert (await client.patch(url, headers=h, json={"weight_kg": None})).json()["weight_kg"] is None
-    for bad in ("0", "-1", "1000.5", "1.2345"):
-        assert (await client.patch(url, headers=h, json={"weight_kg": bad})).status_code == 422
-    assert (await client.patch(f"/api/v1/admin/variants/{uuid.uuid4()}", headers=h, json={"weight_kg": "1"})).status_code == 404
-    assert (await client.patch(url, headers=auth_header(customer_user), json={"weight_kg": "1"})).status_code == 403
 
 
 async def test_admin_products_report_total_for_pagination(client: AsyncClient, admin_user: User, catalog):
