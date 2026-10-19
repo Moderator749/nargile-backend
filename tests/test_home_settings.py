@@ -203,3 +203,37 @@ async def test_promo_social_widget(client: AsyncClient, admin_user: User, cleanu
         assert (await client.put(f"/api/v1/admin/promo-boxes/{body['id']}", headers=h, json=bad)).status_code == 422
     finally:
         await client.delete(f"/api/v1/admin/promo-boxes/{body['id']}", headers=h)
+
+
+async def test_the_seo_passage_is_saved_and_read_back(client: AsyncClient, admin_user: User, cleanup):
+    """"Alt SEO Metni": title, the paragraph shown, and what "Devamını Oku" opens."""
+    seo = {
+        "title": "  Nargile Malzemelerinde Tek Adres ",
+        "summary": "İlk paragraf.",
+        "content": "İkinci paragraf.\n\nÜçüncü paragraf.",
+    }
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"seo_intro": seo})
+    assert saved.status_code == 200, saved.text
+    public = (await client.get("/api/v1/home/settings")).json()["data"]["seo_intro"]
+    assert public == {**seo, "title": "Nargile Malzemelerinde Tek Adres"}
+
+    # Empty fields are allowed: the storefront fills them from its own copy.
+    blank = await client.put(
+        "/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"seo_intro": {"title": "", "summary": "", "content": ""}}
+    )
+    assert blank.status_code == 200, blank.text
+
+
+@pytest.mark.parametrize(
+    "seo",
+    [
+        {"title": "x" * 151, "summary": "", "content": ""},
+        {"title": "", "summary": "x" * 1501, "content": ""},
+        {"title": "", "summary": "", "content": "x" * 6001},
+        {"title": "", "summary": "", "content": "", "extra": "?"},
+    ],
+)
+async def test_the_seo_passage_is_held_to_its_limits(client: AsyncClient, admin_user: User, cleanup, seo: dict):
+    resp = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"seo_intro": seo})
+    assert resp.status_code == 422
+

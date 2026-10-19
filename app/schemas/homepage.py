@@ -170,6 +170,17 @@ class About(_Strict):
     badges: list[_text(40, required=True)] = Field(max_length=6)
 
 
+class SeoIntro(_Strict):
+    """"Alt SEO Metni": the passage that closes the homepage and every catalog
+    listing above the footer. A field left empty falls back to the storefront's
+    own copy for it. `content` is what "Devamını Oku" opens; a blank line in it
+    starts a new paragraph."""
+
+    title: _text(150)
+    summary: _text(1500)
+    content: _text(6000)
+
+
 # ── Footer ───────────────────────────────────────────────────────────────────
 
 
@@ -233,6 +244,7 @@ class HomepageDocument(_Strict):
     showcase: Showcase | None = None
     advantages: Advantages | None = None
     about: About | None = None
+    seo_intro: SeoIntro | None = None
     footer: Footer | None = None
 
 
