@@ -8,7 +8,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.models.catalog import CurrencyType, WarehouseType
-from app.models.order import OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer, TransportMode
+from app.models.order import Carrier, OrderStatus, PaymentMethod, ShippingMethod, ShippingPayer, TransportMode
 from app.models.user import SegmentType
 from app.schemas.catalog import IMAGE_URL_PATTERN
 from app.schemas.order import OrderItemRead
@@ -258,6 +258,15 @@ class AdminOrderListItem(BaseModel):
     payment_method: PaymentMethod
     status: OrderStatus
     tracking_code: str | None
+    # The shipment, once it has left ("Kargola"); see Order.
+    carrier: Carrier | None = None
+    carrier_name: str | None = None
+    tracking_url: str | None = None
+    shipped_at: datetime | None = None
+    cargo_key: str | None = None
+    carrier_status: str | None = None
+    carrier_status_text: str | None = None
+    carrier_synced_at: datetime | None = None
     shipping_method: ShippingMethod = ShippingMethod.YURTICI_DOOR
     # Who pays the carrier; the order never includes carriage.
     shipping_payer: ShippingPayer = ShippingPayer.SHOP

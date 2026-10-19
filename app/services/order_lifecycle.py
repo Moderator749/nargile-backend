@@ -1,12 +1,12 @@
 """Order state changes shared by the admin API and the SLA job."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import Inventory
-from app.models.order import Order, OrderStatus
+from app.models.order import Carrier, Order, OrderStatus
 from app.models.user import User
 from app.services.checkout_engine import warehouse_for_segment
 from app.services.wallet import award_for_paid_order
@@ -20,12 +20,27 @@ async def mark_paid(db: AsyncSession, order: Order, now: datetime) -> tuple[int,
     return await award_for_paid_order(db, order, now)
 
 
-async def mark_shipped(db: AsyncSession, order: Order, tracking_code: str | None) -> None:
-    """Hand the order to the carrier. `tracking_code` is optional (courier runs
-    have none). The dispatch e-mail is sent by the caller."""
+async def mark_shipped(
+    db: AsyncSession,
+    order: Order,
+    tracking_code: str | None,
+    *,
+    carrier: Carrier | None = None,
+    carrier_name: str | None = None,
+    tracking_url: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """Hand the order to the carrier. `tracking_code` is optional (the shop's
+    own van has none, and a web-service shipment gets one once it is scanned).
+    The dispatch e-mail is sent by the caller."""
     order.status = OrderStatus.SHIPPED
+    order.shipped_at = now or datetime.now(timezone.utc)
+    if carrier is not None:
+        order.carrier = carrier
+    order.carrier_name = (carrier_name or "").strip()[:100] or None
     if tracking_code:
         order.tracking_code = tracking_code[:100]
+    order.tracking_url = tracking_url[:300] if tracking_url else None
     await db.flush()
 
 

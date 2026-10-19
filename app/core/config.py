@@ -101,6 +101,22 @@ class Settings(BaseSettings):
     PAYTR_NO_INSTALLMENT: int = 0
     PAYTR_MAX_INSTALLMENT: int = 0
 
+    # ── Yurtiçi Kargo web service (shipments, labels, tracking) ─────────────
+    # The web-service user and password Yurtiçi issues with the contract; in
+    # .env only. Until both are set, "Kargola" takes a tracking code by hand
+    # and nothing is sent to Yurtiçi. Their public test pair is YKTEST / YK.
+    YURTICI_API_USER: str = ""
+    YURTICI_API_PASSWORD: str = ""
+    YURTICI_API_LANGUAGE: str = "TR"
+    # True: Yurtiçi's test service, where nothing is collected or charged.
+    YURTICI_TEST_MODE: bool = True
+    # The shop's Yurtiçi customer number ("müşteri kodu"), printed on labels.
+    YURTICI_CUSTOMER_CODE: str = ""
+
+    @property
+    def yurtici_configured(self) -> bool:
+        return bool(self.YURTICI_API_USER and self.YURTICI_API_PASSWORD)
+
     @property
     def paytr_configured(self) -> bool:
         return bool(self.PAYTR_MERCHANT_ID and self.PAYTR_MERCHANT_KEY and self.PAYTR_MERCHANT_SALT)

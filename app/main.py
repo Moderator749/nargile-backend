@@ -12,6 +12,7 @@ from app.core.database import async_session
 from app.core.media_rewrite import LocalMediaRewriteMiddleware
 from app.core.trailing_slash import StripTrailingSlashMiddleware
 from app.services.order_tasks import cancel_expired_pending_orders
+from app.services.shipping.sync import sync_shipments
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,22 @@ async def _run_sla_check() -> None:
             logger.exception("SLA job failed")
 
 
+async def _run_shipment_sync() -> None:
+    """Scheduled job: Yurtiçi tracking numbers and statuses for open shipments."""
+    async with async_session() as db:
+        try:
+            count = await sync_shipments(db)
+            if count:
+                logger.info("Shipment sync: %d shipment(s) updated.", count)
+        except Exception:
+            logger.exception("Shipment sync failed")
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     scheduler = AsyncIOScheduler()
     scheduler.add_job(_run_sla_check, "interval", hours=1, id="sla_check")
+    scheduler.add_job(_run_shipment_sync, "interval", hours=1, id="shipment_sync")
     scheduler.start()
     logger.info("SLA scheduler started (every 1 hour).")
     yield

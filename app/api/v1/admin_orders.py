@@ -14,13 +14,15 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
 from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
-from app.models.order import PENDING_STATUSES, Order, OrderItem, OrderStatus, ShippingMethod
+from app.core.config import settings
+from app.models.order import PENDING_STATUSES, Carrier, Order, OrderItem, OrderStatus, ShippingMethod
 from app.models.user import AddressKind, User
 from app.core.countries import TURKEY, country_name
 from app.schemas.address import address_line, international_line
 from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse
 from app.schemas.order import OrderItemRead, OrderRead
-from app.services import mailer, order_emails, order_lifecycle
+from app.services import mailer, order_emails, order_lifecycle, shipping
+from app.services.shipping import yurtici
 
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 
@@ -208,9 +210,29 @@ class CancelOrderRequest(BaseModel):
 
 
 class ShipOrderRequest(BaseModel):
-    """Carrier tracking code, if the shipment has one (courier runs do not)."""
+    """"Kargola": who takes the parcel, and how it is tracked.
+
+    Everything is optional, so an empty body still ships the order: the carrier
+    then follows from the delivery the customer chose (see
+    ``shipping.default_carrier``) and there is no tracking code — the shop's own
+    van has none. ``use_api`` registers the shipment with the carrier's web
+    service instead of taking a code (Yurtiçi only); its tracking number
+    arrives once the branch scans the label.
+    """
 
     tracking_code: str | None = Field(default=None, max_length=100)
+    carrier: Carrier | None = None
+    # The carrier's or the nakliye ambarı's name, for OTHER.
+    carrier_name: str | None = Field(default=None, max_length=100)
+    use_api: bool = False
+
+
+class ShippingIntegrationRead(BaseModel):
+    """What "Kargola" can offer: a web service per carrier, and in which mode."""
+
+    yurtici_api: bool
+    yurtici_test_mode: bool
+    yurtici_customer_code: str | None
 
 
 async def _order_with_user(db: AsyncSession, order_id: uuid.UUID) -> tuple[Order, User]:
@@ -281,7 +303,31 @@ async def ship_order(
             status_code=409,
             detail=f"Only approved orders can be shipped — current status is {order.status.value}",
         )
-    await order_lifecycle.mark_shipped(db, order, payload.tracking_code)
+    now = datetime.now(timezone.utc)
+    carrier = payload.carrier or shipping.default_carrier(order)
+    code = (payload.tracking_code or "").strip() or None
+    if payload.use_api:
+        provider = shipping.provider(carrier)
+        if provider is None:
+            raise HTTPException(status_code=409, detail="Bu kargo firması için web servis bağlantısı yok; takip numarasını elle girin.")
+        key = shipping.next_cargo_key(order)
+        try:
+            await provider.create(shipping.shipment_request(order, key, user.email))
+        except shipping.ShippingError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        order.cargo_key = key
+        order.carrier_status, order.carrier_status_text = "NOP", "Gönderi kaydı açıldı; kargo şubeye teslim edilmeyi bekliyor."
+        order.carrier_synced_at = now
+        code = None  # Yurtiçi's own number comes with the sync, once the label is scanned.
+    elif order.carrier_status:
+        # Shipped by hand after a web-service shipment was withdrawn: its status is not this one's.
+        order.carrier_status = order.carrier_status_text = order.carrier_synced_at = None
+    name = payload.carrier_name if carrier == Carrier.OTHER else None
+    if carrier == Carrier.OTHER and not (name or "").strip():
+        name = order.freight_company_name
+    await order_lifecycle.mark_shipped(
+        db, order, code, carrier=carrier, carrier_name=name, tracking_url=shipping.tracking_url(carrier, code), now=now,
+    )
     await db.commit()
     await db.refresh(order, attribute_names=["items"])
 
@@ -292,6 +338,67 @@ async def ship_order(
     ]
     await mailer.send(order_emails.order_shipped(order, user.full_name, user.email, lines))
     return _list_item(order, user, catalog)
+
+
+@router.get("/shipping/integrations", response_model=ShippingIntegrationRead)
+async def shipping_integrations(_admin: User = Depends(get_current_admin_user)):
+    return ShippingIntegrationRead(
+        yurtici_api=settings.yurtici_configured,
+        yurtici_test_mode=settings.YURTICI_TEST_MODE,
+        yurtici_customer_code=settings.YURTICI_CUSTOMER_CODE or None,
+    )
+
+
+async def _web_shipment(db: AsyncSession, order_id: uuid.UUID) -> tuple[Order, User, shipping.ShippingProvider]:
+    order, user = await _order_with_user(db, order_id)
+    if order.status != OrderStatus.SHIPPED or not order.cargo_key:
+        raise HTTPException(status_code=409, detail="Bu sipariş web servis üzerinden kargolanmadı")
+    provider = shipping.provider(order.carrier)
+    if provider is None:
+        raise HTTPException(status_code=409, detail="Kargo firmasının web servis bağlantısı kapalı")
+    return order, user, provider
+
+
+@router.post("/orders/{order_id}/shipment/refresh", response_model=AdminOrderListItem)
+async def refresh_shipment(
+    order_id: uuid.UUID,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Ask the carrier now, rather than waiting for the hourly sync."""
+    order, user, provider = await _web_shipment(db, order_id)
+    try:
+        [status] = await provider.query([order.cargo_key])
+    except (shipping.ShippingError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=str(exc) or "Kargo firması yanıt vermedi") from exc
+    shipping.apply_status(order, status, datetime.now(timezone.utc))
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    return _list_item(order, user, await _line_catalog(db, [order]))
+
+
+@router.post("/orders/{order_id}/shipment/cancel", response_model=AdminOrderListItem)
+async def cancel_shipment(
+    order_id: uuid.UUID,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Kargo kaydını geri al": withdraw a web-service shipment the carrier has
+    not collected yet, and put the order back to APPROVED to be shipped again.
+    Once the parcel has been scanned it is the carrier's to return, not ours."""
+    order, user, provider = await _web_shipment(db, order_id)
+    if order.carrier_status != "NOP":
+        raise HTTPException(status_code=409, detail="Kargo şubeye teslim edildi; kayıt artık geri alınamaz")
+    try:
+        status = await provider.cancel(order.cargo_key)
+    except shipping.ShippingError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    shipping.apply_status(order, status, datetime.now(timezone.utc))
+    order.status = OrderStatus.APPROVED
+    order.shipped_at = order.tracking_code = order.tracking_url = None
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    return _list_item(order, user, await _line_catalog(db, [order]))
 
 
 @router.post("/orders/{order_id}/cancel", response_model=AdminOrderListItem)

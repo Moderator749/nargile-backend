@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from app.core.tr_identity import normalize_tax_id
 from app.models.order import (
+    Carrier,
     OrderStatus,
     PaymentMethod,
     ShippingMethod,
@@ -200,6 +201,15 @@ class OrderRead(BaseModel):
     payment_method: PaymentMethod
     status: OrderStatus
     tracking_code: str | None
+    # The shipment, once it has left ("Kargola"); see Order.
+    carrier: Carrier | None = None
+    carrier_name: str | None = None
+    tracking_url: str | None = None
+    shipped_at: datetime | None = None
+    cargo_key: str | None = None
+    carrier_status: str | None = None
+    carrier_status_text: str | None = None
+    carrier_synced_at: datetime | None = None
     shipping_method: ShippingMethod = ShippingMethod.YURTICI_DOOR
     shipping_payer: ShippingPayer = ShippingPayer.SHOP
     shipping_consent_at: datetime | None = None

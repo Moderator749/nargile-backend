@@ -78,6 +78,22 @@ class ShippingMethod(str, enum.Enum):
     INTERNATIONAL_FREIGHT = "INTERNATIONAL_FREIGHT"
 
 
+class Carrier(str, enum.Enum):
+    """Who took the parcel, as recorded when it was shipped ("Kargola").
+
+    Not the same as ``ShippingMethod``, which is what the customer chose: a
+    Yurtiçi order can still leave with another carrier if the admin says so.
+    """
+
+    # Yurtiçi Kargo: by hand (a tracking code typed in) or through its web
+    # service (``cargo_key`` set, tracking filled in by the sync job).
+    YURTICI = "YURTICI"
+    # Any other carrier or a nakliye ambarı, named in ``carrier_name``.
+    OTHER = "OTHER"
+    # The shop's own van (the İstanbul run): nothing to track.
+    OWN = "OWN"
+
+
 class ShippingPayer(str, enum.Enum):
     """Who pays the carriage. The shop never charges it on the order either way.
 
@@ -114,6 +130,20 @@ class Order(Base):
         Enum(OrderStatus), default=OrderStatus.PENDING_APPROVAL, nullable=False
     )
     tracking_code: Mapped[str | None] = mapped_column(String(100))
+    # ── The shipment, once it leaves ("Kargola") ────────────────────────────
+    carrier: Mapped[str | None] = mapped_column(Enum(Carrier), nullable=True)
+    carrier_name: Mapped[str | None] = mapped_column(String(100))
+    # Where the customer follows the parcel: the carrier's own page for
+    # `tracking_code` (Yurtiçi's, from its web service when it sent one).
+    tracking_url: Mapped[str | None] = mapped_column(String(300))
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Yurtiçi web service: our reference for the shipment (the label's
+    # barcode), and the last status it reported ("NOP" not yet collected,
+    # "IND" on its way, "DLV" delivered, "CNL" cancelled…) in its own words.
+    cargo_key: Mapped[str | None] = mapped_column(String(30), index=True)
+    carrier_status: Mapped[str | None] = mapped_column(String(10))
+    carrier_status_text: Mapped[str | None] = mapped_column(String(200))
+    carrier_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     shipping_method: Mapped[str] = mapped_column(
         Enum(ShippingMethod),
         nullable=False,

@@ -7,7 +7,7 @@ read and tested without a mail server.
 from decimal import Decimal
 
 from app.core.config import settings
-from app.models.order import Order, ShippingPayer
+from app.models.order import Carrier, Order, ShippingMethod, ShippingPayer
 from app.services.mailer import Mail
 
 # One inline style per element: mail clients ignore stylesheets.
@@ -41,7 +41,10 @@ def order_shipped(
         part for part in (address.get("line"), f"{address.get('district', '')} / {address.get('city', '')}".strip(" /")) if part
     )
     tracking = order.tracking_code
-    courier = order.shipping_method == "COURIER_ISTANBUL"
+    link = order.tracking_url
+    carrier = {"YURTICI": "Yurtiçi Kargo"}.get(str(getattr(order.carrier, "value", order.carrier) or ""), order.carrier_name)
+    # The shop's own İstanbul van: no carrier, no tracking.
+    courier = order.shipping_method == ShippingMethod.ISTANBUL_FREE or order.carrier == Carrier.OWN
     carrier_line = (
         "Siparişiniz İstanbul içi kurye ile yola çıktı; kurye teslimat öncesi sizi arayacaktır."
         if courier
@@ -61,7 +64,9 @@ def order_shipped(
             carrier_line,
             "",
             f"Sipariş No: {order.order_number}",
+            *( [f"Kargo Firması: {carrier}"] if carrier and not courier else [] ),
             *( [f"Kargo Takip No: {tracking}"] if tracking else [] ),
+            *( [f"Kargonuzu takip edin: {link}"] if link else [] ),
             f"Sipariş Tutarı: {_money(order.total_amount - order.discount_amount)}",
             *( [f"Teslimat Adresi: {where}"] if where else [] ),
             "",
@@ -84,7 +89,9 @@ def order_shipped(
   <p><strong>{carrier_line}</strong></p>
   <p style="{_MUTED}">
     Sipariş No: <strong>{order.order_number}</strong><br />
+    {f"Kargo Firması: <strong>{carrier}</strong><br />" if carrier and not courier else ""}
     {f"Kargo Takip No: <strong>{tracking}</strong><br />" if tracking else ""}
+    {f'<a href="{link}" style="color:#b4122b">Kargonuzu takip edin →</a><br />' if link else ""}
     Sipariş Tutarı: <strong>{_money(order.total_amount - order.discount_amount)}</strong>
     {f"<br />Teslimat Adresi: {where}" if where else ""}
   </p>
