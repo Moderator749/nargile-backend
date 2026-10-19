@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import and_, func, or_, select
@@ -9,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_user, get_optional_user
 from app.core.database import get_db
 from app.models.catalog import CurrencyType, Product, ProductCrossSell, ProductVariant
+from app.models.order import Order, OrderItem, OrderStatus
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.catalog import (
@@ -192,18 +194,24 @@ async def list_products(
     category: str | None = Query(None, max_length=180, description="Category slug"),
     q: str | None = Query(None, max_length=100, description="Search name, brand or code"),
     ids: list[uuid.UUID] | None = Query(None, max_length=100, description="Only these products"),
+    sort: Literal["name", "newest"] = Query("name", description="By name, or the newest first"),
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Catalog page, priced for the caller (see _catalog_view).
 
     `ids` narrows it to a set the page already chose (the product page's
-    "Benzer Ürünler", re-priced for a signed-in viewer)."""
+    "Benzer Ürünler", re-priced for a signed-in viewer). `sort=newest` is the
+    homepage's "Yeni Gelenler": the latest added first — the imported catalog
+    shares one creation time, so among those it falls back on the name."""
     stmt = apply_catalog_filters(select(Product), category=category, q=q, published_only=True)
     if ids:
         stmt = stmt.where(Product.id.in_(ids))
+    order = (Product.name, Product.id)
+    if sort == "newest":
+        order = (Product.created_at.desc(), *order)
     result = await db.execute(
-        stmt.options(*_VARIANT_LOADS).order_by(Product.name, Product.id).offset(skip).limit(limit)
+        stmt.options(*_VARIANT_LOADS).order_by(*order).offset(skip).limit(limit)
     )
     return await _catalog_view(db, user, list(result.scalars().all()))
 
@@ -308,6 +316,43 @@ async def list_flash_sale_products(
         select(Product)
         .where(Product.is_opportunity.is_(True), Product.is_published.is_(True))
         .order_by(missed.asc(), Product.opportunity_end_date.asc().nulls_last(), Product.id)
+        .options(*_VARIANT_LOADS)
+        .limit(limit)
+    )
+    return await _catalog_view(db, user, list(result.scalars().all()))
+
+
+# Orders that count as sold: approved (paid) or shipped. Pending, cancelled and
+# failed ones never took the goods, and a quote (an export request) moves no
+# stock — it is not a sale.
+SOLD_STATUSES = (OrderStatus.APPROVED, OrderStatus.SHIPPED)
+
+
+@router.get("/bestsellers", response_model=list[CatalogProductRead])
+async def list_bestsellers(
+    limit: int = Query(10, ge=1, le=50),
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The homepage's "Çok Satanlar": published products by the quantity sold,
+    every colour counted together, the most first.
+
+    Only products that have sold are listed; a list shorter than asked for is
+    the caller's to top up (the homepage fills it from its featured category).
+    """
+    sold = (
+        select(ProductVariant.product_id, func.sum(OrderItem.quantity).label("sold"))
+        .join(OrderItem, OrderItem.variant_id == ProductVariant.id)
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(Order.status.in_(SOLD_STATUSES), Order.is_quote.is_(False))
+        .group_by(ProductVariant.product_id)
+        .subquery()
+    )
+    result = await db.execute(
+        select(Product)
+        .join(sold, sold.c.product_id == Product.id)
+        .where(Product.is_published.is_(True))
+        .order_by(sold.c.sold.desc(), Product.name, Product.id)
         .options(*_VARIANT_LOADS)
         .limit(limit)
     )
