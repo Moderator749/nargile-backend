@@ -25,6 +25,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
 from app.models.catalog import (
     Category,
     CurrencyType,
@@ -219,10 +220,25 @@ async def save(
         await _sync_prices(db, variant, payload.prices, segments)
         await _sync_flash_sale(db, variant, payload.opportunity, now)
     await _sync_cross_sells(db, product, payload.related_product_ids)
-    await _sync_categories(db, product, payload.category_ids or [])
+    category_ids = await _with_deals_category(db, payload.category_ids or [], product.is_opportunity)
+    if product.category_id not in category_ids:
+        product.category_id = category_ids[0] if category_ids else None
+    await _sync_categories(db, product, category_ids)
 
     await db.flush()
     return product
+
+
+async def _with_deals_category(db: AsyncSession, category_ids: list[int], is_opportunity: bool) -> list[int]:
+    """The product's categories with the deals category ("Fırsat Ürünler",
+    DEALS_CATEGORY_SLUG) in step with its "Fırsat Ürünü" switch: added at the end
+    while it is on, taken out when it is off. The others stay as they are, in
+    their order; without such a category, nothing changes."""
+    deals = await db.scalar(select(Category.id).where(Category.slug == settings.DEALS_CATEGORY_SLUG))
+    if deals is None:
+        return category_ids
+    others = [cid for cid in category_ids if cid != deals]
+    return [*others, deals] if is_opportunity else others
 
 
 async def _sync_categories(db: AsyncSession, product: Product, category_ids: list[int]) -> None:

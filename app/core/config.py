@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     SHOP_NAME: str = "Nargile Malzemesi"
     SHOP_URL: str = "https://nargilemalzemesi.com"
     SHOP_SUPPORT_PHONE: str = "0850 000 00 00"
+    # The category every "Fırsat Ürünü" is listed under while its flag is on
+    # (kept in step by the product sheet's save). No such category: no sync.
+    DEALS_CATEGORY_SLUG: str = "kampanyalar"
 
     # ── Communication (e-mail / SMS drivers) ────────────────────────────────
     # "auto": SMTP when SMTP_HOST is set, otherwise the mock driver, which logs

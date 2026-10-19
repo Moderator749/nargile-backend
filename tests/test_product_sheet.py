@@ -19,6 +19,7 @@ from httpx import AsyncClient
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice, WarehouseType
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
@@ -561,4 +562,55 @@ async def test_bulk_move_replaces_every_category(client: AsyncClient, admin_user
             "/api/v1/admin/products/category", headers=h, json={"product_ids": [sheet["id"]], "category_id": None}
         )
         for cat in cats:
+            await client.delete(f"/api/v1/admin/categories/{cat['id']}", headers=h)
+
+
+# ── The deals category ("Fırsat Ürünler") ────────────────────────────────────
+
+
+async def test_a_deal_is_listed_under_the_deals_category_while_its_switch_is_on(
+    client: AsyncClient, admin_user: User, monkeypatch
+):
+    """Switching "Fırsat Ürünü" on adds the deals category after the product's
+    own; switching it off takes only that one out. Without a deals category
+    nothing changes."""
+    h = auth_header(admin_user)
+    tag = uuid.uuid4().hex[:8]
+    new = lambda name: client.post("/api/v1/admin/categories", headers=h, json={"name": f"{name} {tag}"})  # noqa: E731
+    deals, bowls, wood = (await new("Fırsat")).json(), (await new("Lule")).json(), (await new("Wood")).json()
+    monkeypatch.setattr(settings, "DEALS_CATEGORY_SLUG", deals["slug"])
+    on = {"is_opportunity": True, "opportunity_price": "10.00", "opportunity_stock": 3}
+    try:
+        sheet = (await _post(client, admin_user, _sheet(category_ids=[bowls["id"], wood["id"]], opportunity=on))).json()
+        assert sheet["category_ids"] == [bowls["id"], wood["id"], deals["id"]]
+        assert sheet["category_id"] == bowls["id"]  # the primary stays the product's own
+        listed = (await client.get("/api/v1/products/", params={"category": deals["slug"]})).json()
+        assert [p["id"] for p in listed] == [sheet["id"]]
+
+        # Saved again as the form sends it back (the deals category in the list): no duplicate.
+        body = _sheet(base_code=sheet["base_code"], category_ids=sheet["category_ids"], opportunity=on)
+        again = (await client.put(f"/api/v1/admin/products/{sheet['id']}/sheet", headers=h, json=body)).json()
+        assert again["category_ids"] == [bowls["id"], wood["id"], deals["id"]]
+
+        # Switched off: out of the deals category, the others kept in order.
+        body = _sheet(base_code=sheet["base_code"], category_ids=again["category_ids"])
+        off = (await client.put(f"/api/v1/admin/products/{sheet['id']}/sheet", headers=h, json=body)).json()
+        assert off["category_ids"] == [bowls["id"], wood["id"]]
+        assert (await client.get("/api/v1/products/", params={"category": deals["slug"]})).json() == []
+
+        # A deal with no category of its own: the deals category is its primary too.
+        lone = (await _post(client, admin_user, _sheet(opportunity=on))).json()
+        assert (lone["category_ids"], lone["category_id"]) == ([deals["id"]], deals["id"])
+
+        # No deals category configured: the categories are left as sent.
+        monkeypatch.setattr(settings, "DEALS_CATEGORY_SLUG", f"yok-{tag}")
+        plain = (await _post(client, admin_user, _sheet(category_ids=[wood["id"]], opportunity=on))).json()
+        assert plain["category_ids"] == [wood["id"]]
+    finally:
+        ids = [p for p in (locals().get(n) for n in ("sheet", "lone", "plain")) if p]
+        await client.post(
+            "/api/v1/admin/products/category", headers=h,
+            json={"product_ids": [p["id"] for p in ids], "category_id": None},
+        )
+        for cat in (deals, bowls, wood):
             await client.delete(f"/api/v1/admin/categories/{cat['id']}", headers=h)
