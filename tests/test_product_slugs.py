@@ -27,14 +27,41 @@ async def twins(db_session: AsyncSession):
 def test_slug_base_folds_turkish_letters():
     assert product_slug_base("Çift Hortumlu Şişe — İğne & Ölçü") == "cift-hortumlu-sise-igne-olcu"
     assert product_slug_base("!!!") == "urun"
+
+
+def test_slug_base_leads_with_the_product_code():
+    assert product_slug_base("Legend Hookah Çantalı Çelik Nargile Takımı", "LH013") == (
+        "lh013-legend-hookah-cantali-celik-nargile-takimi"
+    )
+    assert product_slug_base("Çelik Takım", "NT-1002 / A") == "nt-1002-a-celik-takim"
+    # A name that already starts with its code is not given it twice.
+    assert product_slug_base("NT665 Kırmızı Nargile", "NT665") == "nt665-kirmizi-nargile"
+    assert product_slug_base("NT665", "nt665") == "nt665"
+    assert product_slug_base("", "KM01") == "km01"
+    assert product_slug_base("!!!", "") == "urun"
+    assert len(product_slug_base("x" * 300, "CODE")) <= 247  # room left for a failsafe suffix
     assert PRODUCT_SLUG.match("mr.wood-nargile-takimi")  # the old store's dotted spelling
     assert not PRODUCT_SLUG.match("bad--slug")
 
 
-async def test_new_products_get_unique_slugs_from_their_name(twins):
+async def test_new_products_get_their_code_and_name_so_namesakes_never_collide(twins):
     first, second, suffix = twins
-    assert first.slug == f"cift-hortumlu-sise-igne-{suffix}"
-    assert second.slug == f"{first.slug}-2"
+    assert first.slug == f"slg-a-{suffix}-cift-hortumlu-sise-igne-{suffix}"
+    assert second.slug == f"slg-b-{suffix}-cift-hortumlu-sise-igne-{suffix}"  # no "-2"
+
+
+async def test_a_clash_still_gets_a_failsafe_suffix(db_session: AsyncSession):
+    """Two products of one code and one name (the sheet refuses a taken code;
+    an import might not): the second still gets an address of its own."""
+    suffix = uuid.uuid4().hex[:6]
+    rows = [Product(base_code=f"DUP-{suffix}", name="Aynı Ürün", tags=[]) for _ in range(2)]
+    db_session.add_all(rows)
+    await db_session.commit()
+    try:
+        assert [r.slug for r in rows] == [f"dup-{suffix}-ayni-urun", f"dup-{suffix}-ayni-urun-2"]
+    finally:
+        await db_session.execute(delete(Product).where(Product.id.in_([r.id for r in rows])))
+        await db_session.commit()
 
 
 async def test_rename_keeps_the_slug(db_session: AsyncSession, twins):
@@ -95,14 +122,14 @@ async def test_product_sheet_edits_the_slug(client: AsyncClient, db_session: Asy
 
     suffix = uuid.uuid4().hex[:6]
     sheet = await _save(client, admin_user, _sheet(f"SLS-{suffix}", f"Sayfa Ürünü {suffix}", price="10.00", stock=1))
-    assert sheet["slug"] == f"sayfa-urunu-{suffix}"
+    assert sheet["slug"] == f"sls-{suffix}-sayfa-urunu-{suffix}"
     try:
         body = {**sheet, "slug": f"Yeni-Adres-{suffix}"}
         resp = await client.put(f"/api/v1/admin/products/{sheet['id']}/sheet", headers=auth_header(admin_user), json=body)
         assert resp.status_code == 200, resp.text
         assert resp.json()["slug"] == f"yeni-adres-{suffix}"  # lowercased
         # The old address now finds the product under the new one.
-        assert (await client.get(f"/api/v1/products/sayfa-urunu-{suffix}")).json()["slug"] == f"yeni-adres-{suffix}"
+        assert (await client.get(f"/api/v1/products/sls-{suffix}-sayfa-urunu-{suffix}")).json()["slug"] == f"yeni-adres-{suffix}"
 
         bad = await client.put(
             f"/api/v1/admin/products/{sheet['id']}/sheet", headers=auth_header(admin_user), json={**body, "slug": "boş adres"}

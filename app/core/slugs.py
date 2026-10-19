@@ -18,7 +18,19 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", ascii_text).strip("-")
 
 
-def product_slug_base(name: str) -> str:
-    """The slug a new product's name gives it, before any "-2" to keep it unique."""
+def product_slug_base(name: str, code: str = "") -> str:
+    """The slug a new product gets: its code, then its name — "LH013" and
+    "Legend Hookah Çantalı Çelik Nargile Takımı" → "lh013-legend-hookah-cantali-…".
+
+    The code is unique to the product, so two products of one name no longer
+    meet at "-2", "-3"; that suffix stays only as a failsafe (see
+    _give_product_a_slug). A name that already begins with its code is not
+    given it twice.
+    """
+    name_slug, code_slug = slugify(name), slugify(code)
+    if code_slug and name_slug != code_slug and not name_slug.startswith(f"{code_slug}-"):
+        base = f"{code_slug}-{name_slug}" if name_slug else code_slug
+    else:
+        base = name_slug
     # Room for a "-NNN" suffix within the column.
-    return slugify(name)[: PRODUCT_SLUG_MAX - 8].strip("-") or "urun"
+    return base[: PRODUCT_SLUG_MAX - 8].strip("-") or "urun"

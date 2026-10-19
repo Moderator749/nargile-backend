@@ -376,7 +376,8 @@ _PENDING_SLUGS = "pending_product_slugs"
 
 @event.listens_for(Product, "before_insert")
 def _give_product_a_slug(mapper, connection, target: Product) -> None:
-    """A new product without a slug gets its name's, made unique with "-2", "-3"…
+    """A new product without a slug gets one from its code and name (see
+    product_slug_base) — unique by its code; "-2", "-3"… only as a failsafe.
 
     Here rather than in each writer (the product sheet, the plain create
     endpoint, the import scripts, the seeds), so none of them can forget it.
@@ -387,7 +388,7 @@ def _give_product_a_slug(mapper, connection, target: Product) -> None:
         return
     session = object_session(target)
     pending: set[str] = session.info.setdefault(_PENDING_SLUGS, set()) if session is not None else set()
-    base = product_slug_base(target.name or "")
+    base = product_slug_base(target.name or "", target.base_code or "")
     taken = set(
         connection.execute(
             select(Product.slug).where((Product.slug == base) | Product.slug.like(f"{base}-%"))
