@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.catalog import Product, ProductVariant
 from app.models.order import Order, OrderItem, OrderStatus, PaymentMethod
 from app.models.user import User
+from tests.conftest import auth_header
 
 # Far above anything the rest of the suite sells, so these lead the list.
 BIG = 1_000_000
@@ -129,3 +130,43 @@ async def test_bestsellers_leave_out_quotes_and_unpublished_products(
 
 async def test_bestsellers_limit_is_bounded(client: AsyncClient):
     assert (await client.get("/api/v1/products/bestsellers", params={"limit": 51})).status_code == 422
+
+
+# ── Gone from the catalogue, gone from both lists ────────────────────────────
+
+
+async def test_a_deleted_product_leaves_new_arrivals(client: AsyncClient, admin_user: User):
+    """The ghost in "Yeni Gelenler": once deleted, a product is in neither list
+    (and its page is gone)."""
+    from tests.test_product_sheet import _sheet
+
+    h = auth_header(admin_user)
+    created = (await client.post("/api/v1/admin/products/sheet", headers=h, json=_sheet(name="közzlükkk"))).json()
+    assert created["id"] in await _ids(client, "", sort="newest", limit=5)
+
+    gone = await client.post("/api/v1/admin/products/delete", headers=h, json={"product_ids": [created["id"]]})
+    assert gone.json()["deleted"] == [created["id"]]
+    assert created["id"] not in await _ids(client, "", sort="newest", limit=50)
+    assert created["id"] not in await _ids(client, "/bestsellers", limit=50)
+    assert (await client.get(f"/api/v1/products/{created['id']}")).status_code == 404
+
+
+async def test_a_withdrawn_product_leaves_both_lists_and_a_sold_one_cannot_be_deleted(
+    client: AsyncClient, admin_user: User, picks
+):
+    """A product that has sold cannot be deleted (its order lines need it): it
+    is withdrawn instead, and that takes it off both lists as surely."""
+    products, variants, sell = picks
+    sold = products[3]  # the newest of the fixture's four
+    await sell([(variants[sold.id][0], 10 * BIG)])
+    h = auth_header(admin_user)
+    assert str(sold.id) in await _ids(client, "", sort="newest", limit=5)
+    assert str(sold.id) in await _ids(client, "/bestsellers", limit=50)
+
+    refused = (await client.post("/api/v1/admin/products/delete", headers=h, json={"product_ids": [str(sold.id)]})).json()
+    assert refused["deleted"] == [] and str(sold.id) in refused["refused"]
+
+    off = await client.patch(f"/api/v1/admin/products/{sold.id}/publish", headers=h, json={"is_published": False})
+    assert off.status_code == 200, off.text
+    assert str(sold.id) not in await _ids(client, "", sort="newest", limit=50)
+    assert str(sold.id) not in await _ids(client, "/bestsellers", limit=50)
