@@ -180,6 +180,9 @@ async def reset_password(
     if user is None or not user.is_active:
         return False
     user.hashed_password = hash_password(new_password)
+    # Every session from before the reset ends with it: whoever had the old
+    # password, or a token, is out.
+    user.token_version = (user.token_version or 0) + 1
     row.used_at = _now()
     await db.flush()
     await _void_open(db, user.id)

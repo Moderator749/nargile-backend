@@ -11,7 +11,12 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     SECRET_KEY: str
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+    # Sessions slide: each visit renews the token (POST /auth/refresh), so a
+    # session ends only after this long without one. The panel's staff get the
+    # short window — they can change prices, orders and refunds — customers the
+    # long one, B2B accounts included.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # admins / staff
+    CUSTOMER_SESSION_DAYS: int = 30
     DEBUG: bool = False
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     # Origins matched by pattern on top of CORS_ORIGINS — the storefront's

@@ -9,6 +9,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -172,6 +173,9 @@ class User(Base):
     marketing_sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Carried in every session token ("ver"); raising it ends every session
+    # issued before — a password reset does, so a token from before it is dead.
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     role: Mapped[str] = mapped_column(
         Enum(UserRole), default=UserRole.CUSTOMER, nullable=False
     )

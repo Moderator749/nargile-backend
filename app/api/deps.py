@@ -37,6 +37,13 @@ async def _user_from_token(token: str, db: AsyncSession) -> User:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found or inactive",
         )
+    # Issued before the user's sessions were ended (a password reset): dead.
+    # A token from before versions were kept carries none, which is version 0.
+    if int(payload.get("ver", 0)) != (user.token_version or 0):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session ended",
+        )
     return user
 
 
