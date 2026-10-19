@@ -11,11 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
-from app.models.content import Advantage, HeroSlide, PromoBox
+from app.models.content import HeroSlide, PromoBox
 from app.models.user import User
 from app.schemas.content import (
-    AdvantageRead,
-    AdvantageWrite,
     HeroSlideRead,
     HeroSlideWrite,
     HomeContentRead,
@@ -28,7 +26,7 @@ router = APIRouter(tags=["home-content"])
 admin = APIRouter(prefix="/admin", tags=["admin-home-content"])
 
 
-def _image(row: HeroSlide | PromoBox, request: Request) -> str | None:
+def _image(row: HeroSlide, request: Request) -> str | None:
     if row.image_path:
         return media_url(request, row.image_path)
     return row.image_url
@@ -46,19 +44,12 @@ def slide_read(row: HeroSlide, request: Request) -> HeroSlideRead:
     )
 
 
-def promo_read(row: PromoBox, request: Request) -> PromoBoxRead:
+def promo_read(row: PromoBox, _request: Request) -> PromoBoxRead:
     return PromoBoxRead(
-        id=row.id, row=row.row, variant=row.variant, eyebrow=row.eyebrow, title=row.title,
-        text=row.text, href=row.href, image=_image(row, request), image_url=row.image_url,
-        has_upload=bool(row.image_path), badge=row.badge, requires=row.requires, layout=row.layout,
-        overlay_direction=row.overlay_direction, image_focus_x=row.image_focus_x,
-        image_focus_y=row.image_focus_y, image_zoom=row.image_zoom, widget=row.widget,
-        is_active=row.is_active, sort_order=row.sort_order,
+        id=row.id, eyebrow=row.eyebrow, title=row.title, text=row.text, href=row.href,
+        requires=row.requires, widget=row.widget, is_active=row.is_active, sort_order=row.sort_order,
     )
 
-
-def advantage_read(row: Advantage, _request: Request) -> AdvantageRead:
-    return AdvantageRead.model_validate(row, from_attributes=True)
 
 
 # ── Public ───────────────────────────────────────────────────────────────────
@@ -75,7 +66,6 @@ async def home_content(request: Request, db: AsyncSession = Depends(get_db)):
     return HomeContentRead(
         slides=[slide_read(r, request) for r in await active(HeroSlide)],
         promos=[promo_read(r, request) for r in await active(PromoBox)],
-        advantages=[advantage_read(r, request) for r in await active(Advantage)],
     )
 
 
@@ -171,5 +161,4 @@ def _register(
 
 
 _register("/hero-slides", HeroSlide, HeroSlideWrite, HeroSlideRead, slide_read, "Slide", with_image=True)
-_register("/promo-boxes", PromoBox, PromoBoxWrite, PromoBoxRead, promo_read, "Promo box", with_image=True)
-_register("/advantages", Advantage, AdvantageWrite, AdvantageRead, advantage_read, "Advantage")
+_register("/promo-boxes", PromoBox, PromoBoxWrite, PromoBoxRead, promo_read, "Promo box")

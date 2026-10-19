@@ -129,62 +129,12 @@ async def test_hero_slide_free_layout(client: AsyncClient, admin_user: User, cle
     assert reset.json()["layout"] is None
 
 
-async def test_promo_box_free_layout(client: AsyncClient, admin_user: User, cleanup, db_session: AsyncSession):
-    from app.models.content import PromoBox
-
-    h = auth_header(admin_user)
-    box = {"title": f"Kutu {TAG}", "href": "/catalog", "row": 1, "variant": "image"}
-    created = (await client.post("/api/v1/admin/promo-boxes", headers=h, json=box)).json()
-    try:
-        assert created["layout"] is None
-        layout = {
-            "eyebrow": {"x": 20, "y": 12},
-            "title": {"x": 40, "y": 30},
-            "text": {"x": 60, "y": 48},
-            "button": {"x": 80, "y": 88},
-            "image": {"x": 75, "y": 65},
-        }
-        saved = await client.put(f"/api/v1/admin/promo-boxes/{created['id']}", headers=h, json={**box, "layout": layout})
-        assert saved.status_code == 200, saved.text
-        assert saved.json()["layout"] == layout
-        # A text card has no photo to place; the four text parts are required.
-        without_image = {k: v for k, v in layout.items() if k != "image"}
-        ok = await client.put(f"/api/v1/admin/promo-boxes/{created['id']}", headers=h, json={**box, "layout": without_image})
-        assert ok.status_code == 200 and ok.json()["layout"]["image"] is None
-        missing = await client.put(
-            f"/api/v1/admin/promo-boxes/{created['id']}", headers=h, json={**box, "layout": {"title": {"x": 1, "y": 1}}}
-        )
-        assert missing.status_code == 422
-    finally:
-        await client.delete(f"/api/v1/admin/promo-boxes/{created['id']}", headers=h)
-
-
-async def test_promo_box_photo_veil_and_crop(client: AsyncClient, admin_user: User, cleanup):
-    h = auth_header(admin_user)
-    box = {"title": f"Veil {TAG}", "href": "/catalog", "row": 2, "variant": "text"}
-    created = (await client.post("/api/v1/admin/promo-boxes", headers=h, json=box)).json()
-    try:
-        assert (created["overlay_direction"], created["image_focus_x"], created["image_focus_y"], created["image_zoom"]) == ("to-t", 50, 50, 100)
-        changed = {**box, "overlay_direction": "to-r", "image_focus_x": 10, "image_focus_y": 90, "image_zoom": 140}
-        saved = await client.put(f"/api/v1/admin/promo-boxes/{created['id']}", headers=h, json=changed)
-        assert saved.status_code == 200, saved.text
-        body = saved.json()
-        assert (body["overlay_direction"], body["image_focus_x"], body["image_focus_y"], body["image_zoom"]) == ("to-r", 10, 90, 140)
-        for bad in ({"overlay_direction": "diagonal"}, {"image_zoom": 50}, {"image_focus_x": 101}):
-            refused = await client.put(f"/api/v1/admin/promo-boxes/{created['id']}", headers=h, json={**box, **bad})
-            assert refused.status_code == 422
-    finally:
-        await client.delete(f"/api/v1/admin/promo-boxes/{created['id']}", headers=h)
-
-
 async def test_promo_social_widget(client: AsyncClient, admin_user: User, cleanup):
     h = auth_header(admin_user)
     box = {
         "title": f"Hacim büyür {TAG}",
         "eyebrow": "Ayrıcalıklar & Avantajlar",
         "href": "/#avantajlar",
-        "row": 2,
-        "variant": "social",
         "widget": {
             "instagram_href": "https://www.instagram.com/sultannargile_bahcelievler",
             "youtube_href": "https://www.youtube.com/@sultannargile1982",
@@ -195,7 +145,6 @@ async def test_promo_social_widget(client: AsyncClient, admin_user: User, cleanu
     assert created.status_code == 201, created.text
     body = created.json()
     try:
-        assert body["variant"] == "social"
         assert body["widget"]["instagram_label"] == "Instagram" and body["widget"]["youtube_label"] == "YouTube"
         public = (await client.get("/api/v1/home/content")).json()["promos"]
         assert next(p for p in public if p["id"] == body["id"])["widget"]["anchor_label"] == "Avantajları keşfet"

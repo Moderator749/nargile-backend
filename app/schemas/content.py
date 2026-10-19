@@ -9,15 +9,8 @@ from app.schemas.catalog import IMAGE_URL_PATTERN
 # "javascript:", "data:" or protocol-relative "//host".
 _HREF = re.compile(r"^(?:/(?!/)[^\s\"'<>\\]*|https://[^\s\"'<>\\]+)$")
 
-ADVANTAGE_ICONS = (
-    "truck", "bike", "credit-card", "landmark", "piggy-bank", "trending-up",
-    "badge-check", "clock", "gift", "percent", "shield", "package",
-)
-
 Requirement = Literal["flash_sales"]
 TextAlign = Literal["left", "center", "right"]
-# Which way a promo photo's dark veil runs: towards right, left, bottom, top.
-OverlayDirection = Literal["to-r", "to-l", "to-b", "to-t"]
 
 
 class Point(BaseModel):
@@ -59,19 +52,6 @@ class SocialWidget(BaseModel):
     @classmethod
     def _label(cls, v: str) -> str:
         return _required(v)
-
-
-class PromoLayout(BaseModel):
-    """Where a promo card's four text parts sit. `image` is kept only so layouts
-    saved while photos were a placed square still load; it is not used."""
-
-    model_config = {"extra": "forbid"}
-
-    eyebrow: Point
-    title: Point
-    text: Point
-    button: Point
-    image: Point | None = None
 
 
 def _href(value: str | None) -> str | None:
@@ -182,21 +162,15 @@ class HeroSlideRead(BaseModel):
 
 
 class PromoBoxWrite(BaseModel):
-    row: Literal[1, 2] = 1
-    variant: Literal["image", "text", "transparent", "social"] = "text"
+    """The promo box beside the hero ("Sosyal & Avantaj"): its top band jumps to
+    `href` (e.g. "/#avantajlar"), its bottom band lists the shop's channels."""
+
     eyebrow: str = Field(default="", max_length=60)
     title: str = Field(max_length=120)
     text: str | None = Field(default=None, max_length=240)
     href: str = Field(max_length=300)
-    image_url: str | None = Field(default=None, max_length=500)
-    badge: Literal["sok"] | None = None
     requires: Requirement | None = None
-    layout: PromoLayout | None = None
-    overlay_direction: OverlayDirection = "to-t"
-    image_focus_x: int = Field(default=50, ge=0, le=100)
-    image_focus_y: int = Field(default=50, ge=0, le=100)
-    image_zoom: int = Field(default=100, ge=100, le=200)
-    widget: SocialWidget | None = None
+    widget: SocialWidget
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
@@ -215,17 +189,10 @@ class PromoBoxWrite(BaseModel):
     def _link(cls, v: str) -> str | None:
         return _href(v)
 
-    @field_validator("text", "image_url", mode="before")
+    @field_validator("text", mode="before")
     @classmethod
     def _opt(cls, v: str | None) -> str | None:
         return _blank_none(v)
-
-    @field_validator("image_url")
-    @classmethod
-    def _image(cls, v: str | None) -> str | None:
-        if v is not None and not re.match(IMAGE_URL_PATTERN, v):
-            raise ValueError("Image must be an http(s) URL without spaces, quotes or brackets")
-        return v
 
     @model_validator(mode="after")
     def _link_required(self) -> "PromoBoxWrite":
@@ -236,79 +203,12 @@ class PromoBoxWrite(BaseModel):
 
 class PromoBoxRead(BaseModel):
     id: int
-    row: int
-    variant: str
     eyebrow: str
     title: str
     text: str | None
     href: str
-    image: str | None
-    image_url: str | None
-    has_upload: bool
-    badge: str | None
     requires: Requirement | None
-    layout: PromoLayout | None
-    overlay_direction: OverlayDirection
-    image_focus_x: int
-    image_focus_y: int
-    image_zoom: int
     widget: SocialWidget | None
-    is_active: bool
-    sort_order: int
-
-
-# ── Advantages ───────────────────────────────────────────────────────────────
-
-
-class AdvantageWrite(BaseModel):
-    icon: str = "badge-check"
-    title: str = Field(max_length=80)
-    highlight: str = Field(max_length=40)
-    highlight_label: str = Field(default="", max_length=120)
-    details: list[str] = Field(default_factory=list, max_length=6)
-    footnote: str | None = Field(default=None, max_length=400)
-    is_active: bool = True
-    sort_order: int = Field(default=0, ge=0, le=100_000)
-
-    @field_validator("title", "highlight")
-    @classmethod
-    def _req(cls, v: str) -> str:
-        return _required(v)
-
-    @field_validator("footnote", mode="before")
-    @classmethod
-    def _opt(cls, v: str | None) -> str | None:
-        return _blank_none(v)
-
-    @field_validator("icon")
-    @classmethod
-    def _known_icon(cls, v: str) -> str:
-        if v not in ADVANTAGE_ICONS:
-            raise ValueError(f"Icon must be one of: {', '.join(ADVANTAGE_ICONS)}")
-        return v
-
-    @field_validator("highlight_label")
-    @classmethod
-    def _strip_label(cls, v: str) -> str:
-        return v.strip()
-
-    @field_validator("details")
-    @classmethod
-    def _clean_details(cls, v: list[str]) -> list[str]:
-        lines = [line.strip() for line in v if line.strip()]
-        if any(len(line) > 200 for line in lines):
-            raise ValueError("Each detail line is at most 200 characters")
-        return lines
-
-
-class AdvantageRead(BaseModel):
-    id: int
-    icon: str
-    title: str
-    highlight: str
-    highlight_label: str
-    details: list[str]
-    footnote: str | None
     is_active: bool
     sort_order: int
 
@@ -318,4 +218,3 @@ class HomeContentRead(BaseModel):
 
     slides: list[HeroSlideRead]
     promos: list[PromoBoxRead]
-    advantages: list[AdvantageRead]

@@ -4,7 +4,7 @@ the advantages ("Avantajlar") bento, and the "Ana Sayfa Düzenleme" document."""
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -43,50 +43,20 @@ class HeroSlide(Base):
 
 
 class PromoBox(Base):
+    """The promo box beside the hero ("Sosyal & Avantaj"): a top band that jumps
+    to `href` and a bottom band with the shop's channels (`widget`). The first
+    active one whose requirement is met is shown."""
+
     __tablename__ = "promo_boxes"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    # 1 = first promo grid (Module 6), 2 = second (Module 7). Up to 3 active boxes each.
-    row: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
-    # "image" | "text" | "transparent" | "social" (the split social & advantages widget)
-    variant: Mapped[str] = mapped_column(String(20), nullable=False, default="text")
     eyebrow: Mapped[str] = mapped_column(String(60), nullable=False, default="")
     title: Mapped[str] = mapped_column(String(120), nullable=False)
     text: Mapped[str | None] = mapped_column(String(240))
     href: Mapped[str] = mapped_column(String(300), nullable=False)
-    image_path: Mapped[str | None] = mapped_column(String(255))
-    image_url: Mapped[str | None] = mapped_column(String(500))
-    # "sok" = the minimal flash-sale pill.
-    badge: Mapped[str | None] = mapped_column(String(20))
-    # Free positions for the card's parts on a wide screen, as % of the card:
-    # eyebrow, title, text, button. Null = the default stacked card.
-    layout: Mapped[dict | None] = mapped_column(JSONB)
-    # The full-bleed photo: which way its dark veil runs ("to-t" = dark at the
-    # foot, rising), and its focal point (0–100 %) and zoom (100 = cover).
-    overlay_direction: Mapped[str] = mapped_column(String(10), nullable=False, default="to-t", server_default="to-t")
-    image_focus_x: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
-    image_focus_y: Mapped[int] = mapped_column(Integer, nullable=False, default=50, server_default="50")
-    image_zoom: Mapped[int] = mapped_column(Integer, nullable=False, default=100, server_default="100")
-    # The "social" variant's channel links and button text; null otherwise.
+    # The channel links and the jump button's text (SocialWidget).
     widget: Mapped[dict | None] = mapped_column(JSONB)
     requires: Mapped[str | None] = mapped_column(String(20))
-    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-
-
-class Advantage(Base):
-    """One "Avantajlar" tile, e.g. Kurye · "10:00 – 20:00" · "arası hızlı teslimat"."""
-
-    __tablename__ = "advantages"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    # Key into the frontend's icon set (see ADVANTAGE_ICONS in app.schemas.content).
-    icon: Mapped[str] = mapped_column(String(30), nullable=False, default="badge-check")
-    title: Mapped[str] = mapped_column(String(80), nullable=False)
-    highlight: Mapped[str] = mapped_column(String(40), nullable=False)
-    highlight_label: Mapped[str] = mapped_column(String(120), nullable=False, default="")
-    details: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
-    footnote: Mapped[str | None] = mapped_column(Text)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

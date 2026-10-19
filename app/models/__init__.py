@@ -20,7 +20,7 @@ from app.models.settings import ShopSetting  # noqa: F401
 from app.models.site import BannerPreset, PopupAnnouncement, SiteAnnouncement  # noqa: F401
 from app.models.promotion import FlashSale  # noqa: F401
 from app.models.brand import Brand  # noqa: F401
-from app.models.content import Advantage, HeroSlide, PromoBox  # noqa: F401
+from app.models.content import HeroSlide, PromoBox  # noqa: F401
 from app.models.bank_account import BankAccount  # noqa: F401
 from app.models.b2b import B2BApplication  # noqa: F401
 from app.models.legal import LegalDocument  # noqa: F401
