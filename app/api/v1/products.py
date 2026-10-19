@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
@@ -22,6 +23,7 @@ from app.schemas.catalog import (
     PriceListItem,
     PriceListRequest,
     ProductRead,
+    SultanPuanShowcase,
 )
 from app.services import slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
@@ -29,6 +31,7 @@ from app.services.checkout_engine import stock_source
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
+from app.services.store_parameters import load_parameters
 
 # Read-only. Catalog writes live in admin_catalog.py behind admin auth.
 router = APIRouter(prefix="/products", tags=["products"])
@@ -357,6 +360,48 @@ async def list_bestsellers(
         .limit(limit)
     )
     return await _catalog_view(db, user, list(result.scalars().all()))
+
+
+def _current_retail_price(product: CatalogProductRead):
+    """What the product's card shows a retail buyer, in TRY with KDV: the colour
+    it opens on (the first in stock, else the first), at its live deal price if
+    one beats the regular price. None when that colour has no retail price."""
+    variant = next((v for v in product.variants if v.in_stock), None) or next(iter(product.variants), None)
+    if variant is None:
+        return None
+    price = variant.flash_sale.price if variant.flash_sale else variant.price
+    return price.price_incl_tax if price else None
+
+
+@router.get("/sultanpuan", response_model=SultanPuanShowcase)
+async def list_sultanpuan_products(db: AsyncSession = Depends(get_db)):
+    """The homepage's Sultan Puan row: every published product whose current
+    retail price (see `_current_retail_price`) is inside the standard earning
+    band, bounds included — bought on its own, it earns the rate.
+
+    Band and rate are read live from the parameters ("Parametreler"), so a new
+    band is a new list. Priced as retail whoever asks: Sultan Puan is earned on
+    retail orders only. Cheapest first. With the programme off, no products.
+    """
+    loyalty = (await load_parameters(db)).loyalty
+    showcase = SultanPuanShowcase(
+        enabled=loyalty.enabled,
+        rate_percent=(loyalty.base_rate * 100).quantize(Decimal("0.01")),
+        band_min=loyalty.band_min,
+        band_max=loyalty.band_max,
+    )
+    if not loyalty.enabled:
+        return showcase
+    result = await db.execute(
+        select(Product).where(Product.is_published.is_(True)).options(*_VARIANT_LOADS).order_by(Product.name, Product.id)
+    )
+    priced = [
+        (price, product)
+        for product in await _catalog_view(db, None, list(result.scalars().all()))
+        if (price := _current_retail_price(product)) is not None and loyalty.band_min <= price <= loyalty.band_max
+    ]
+    showcase.products = [product for _, product in sorted(priced, key=lambda pair: pair[0])]
+    return showcase
 
 
 @router.get("/{product_ref}", response_model=CatalogProductDetail)

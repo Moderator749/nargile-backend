@@ -162,6 +162,19 @@ class AdminCatalogRequest(BaseModel):
     segment: SegmentType
 
 
+class SultanPuanShowcase(BaseModel):
+    """The homepage's Sultan Puan row: the live earning rule and the products
+    whose retail price alone falls in its band."""
+
+    enabled: bool
+    # The earn rate as a percentage ("10.00"), and the band of one order's
+    # subtotal it applies to, TRY inclusive.
+    rate_percent: Decimal
+    band_min: Decimal
+    band_max: Decimal
+    products: list[CatalogProductRead] = []
+
+
 class PriceListItem(BaseModel):
     product_id: uuid.UUID
     code: str
