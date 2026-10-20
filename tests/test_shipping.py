@@ -7,12 +7,15 @@ the endpoints run against a stand-in provider.
 """
 
 import logging
+import uuid
+from datetime import date
 
 import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.order import Carrier, Order
+from app.core.config import settings
+from app.models.order import Carrier, Order, ShippingPayer
 from app.models.user import User
 from app.services import shipping
 from app.services.shipping import ShipmentStatus, ShippingError, yurtici
@@ -81,6 +84,8 @@ def test_a_shipment_request_carries_the_parcel_escaped():
     assert "<receiverCustName>Ali &lt;Veli&gt;</receiverCustName>" in body
     assert "<cityName>İstanbul</cityName><townName>Fatih</townName>" in body
     assert "<emailAddress>" not in body  # empty fields are left out
+    # Our reference as its "Sipariş No", which the self-service report finds it by.
+    assert "<specialField1>3$K1#</specialField1>" in body
 
 
 def test_the_answers_are_read():
@@ -113,6 +118,52 @@ def test_cargo_keys_and_tracking_pages():
     assert shipping.tracking_url(Carrier.YURTICI, "") is None
 
 
+def test_the_reference_report_links_a_shipment_by_order_number_and_date():
+    url = yurtici.reference_tracking_url("349063893", "202610190850349E23B8", date(2026, 10, 19))
+    assert url == (
+        "http://selfservis.yurticikargo.com/reports/SswReportsFromParamFields.aspx"
+        "?ssfldvn=3&sskurkod=349063893&refnumber=202610190850349E23B8&date=19.10.2026"
+    )
+    assert yurtici.is_reference_url(url) and not yurtici.is_reference_url(yurtici.tracking_url("1"))
+    assert yurtici.service_url(yurtici.LIVE_URL + "?wsdl") == yurtici.LIVE_URL
+
+
+@pytest.fixture
+def yurtici_accounts(monkeypatch):
+    for name, value in {
+        "YURTICI_MUSTERI_KODU": "349063893",
+        "YURTICI_API_USER_GO": "GO-USER", "YURTICI_API_PASS_GO": "GO-PASS",
+        "YURTICI_API_USER_AO": "AO-USER", "YURTICI_API_PASS_AO": "AO-PASS",
+        "YURTICI_TEST_MODE": False,
+    }.items():
+        monkeypatch.setattr(settings, name, value)
+
+
+def test_the_payer_picks_the_account(yurtici_accounts, monkeypatch):
+    shop = shipping.provider(Carrier.YURTICI, ShippingPayer.SHOP)
+    buyer = shipping.provider(Carrier.YURTICI, ShippingPayer.RECEIVER)
+    assert (shop.user, shop.password, shop.url) == ("GO-USER", "GO-PASS", yurtici.LIVE_URL)
+    assert (buyer.user, buyer.password) == ("AO-USER", "AO-PASS")
+    assert shipping.provider(Carrier.OTHER, ShippingPayer.SHOP) is None
+
+    # Test mode goes to Yurtiçi's test service, whatever the WSDL says.
+    monkeypatch.setattr(settings, "YURTICI_TEST_MODE", True)
+    assert shipping.provider(Carrier.YURTICI).url == yurtici.TEST_URL
+
+    # No AO account: a karşı ödemeli parcel is not put on the shop's.
+    monkeypatch.setattr(settings, "YURTICI_API_USER_AO", "")
+    assert shipping.provider(Carrier.YURTICI, ShippingPayer.RECEIVER) is None
+
+
+def test_the_names_before_the_split_still_count_as_the_go_account(monkeypatch):
+    monkeypatch.setattr(settings, "YURTICI_API_USER", "OLD-USER")
+    monkeypatch.setattr(settings, "YURTICI_API_PASSWORD", "OLD-PASS")
+    monkeypatch.setattr(settings, "YURTICI_CUSTOMER_CODE", "111")
+    assert settings.yurtici_credentials(receiver_pays=False) == ("OLD-USER", "OLD-PASS")
+    assert settings.yurtici_credentials(receiver_pays=True) is None
+    assert settings.yurtici_customer_code == "111"
+
+
 # ── "Kargola" ────────────────────────────────────────────────────────────────
 
 
@@ -120,20 +171,26 @@ class FakeYurtici:
     """Stands in for Yurtiçi's web service; `statuses` is what it will report."""
 
     def __init__(self):
+        # Each call as (operation, the payer whose account it was made on).
+        self.payer = ShippingPayer.SHOP
+        self.calls: list[tuple[str, ShippingPayer]] = []
         self.created: list[shipping.ShipmentRequest] = []
         self.cancelled: list[str] = []
         self.statuses: dict[str, ShipmentStatus] = {}
         self.fail: str | None = None
 
     async def create(self, shipment):
+        self.calls.append(("create", self.payer))
         if self.fail:
             raise ShippingError(self.fail)
         self.created.append(shipment)
 
     async def query(self, cargo_keys):
+        self.calls.append(("query", self.payer))
         return [self.statuses.get(k, ShipmentStatus(cargo_key=k, code="NOP", text="Kargo İşlem Görmemiş.")) for k in cargo_keys]
 
     async def cancel(self, cargo_key):
+        self.calls.append(("cancel", self.payer))
         self.cancelled.append(cargo_key)
         return ShipmentStatus(cargo_key=cargo_key, code="CNL", text="Verisi İptal Edilmiştir.", cancelled=True)
 
@@ -141,7 +198,14 @@ class FakeYurtici:
 @pytest.fixture
 def fake_yurtici(monkeypatch):
     fake = FakeYurtici()
-    monkeypatch.setattr(shipping, "provider", lambda carrier: fake if carrier == Carrier.YURTICI else None)
+    def provider(carrier, payer=ShippingPayer.SHOP):
+        if carrier != Carrier.YURTICI:
+            return None
+        fake.payer = ShippingPayer(payer)
+        return fake
+
+    monkeypatch.setattr(shipping, "provider", provider)
+    monkeypatch.setattr(settings, "YURTICI_MUSTERI_KODU", "349063893")
     return fake
 
 
@@ -227,6 +291,11 @@ async def test_a_web_service_shipment_is_registered_then_tracked(
     key = shipping.next_cargo_key(Order(order_number=order["order_number"]))
     assert (shipped["status"], shipped["cargo_key"], shipped["carrier_status"]) == ("SHIPPED", key, "NOP")
     assert shipped["tracking_code"] is None  # Yurtiçi's number comes once the label is scanned
+    # Followed by our reference until then, on the shop's own account.
+    assert shipped["tracking_url"].startswith(
+        f"http://selfservis.yurticikargo.com/reports/SswReportsFromParamFields.aspx?ssfldvn=3&sskurkod=349063893&refnumber={key}&date="
+    )
+    assert fake_yurtici.calls == [("create", ShippingPayer.SHOP)]
 
     [sent] = fake_yurtici.created
     assert (sent.cargo_key, sent.city, sent.district) == (key, order["shipping_address"]["city"], order["shipping_address"]["district"])
@@ -297,3 +366,30 @@ async def test_shipment_endpoints_are_for_admins_and_web_shipments_only(
         f"/api/v1/admin/orders/{order['id']}/ship", headers=auth_header(admin_user), json={"tracking_code": "1"}
     )
     assert (await client.post(f"{url}/cancel", headers=auth_header(admin_user))).status_code == 409
+
+
+async def test_a_karsi_odemeli_order_ships_on_the_alici_odemeli_account(
+    client: AsyncClient, admin_user: User, customer_user: User, catalog, fake_yurtici: FakeYurtici, db_session: AsyncSession
+):
+    order = await _paid_order(client, admin_user, customer_user, catalog[0])
+    row = await db_session.get(Order, uuid.UUID(order["id"]))
+    row.shipping_payer = ShippingPayer.RECEIVER
+    await db_session.commit()
+
+    h = auth_header(admin_user)
+    resp = await client.post(f"/api/v1/admin/orders/{order['id']}/ship", headers=h, json={"carrier": "YURTICI", "use_api": True})
+    assert resp.status_code == 200, resp.text
+    assert (await client.post(f"/api/v1/admin/orders/{order['id']}/shipment/refresh", headers=h)).status_code == 200
+    assert (await client.post(f"/api/v1/admin/orders/{order['id']}/shipment/cancel", headers=h)).status_code == 200
+    # Registered, refreshed and withdrawn on the AO account only.
+    assert fake_yurtici.calls == [
+        ("create", ShippingPayer.RECEIVER), ("query", ShippingPayer.RECEIVER), ("cancel", ShippingPayer.RECEIVER),
+    ]
+
+    # The sync asks the AO account about it too (other tests' shipments are the GO account's).
+    again = await client.post(f"/api/v1/admin/orders/{order['id']}/ship", headers=h, json={"carrier": "YURTICI", "use_api": True})
+    fake_yurtici.calls.clear()
+    await sync_shipments(db_session)
+    assert ("query", ShippingPayer.RECEIVER) in fake_yurtici.calls
+    synced = await client.get(f"/api/v1/admin/orders/{order['id']}", headers=h)
+    assert synced.json()["carrier_synced_at"] != again.json()["carrier_synced_at"]

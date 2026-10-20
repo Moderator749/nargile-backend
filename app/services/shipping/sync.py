@@ -4,7 +4,8 @@ A shipment registered through the web service has no tracking number until
 the branch scans its label; this fills it in, with the tracking page, and
 keeps the last status (collected, on its way, delivered) on the order for the
 admin to read. Delivered and cancelled shipments are not asked about again,
-nor are any shipped more than SYNC_DAYS ago.
+nor are any shipped more than SYNC_DAYS ago. A shipment is only known to the
+account it was registered on, so each account is asked about its own.
 """
 
 import logging
@@ -13,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.order import Carrier, Order, OrderStatus
+from app.models.order import Carrier, Order, OrderStatus, ShippingPayer
 from app.services import shipping
 from app.services.shipping import yurtici
 
@@ -26,9 +27,6 @@ BATCH = 50
 
 async def sync_shipments(db: AsyncSession) -> int:
     """Ask Yurtiçi about every open shipment; returns how many it answered for."""
-    provider = shipping.provider(Carrier.YURTICI)
-    if provider is None:
-        return 0
     now = datetime.now(timezone.utc)
     orders = (
         await db.scalars(
@@ -42,19 +40,23 @@ async def sync_shipments(db: AsyncSession) -> int:
             )
         )
     ).all()
-    by_key = {o.cargo_key: o for o in orders}
-    keys = list(by_key)
     updated = 0
-    for start in range(0, len(keys), BATCH):
-        try:
-            statuses = await provider.query(keys[start : start + BATCH])
-        except shipping.ShippingError as exc:
-            logger.warning("Yurtiçi sync failed: %s", exc)
-            break
-        for status in statuses:
-            order = by_key.get(status.cargo_key)
-            if order is not None:
-                shipping.apply_status(order, status, now)
-                updated += 1
+    for payer in ShippingPayer:
+        provider = shipping.provider(Carrier.YURTICI, payer)
+        by_key = {o.cargo_key: o for o in orders if o.shipping_payer == payer}
+        if provider is None or not by_key:
+            continue
+        keys = list(by_key)
+        for start in range(0, len(keys), BATCH):
+            try:
+                statuses = await provider.query(keys[start : start + BATCH])
+            except shipping.ShippingError as exc:
+                logger.warning("Yurtiçi sync failed (%s): %s", payer.value, exc)
+                break
+            for status in statuses:
+                order = by_key.get(status.cargo_key)
+                if order is not None:
+                    shipping.apply_status(order, status, now)
+                    updated += 1
     await db.commit()
     return updated

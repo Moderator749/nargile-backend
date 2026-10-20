@@ -35,6 +35,15 @@ settings.PAYTR_MERCHANT_ID = "100000"
 settings.PAYTR_MERCHANT_KEY = "test-merchant-key"
 settings.PAYTR_MERCHANT_SALT = "test-merchant-salt"
 settings.PAYTR_TEST_MODE = True
+# Never Yurtiçi's real accounts, whatever .env holds: the suite runs as an
+# unconfigured shop, and the tests that ship through the web service use a
+# stand-in provider (tests/test_shipping.py).
+for _name in (
+    "YURTICI_MUSTERI_KODU", "YURTICI_API_USER_GO", "YURTICI_API_PASS_GO", "YURTICI_API_USER_AO",
+    "YURTICI_API_PASS_AO", "YURTICI_API_USER", "YURTICI_API_PASSWORD", "YURTICI_CUSTOMER_CODE",
+):
+    setattr(settings, _name, "")
+settings.YURTICI_TEST_MODE = True
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402

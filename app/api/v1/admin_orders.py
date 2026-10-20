@@ -230,6 +230,8 @@ class ShippingIntegrationRead(BaseModel):
     """What "Kargola" can offer: a web service per carrier, and in which mode."""
 
     yurtici_api: bool
+    # The alıcı ödemeli account too: karşı ödemeli orders go through the web service.
+    yurtici_api_receiver: bool
     yurtici_test_mode: bool
     yurtici_customer_code: str | None
 
@@ -305,8 +307,9 @@ async def ship_order(
     now = datetime.now(timezone.utc)
     carrier = payload.carrier or shipping.default_carrier(order)
     code = (payload.tracking_code or "").strip() or None
+    link = None
     if payload.use_api:
-        provider = shipping.provider(carrier)
+        provider = shipping.provider(carrier, order.shipping_payer)
         if provider is None:
             raise HTTPException(status_code=409, detail="Bu kargo firması için web servis bağlantısı yok; takip numarasını elle girin.")
         key = shipping.next_cargo_key(order)
@@ -318,6 +321,9 @@ async def ship_order(
         order.carrier_status, order.carrier_status_text = "NOP", "Gönderi kaydı açıldı; kargo şubeye teslim edilmeyi bekliyor."
         order.carrier_synced_at = now
         code = None  # Yurtiçi's own number comes with the sync, once the label is scanned.
+        order.carrier = carrier
+        # Until then the customer follows it by our reference.
+        link = shipping.reference_tracking_url(order)
     elif order.carrier_status:
         # Shipped by hand after a web-service shipment was withdrawn: its status is not this one's.
         order.carrier_status = order.carrier_status_text = order.carrier_synced_at = None
@@ -325,7 +331,7 @@ async def ship_order(
     if carrier == Carrier.OTHER and not (name or "").strip():
         name = order.freight_company_name
     await order_lifecycle.mark_shipped(
-        db, order, code, carrier=carrier, carrier_name=name, tracking_url=shipping.tracking_url(carrier, code), now=now,
+        db, order, code, carrier=carrier, carrier_name=name, tracking_url=link or shipping.tracking_url(carrier, code), now=now,
     )
     await db.commit()
     await db.refresh(order, attribute_names=["items"])
@@ -343,8 +349,9 @@ async def ship_order(
 async def shipping_integrations(_admin: User = Depends(get_current_admin_user)):
     return ShippingIntegrationRead(
         yurtici_api=settings.yurtici_configured,
+        yurtici_api_receiver=settings.yurtici_receiver_configured,
         yurtici_test_mode=settings.YURTICI_TEST_MODE,
-        yurtici_customer_code=settings.YURTICI_CUSTOMER_CODE or None,
+        yurtici_customer_code=settings.yurtici_customer_code or None,
     )
 
 
@@ -352,7 +359,7 @@ async def _web_shipment(db: AsyncSession, order_id: uuid.UUID) -> tuple[Order, U
     order, user = await _order_with_user(db, order_id)
     if order.status != OrderStatus.SHIPPED or not order.cargo_key:
         raise HTTPException(status_code=409, detail="Bu sipariş web servis üzerinden kargolanmadı")
-    provider = shipping.provider(order.carrier)
+    provider = shipping.provider(order.carrier, order.shipping_payer)
     if provider is None:
         raise HTTPException(status_code=409, detail="Kargo firmasının web servis bağlantısı kapalı")
     return order, user, provider

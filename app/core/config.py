@@ -110,20 +110,51 @@ class Settings(BaseSettings):
     PAYTR_MAX_INSTALLMENT: int = 0
 
     # ── Yurtiçi Kargo web service (shipments, labels, tracking) ─────────────
-    # The web-service user and password Yurtiçi issues with the contract; in
-    # .env only. Until both are set, "Kargola" takes a tracking code by hand
-    # and nothing is sent to Yurtiçi. Their public test pair is YKTEST / YK.
+    # Yurtiçi issues two web-service accounts under one customer code, and the
+    # account a parcel is registered on is who pays for it: GO ("gönderici
+    # ödemeli") for the parcels the shop pays, AO ("alıcı ödemeli") for the
+    # karşı ödemeli ones (Order.shipping_payer). In .env only. Until the GO pair
+    # is set, "Kargola" takes a tracking code by hand and nothing is sent to
+    # Yurtiçi; without the AO pair, karşı ödemeli orders are shipped by hand.
+    # Their public test pair is YKTEST / YK.
+    YURTICI_MUSTERI_KODU: str = ""
+    YURTICI_API_USER_GO: str = ""
+    YURTICI_API_PASS_GO: str = ""
+    YURTICI_API_USER_AO: str = ""
+    YURTICI_API_PASS_AO: str = ""
+    # The service's WSDL; requests go to the same address without "?wsdl".
+    YURTICI_WSDL_URL: str = "https://ws.yurticikargo.com/KOPSWebServices/ShippingOrderDispatcherServices?wsdl"
+    YURTICI_API_LANGUAGE: str = "TR"
+    # True: Yurtiçi's test service, whatever the WSDL URL says, where nothing
+    # is collected or charged. Set 0 to ship for real.
+    YURTICI_TEST_MODE: bool = True
+    # The names before the GO/AO split, still read when the new ones are empty:
+    # the one account they named is the GO one.
     YURTICI_API_USER: str = ""
     YURTICI_API_PASSWORD: str = ""
-    YURTICI_API_LANGUAGE: str = "TR"
-    # True: Yurtiçi's test service, where nothing is collected or charged.
-    YURTICI_TEST_MODE: bool = True
-    # The shop's Yurtiçi customer number ("müşteri kodu"), printed on labels.
     YURTICI_CUSTOMER_CODE: str = ""
+
+    def yurtici_credentials(self, receiver_pays: bool) -> tuple[str, str] | None:
+        """The (user, password) a parcel is registered on: AO when the buyer
+        pays the carriage, else GO. None while that account is not set."""
+        if receiver_pays:
+            user, password = self.YURTICI_API_USER_AO, self.YURTICI_API_PASS_AO
+        else:
+            user = self.YURTICI_API_USER_GO or self.YURTICI_API_USER
+            password = self.YURTICI_API_PASS_GO or self.YURTICI_API_PASSWORD
+        return (user, password) if user and password else None
+
+    @property
+    def yurtici_customer_code(self) -> str:
+        return self.YURTICI_MUSTERI_KODU or self.YURTICI_CUSTOMER_CODE
 
     @property
     def yurtici_configured(self) -> bool:
-        return bool(self.YURTICI_API_USER and self.YURTICI_API_PASSWORD)
+        return self.yurtici_credentials(receiver_pays=False) is not None
+
+    @property
+    def yurtici_receiver_configured(self) -> bool:
+        return self.yurtici_credentials(receiver_pays=True) is not None
 
     @property
     def paytr_configured(self) -> bool:

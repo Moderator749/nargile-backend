@@ -16,9 +16,16 @@ delivery, ISR processed, DLV delivered, CNL cancelled.
 Endpoints, from Yurtiçi's own WSDLs (both advertise plain HTTP, which does not
 answer; HTTPS does). Test credentials are Yurtiçi's public pair, YKTEST / YK.
 Requests are built and responses read here; nothing touches the database.
+
+Each parcel also carries our reference in the "Sipariş No" special field
+(``specialField1``, "3$<ref>#"), which is what Yurtiçi's self-service report
+finds it by: ``reference_tracking_url`` links to that report from the moment
+the shipment is registered, before the branch has scanned anything.
 """
 
 import xml.etree.ElementTree as ET
+from datetime import date
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from xml.sax.saxutils import escape
 
 import httpx
@@ -31,6 +38,10 @@ NAMESPACE = "http://yurticikargo.com.tr/ShippingOrderDispatcherServices"
 
 #: Where a customer follows a Yurtiçi shipment by its gönderi kodu.
 TRACKING_URL = "https://www.yurticikargo.com/Tracking/Detail/{code}"
+#: Yurtiçi's self-service report: a shipment by the value of one of its special fields.
+SELF_SERVICE_URL = "http://selfservis.yurticikargo.com/reports/SswReportsFromParamFields.aspx"
+#: The special field that holds the order number ("Sipariş No").
+ORDER_NO_FIELD = 3
 
 DELIVERED = "DLV"
 CANCELLED = "CNL"
@@ -38,6 +49,25 @@ CANCELLED = "CNL"
 
 def tracking_url(code: str) -> str:
     return TRACKING_URL.format(code=code.strip())
+
+
+def reference_tracking_url(customer_code: str, reference: str, day: date) -> str:
+    """The self-service report for the shipment carrying ``reference`` as its
+    Sipariş No, registered by ``customer_code`` (müşteri kodu) on ``day``."""
+    query = urlencode(
+        {"ssfldvn": ORDER_NO_FIELD, "sskurkod": customer_code, "refnumber": reference, "date": day.strftime("%d.%m.%Y")}
+    )
+    return f"{SELF_SERVICE_URL}?{query}"
+
+
+def is_reference_url(url: str | None) -> bool:
+    return bool(url) and url.startswith(SELF_SERVICE_URL)
+
+
+def service_url(wsdl_url: str) -> str:
+    """Where the operations are posted: the WSDL's address without its query."""
+    parts = urlsplit(wsdl_url.strip())
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
 
 
 def _el(name: str, value: object | None) -> str:
@@ -68,6 +98,7 @@ def create_body(user: str, password: str, language: str, s: ShipmentRequest) -> 
             _el("receiverPhone1", s.phone),
             _el("emailAddress", s.email),
             _el("cargoCount", s.pieces),
+            _el("specialField1", f"{ORDER_NO_FIELD}${s.cargo_key}#"),
             _el("description", (s.note or "")[:200]),
         )
     )
@@ -178,9 +209,8 @@ def parse_cancel(xml: bytes | str, cargo_key: str) -> ShipmentStatus:
 
 
 class YurticiProvider:
-    def __init__(self, user: str, password: str, *, language: str = "TR", test: bool = True):
-        self.user, self.password, self.language = user, password, language
-        self.url = TEST_URL if test else LIVE_URL
+    def __init__(self, user: str, password: str, *, url: str = TEST_URL, language: str = "TR"):
+        self.user, self.password, self.language, self.url = user, password, language, url
 
     async def _post(self, operation: str, body: str) -> bytes:
         try:
