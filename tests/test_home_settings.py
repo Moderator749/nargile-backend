@@ -186,3 +186,37 @@ async def test_the_seo_passage_is_held_to_its_limits(client: AsyncClient, admin_
     resp = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"seo_intro": seo})
     assert resp.status_code == 422
 
+
+
+async def test_the_mobile_settings_are_saved_and_read_back(client: AsyncClient, admin_user: User, cleanup):
+    mobile = {
+        "hero_images": [
+            {"slide_id": 3, "image": "https://cdn.example.com/hero-dikey.jpg"},
+            {"slide_id": 5, "image": " /images/hero-mobil.jpg "},
+        ],
+        "hidden": ["brand_ticker", "kumbara", "kumbara"],
+    }
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"mobile": mobile})
+    assert saved.status_code == 200, saved.text
+
+    public = (await client.get("/api/v1/home/settings")).json()["data"]["mobile"]
+    assert public["hero_images"][1] == {"slide_id": 5, "image": "/images/hero-mobil.jpg"}
+    # A switch sent twice is stored once.
+    assert public["hidden"] == ["brand_ticker", "kumbara"]
+
+
+@pytest.mark.parametrize(
+    "mobile",
+    [
+        {"hidden": ["footer"]},  # not a section a phone can go without
+        {"hero_images": [{"slide_id": 1, "image": ""}]},
+        {"hero_images": [{"slide_id": 1, "image": "javascript:alert(1)"}]},
+        {"hero_images": [{"slide_id": 1, "image": "/a.jpg"}, {"slide_id": 1, "image": "/b.jpg"}]},
+        {"hero_images": [{"slide_id": 0, "image": "/a.jpg"}]},
+    ],
+)
+async def test_the_mobile_settings_are_held_to_their_rules(
+    client: AsyncClient, admin_user: User, cleanup, mobile: dict
+):
+    response = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"mobile": mobile})
+    assert response.status_code == 422

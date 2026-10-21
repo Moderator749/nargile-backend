@@ -220,6 +220,55 @@ class Footer(_Strict):
     warning: _text(200)
 
 
+# ── Mobil Yönetim ────────────────────────────────────────────────────────────
+
+
+def _required_image(value: str) -> str:
+    found = _image(value)
+    if found is None:
+        raise ValueError("Image is required")
+    return found
+
+
+RequiredImage = Annotated[str, StringConstraints(max_length=500), AfterValidator(_required_image)]
+
+#: Homepage sections a phone can go without. Each is hidden below the tablet
+#: breakpoint only; a tablet and a desktop keep it.
+MobileSection = Literal[
+    "perks",  # the payment advantages bar under the hero
+    "promos",  # the two boxes under the slider (channels, advantages)
+    "brand_ticker",  # both brand strips
+    "lules",  # "Lüle Alırken Kararsız Kalacaksınız"
+    "sultanpuan",  # the SultanPuan band
+    "kumbara",  # the Kumbara band
+    "campaigns",  # the campaign boxes under the deals
+    "brand_statement",  # "Sektörde Referans Noktası"
+    "brand_showcase",  # "Markalarımız"
+    "showcase",  # "Premium Ürün Yelpazesi"
+]
+
+
+class MobileHeroImage(_Strict):
+    """A hero slide's portrait photo for phones (2:3 to 4:5), in place of its wide one."""
+
+    slide_id: int = Field(ge=1)
+    image: RequiredImage
+
+
+class Mobile(_Strict):
+    hero_images: list[MobileHeroImage] = Field(default_factory=list, max_length=30)
+    hidden: list[MobileSection] = Field(default_factory=list, max_length=len(MobileSection.__args__))
+
+    @model_validator(mode="after")
+    def _unique(self) -> "Mobile":
+        ids = [entry.slide_id for entry in self.hero_images]
+        if len(ids) != len(set(ids)):
+            raise ValueError("A slide has one mobile image")
+        # The same switch twice is still one switch.
+        self.hidden = list(dict.fromkeys(self.hidden))
+        return self
+
+
 # ── The document ─────────────────────────────────────────────────────────────
 
 
@@ -234,6 +283,7 @@ class HomepageDocument(_Strict):
     advantages: Advantages | None = None
     seo_intro: SeoIntro | None = None
     footer: Footer | None = None
+    mobile: Mobile | None = None
 
 
 class HomepageSettingsRead(BaseModel):
