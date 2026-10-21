@@ -1,11 +1,11 @@
 """Admin-only menu taxonomy: the two-level category tree, product → category
 mapping, and brands (with logos) for the menu and the homepage marquee."""
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy import delete, func, select, update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.deps import get_current_admin_user
+from app.api.deps import get_current_admin_user, get_session_factory
 from app.api.v1.brands import brand_read
 from app.core.database import get_db
 from app.models.brand import Brand
@@ -24,6 +24,7 @@ from app.schemas.taxonomy import (
 from app.services import slug_redirects
 from app.services.categories import memberships, products_in
 from app.services.media import MAX_IMAGE_BYTES, InvalidImage, delete_media, save_image
+from app.services import auto_translate
 
 router = APIRouter(prefix="/admin", tags=["admin-taxonomy"])
 
@@ -103,6 +104,8 @@ async def list_categories_admin(
 @router.post("/categories", response_model=AdminCategoryRead, status_code=status.HTTP_201_CREATED)
 async def create_category(
     payload: CategoryWrite,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -110,6 +113,7 @@ async def create_category(
     await _apply_category(db, category, payload)
     db.add(category)
     await db.commit()
+    background.add_task(auto_translate.translate, "category", category.id, sessions)
     return (await _category_rows(db, [category.id]))[0]
 
 
@@ -117,6 +121,8 @@ async def create_category(
 async def update_category(
     category_id: int,
     payload: CategoryWrite,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -125,6 +131,7 @@ async def update_category(
         raise HTTPException(status_code=404, detail="Category not found")
     await _apply_category(db, category, payload)
     await db.commit()
+    background.add_task(auto_translate.translate, "category", category_id, sessions)
     return (await _category_rows(db, [category_id]))[0]
 
 

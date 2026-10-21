@@ -78,6 +78,18 @@ class Settings(BaseSettings):
     SMS_WEBHOOK_URL: str | None = None
     SMS_WEBHOOK_TOKEN: str | None = None
     SMS_TIMEOUT: int = 15
+    # Claude writes a product's or category's English and Arabic when it is
+    # saved without them (app.services.auto_translate) — as drafts an admin
+    # approves before they are indexed. Off without a key.
+    ANTHROPIC_API_KEY: str | None = None
+    AUTO_TRANSLATE_MODEL: str = "claude-opus-5-5"
+    #: How many rows the background sweep translates per run (every 15 minutes).
+    AUTO_TRANSLATE_SWEEP_LIMIT: int = 20
+    # After writing a translation, tell the storefront to drop its cached
+    # catalog (its /api/revalidate, with this shared secret). Optional: without
+    # it the storefront shows the draft within its day-long cache window.
+    STOREFRONT_REVALIDATE_URL: str | None = None
+    REVALIDATE_SECRET: str | None = None
     # Appended to every campaign SMS: the opt-out the ETK/İYS rules require,
     # e.g. "Ret icin RET yazip 3XXX'e gonderin. B001". Blank: nothing added.
     SMS_OPT_OUT_TEXT: str = ""

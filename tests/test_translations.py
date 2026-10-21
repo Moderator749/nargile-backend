@@ -101,7 +101,7 @@ async def test_a_category_takes_translations(client: AsyncClient, admin_user: Us
     }
     saved = await client.put(f"/api/v1/admin/categories/{cid}", headers=h, json=body)
     assert saved.status_code == 200, saved.text
-    assert saved.json()["translations"]["ar"] == {"name": "منظمات حرارة الشيشة", "description": None}
+    assert saved.json()["translations"]["ar"] == {"name": "منظمات حرارة الشيشة", "description": None, "draft": False, "source": None}
 
     turkish = next(c for c in (await client.get("/api/v1/categories")).json() if c["id"] == cid)
     english = next(c for c in (await client.get("/api/v1/categories", params={"lang": "en"})).json() if c["id"] == cid)

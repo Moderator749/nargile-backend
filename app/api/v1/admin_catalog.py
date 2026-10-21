@@ -2,14 +2,15 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_admin_user
+from app.api.deps import get_current_admin_user, get_session_factory
 from app.core.database import get_db
 from app.models.catalog import (
+    Category,
     CurrencyType,
     Inventory,
     Product,
@@ -34,8 +35,29 @@ from app.schemas.admin import (
 )
 from app.schemas.product_sheet import ProductSheetRead, ProductSheetWrite
 from app.services import product_blueprint
+from app.services import auto_translate
 
 router = APIRouter(prefix="/admin", tags=["admin-catalog"])
+
+
+# ── Translation drafts ("Çeviri Onayları") ───────────────────────────────────
+
+
+@router.get("/translations/drafts")
+async def translation_drafts(
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """What Claude has translated and nobody has approved yet: each row with
+    its draft languages, products first. Their English and Arabic pages are
+    shown but not indexed until approved in "Çeviriler"."""
+    rows: list[dict] = []
+    for kind, model in (("product", Product), ("category", Category)):
+        for row in (await db.scalars(select(model).where(model.translations.isnot(None)).order_by(model.name))).all():
+            drafts = [lang for lang, t in (row.translations or {}).items() if (t or {}).get("draft")]
+            if drafts:
+                rows.append({"kind": kind, "id": str(row.id), "name": row.name, "languages": sorted(drafts)})
+    return rows
 
 
 # ── The product sheet ("Ürün Ekle / Düzenle") ────────────────────────────────
@@ -43,6 +65,8 @@ router = APIRouter(prefix="/admin", tags=["admin-catalog"])
 @router.post("/products/sheet", response_model=ProductSheetRead, status_code=status.HTTP_201_CREATED)
 async def create_product_sheet(
     payload: ProductSheetWrite,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -53,6 +77,8 @@ async def create_product_sheet(
     except product_blueprint.SheetError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     await db.commit()
+    # English and Arabic it lacks, written by Claude as drafts after the answer.
+    background.add_task(auto_translate.translate, "product", product.id, sessions)
     return await _read_sheet(db, product.id)
 
 
@@ -70,6 +96,8 @@ async def read_product_sheet(
 async def update_product_sheet(
     product_id: uuid.UUID,
     payload: ProductSheetWrite,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -81,6 +109,7 @@ async def update_product_sheet(
     except product_blueprint.SheetError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     await db.commit()
+    background.add_task(auto_translate.translate, "product", product_id, sessions)
     return await _read_sheet(db, product_id)
 
 

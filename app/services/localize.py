@@ -8,17 +8,18 @@ the translation lacks falls back to the Turkish, so a page never goes blank.
 
 Every answer says which languages the row is really translated into
 (`locales`, Turkish always first), so the storefront indexes and links an
-English or Arabic page only where one exists.
+English or Arabic page only where one exists. A draft (machine-written, not
+yet reviewed) is shown but not counted: its page stays noindex until approved.
 """
 
 from typing import Any
 
-from app.schemas.i18n import TRANSLATED_LOCALES
+from app.schemas.i18n import TRANSLATED_LOCALES, is_live
 
 
 def locales_of(translations: dict | None) -> list[str]:
-    """"tr", then each language the row has a translated name in."""
-    return ["tr", *(lang for lang in TRANSLATED_LOCALES if ((translations or {}).get(lang) or {}).get("name"))]
+    """"tr", then each language the row has a reviewed translation in."""
+    return ["tr", *(lang for lang in TRANSLATED_LOCALES if is_live((translations or {}).get(lang)))]
 
 
 def _translation(translations: dict | None, lang: str | None) -> dict | None:

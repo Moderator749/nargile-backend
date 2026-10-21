@@ -11,6 +11,7 @@ from app.core.config import settings
 from app.core.database import async_session
 from app.core.media_rewrite import LocalMediaRewriteMiddleware
 from app.core.trailing_slash import StripTrailingSlashMiddleware
+from app.services import auto_translate
 from app.services.order_tasks import cancel_expired_pending_orders
 from app.services.shipping.sync import sync_shipments
 
@@ -39,11 +40,23 @@ async def _run_shipment_sync() -> None:
             logger.exception("Shipment sync failed")
 
 
+async def _run_translation_sweep() -> None:
+    """Scheduled job: English and Arabic drafts for what was saved without them."""
+    try:
+        count = await auto_translate.sweep()
+        if count:
+            logger.info("Translation sweep: %d row(s) drafted.", count)
+    except Exception:
+        logger.exception("Translation sweep failed")
+
+
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     scheduler = AsyncIOScheduler()
     scheduler.add_job(_run_sla_check, "interval", hours=1, id="sla_check")
     scheduler.add_job(_run_shipment_sync, "interval", hours=1, id="shipment_sync")
+    if auto_translate.enabled():
+        scheduler.add_job(_run_translation_sweep, "interval", minutes=15, id="translation_sweep")
     scheduler.start()
     logger.info("SLA scheduler started (every 1 hour).")
     yield
