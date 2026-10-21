@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 from app.core.rich_text import RICH_TEXT_MAX, to_rich_html
 from app.core.slugs import slugify  # noqa: F401 (re-exported to the admin API)
 from app.schemas.catalog import IMAGE_URL_PATTERN
+from app.schemas.i18n import CategoryTranslations
 
 _SLUG = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
@@ -38,6 +39,9 @@ class CategoryWrite(BaseModel):
     # The page's introduction, HTML from the panel's editor (cleaned here);
     # blank = the storefront's built-in copy.
     description: str | None = Field(default=None, max_length=RICH_TEXT_MAX)
+    # The name and introduction in English and Arabic. Left out = the stored
+    # ones stay.
+    translations: CategoryTranslations | None = None
 
     @field_validator("description")
     @classmethod
@@ -77,6 +81,7 @@ class AdminCategoryRead(BaseModel):
     is_active: bool
     image_url: str | None
     description: str | None = None
+    translations: CategoryTranslations | None = None
     # Products listed directly under this category (not its subcategories),
     # whether it is their primary category or one more.
     product_count: int

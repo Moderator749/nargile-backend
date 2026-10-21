@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.models.brand import Brand
 from app.models.catalog import Category, Product, ProductCategory
 from app.models.user import User
+from app.schemas import i18n
 from app.schemas.taxonomy import (
     AdminCategoryRead,
     BrandRead,
@@ -47,7 +48,8 @@ async def _category_rows(db: AsyncSession, ids: list[int] | None = None) -> list
     return [
         AdminCategoryRead(
             id=c.id, name=c.name, slug=c.slug, parent_id=c.parent_id, sort_order=c.sort_order,
-            is_active=c.is_active, image_url=c.image_url, description=c.description, product_count=n
+            is_active=c.is_active, image_url=c.image_url, description=c.description,
+            translations=c.translations, product_count=n
         )
         for c, n in (await db.execute(stmt)).all()
     ]
@@ -87,6 +89,8 @@ async def _apply_category(db: AsyncSession, category: Category, payload: Categor
     # Only when sent: a caller that predates the field must not wipe it.
     if "description" in payload.model_fields_set:
         category.description = payload.description
+    if "translations" in payload.model_fields_set:
+        category.translations = i18n.stored(payload.translations)
 
 
 @router.get("/categories", response_model=list[AdminCategoryRead])

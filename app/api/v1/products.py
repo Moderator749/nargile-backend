@@ -25,7 +25,8 @@ from app.schemas.catalog import (
     ProductRead,
     SultanPuanShowcase,
 )
-from app.services import slug_redirects
+from app.schemas.i18n import Locale
+from app.services import localize, slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
 from app.services.checkout_engine import stock_source
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
@@ -54,9 +55,16 @@ def _escape_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def apply_catalog_filters(stmt, *, category: str | None, q: str | None, published_only: bool = False):
+#: `lang` on the storefront's reads: the answer in English or Arabic (app.services.localize).
+LANG = Query(None, description="en | ar — the product text in that language; Turkish when absent")
+
+
+def apply_catalog_filters(
+    stmt, *, category: str | None, q: str | None, published_only: bool = False, lang: str | None = None
+):
     """Filter by category slug (a parent includes its subcategories) and
-    Turkish-aware free-text search.
+    Turkish-aware free-text search — in English or Arabic too, with `lang`, so
+    "hookah bowl" finds the Lüleler.
 
     `published_only` is for the storefront; the admin lists see every product,
     published or not, because that is where publishing is switched.
@@ -71,7 +79,12 @@ def apply_catalog_filters(stmt, *, category: str | None, q: str | None, publishe
             or_(
                 *(
                     _folded(col).like(pattern, escape="\\")
-                    for col in (Product.name, Product.brand, Product.base_code)
+                    for col in (
+                        Product.name,
+                        Product.brand,
+                        Product.base_code,
+                        *([Product.translations[lang]["name"].astext] if lang in ("en", "ar") else []),
+                    )
                 )
             )
         )
@@ -134,7 +147,7 @@ def _flash_sale_for(price: CatalogPrice | None, sale: FlashSale | None) -> Flash
 
 
 async def _catalog_view(
-    db: AsyncSession, user: User | None, products: list[Product]
+    db: AsyncSession, user: User | None, products: list[Product], lang: str | None = None
 ) -> list[CatalogProductRead]:
     """Price products for the caller's segment (RETAIL when anonymous), matching
     what checkout will charge, including live flash sales.
@@ -180,7 +193,8 @@ async def _catalog_view(
         # The labels the live variants carry, so the picker and the pills agree
         # even if a colour was retired after the product's own list was written.
         view["color_names"] = [v.color_name for v in variants if v.color_name]
-        views.append(CatalogProductRead(**view, variants=variants))
+        # In the caller's language, saying which languages it has.
+        views.append(CatalogProductRead(**localize.product_view(view, product.translations, lang), variants=variants))
     return views
 
 
@@ -198,6 +212,7 @@ async def list_products(
     q: str | None = Query(None, max_length=100, description="Search name, brand or code"),
     ids: list[uuid.UUID] | None = Query(None, max_length=100, description="Only these products"),
     sort: Literal["name", "newest"] = Query("name", description="By name, or the newest first"),
+    lang: Locale | None = LANG,
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -207,7 +222,7 @@ async def list_products(
     "Benzer Ürünler", re-priced for a signed-in viewer). `sort=newest` is the
     homepage's "Yeni Gelenler": the latest added first — the imported catalog
     shares one creation time, so among those it falls back on the name."""
-    stmt = apply_catalog_filters(select(Product), category=category, q=q, published_only=True)
+    stmt = apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang)
     if ids:
         stmt = stmt.where(Product.id.in_(ids))
     order = (Product.name, Product.id)
@@ -216,7 +231,7 @@ async def list_products(
     result = await db.execute(
         stmt.options(*_VARIANT_LOADS).order_by(*order).offset(skip).limit(limit)
     )
-    return await _catalog_view(db, user, list(result.scalars().all()))
+    return await _catalog_view(db, user, list(result.scalars().all()), lang)
 
 
 # Which price groups a B2B account may put in a catalogue for its own customers:
@@ -299,6 +314,7 @@ async def build_price_list(
 @router.get("/flash-sales", response_model=list[CatalogProductRead])
 async def list_flash_sale_products(
     limit: int = Query(12, ge=1, le=50),
+    lang: Locale | None = LANG,
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -322,7 +338,7 @@ async def list_flash_sale_products(
         .options(*_VARIANT_LOADS)
         .limit(limit)
     )
-    return await _catalog_view(db, user, list(result.scalars().all()))
+    return await _catalog_view(db, user, list(result.scalars().all()), lang)
 
 
 # Orders that count as sold: approved (paid) or shipped. Pending, cancelled and
@@ -334,6 +350,7 @@ SOLD_STATUSES = (OrderStatus.APPROVED, OrderStatus.SHIPPED)
 @router.get("/bestsellers", response_model=list[CatalogProductRead])
 async def list_bestsellers(
     limit: int = Query(10, ge=1, le=50),
+    lang: Locale | None = LANG,
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -359,7 +376,7 @@ async def list_bestsellers(
         .options(*_VARIANT_LOADS)
         .limit(limit)
     )
-    return await _catalog_view(db, user, list(result.scalars().all()))
+    return await _catalog_view(db, user, list(result.scalars().all()), lang)
 
 
 def _current_retail_price(product: CatalogProductRead):
@@ -374,7 +391,7 @@ def _current_retail_price(product: CatalogProductRead):
 
 
 @router.get("/sultanpuan", response_model=SultanPuanShowcase)
-async def list_sultanpuan_products(db: AsyncSession = Depends(get_db)):
+async def list_sultanpuan_products(lang: Locale | None = LANG, db: AsyncSession = Depends(get_db)):
     """The homepage's Sultan Puan row: every published product whose current
     retail price (see `_current_retail_price`) is inside the standard earning
     band, bounds included — bought on its own, it earns the rate.
@@ -397,7 +414,7 @@ async def list_sultanpuan_products(db: AsyncSession = Depends(get_db)):
     )
     priced = [
         (price, product)
-        for product in await _catalog_view(db, None, list(result.scalars().all()))
+        for product in await _catalog_view(db, None, list(result.scalars().all()), lang)
         if (price := _current_retail_price(product)) is not None and loyalty.band_min <= price <= loyalty.band_max
     ]
     showcase.products = [product for _, product in sorted(priced, key=lambda pair: pair[0])]
@@ -407,6 +424,7 @@ async def list_sultanpuan_products(db: AsyncSession = Depends(get_db)):
 @router.get("/{product_ref}", response_model=CatalogProductDetail)
 async def get_product(
     product_ref: str = Path(max_length=255, description="The product's slug, or its id"),
+    lang: Locale | None = LANG,
     user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -447,7 +465,7 @@ async def get_product(
 
     # One view call, so every card on the page is priced against the same segment
     # and the same rates.
-    views = await _catalog_view(db, user, [product, *pinned])
+    views = await _catalog_view(db, user, [product, *pinned], lang)
     listed = memberships().subquery()
     linked = set(
         (await db.execute(select(listed.c.category_id).where(listed.c.product_id == product.id))).scalars()

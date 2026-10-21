@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.catalog import Category, Product
 from app.schemas.catalog import CategoryRead
-from app.services import slug_redirects
+from app.schemas.i18n import Locale
+from app.services import localize, slug_redirects
 from app.services.categories import memberships
 
 # Public, read-only. Category writes belong in the admin API.
@@ -21,7 +22,11 @@ async def _visible(db: AsyncSession) -> list[Category]:
 
 
 @router.get("/by-slug/{slug}", response_model=CategoryRead)
-async def category_by_slug(slug: str = Path(max_length=180), db: AsyncSession = Depends(get_db)):
+async def category_by_slug(
+    slug: str = Path(max_length=180),
+    lang: Locale | None = Query(None, description="en | ar — its name in that language"),
+    db: AsyncSession = Depends(get_db),
+):
     """One visible category by its slug — or by a slug the admin has since
     changed, answered under its current one, so the category page can send the
     visitor on for good. 404 when neither names a visible category."""
@@ -33,11 +38,14 @@ async def category_by_slug(slug: str = Path(max_length=180), db: AsyncSession = 
         found = next((c for c in visible if c.id == renamed), None) if renamed else None
     if found is None:
         raise HTTPException(status_code=404, detail="Category not found")
-    return found
+    return localize.category_view(CategoryRead.model_validate(found), found.translations, lang)
 
 
 @router.get("", response_model=list[CategoryRead])
-async def list_categories(db: AsyncSession = Depends(get_db)):
+async def list_categories(
+    lang: Locale | None = Query(None, description="en | ar — the names in that language"),
+    db: AsyncSession = Depends(get_db),
+):
     """The active categories. A subcategory of an inactive parent is hidden with
     it, so switching a parent off takes its whole branch out of the menus.
 
@@ -79,5 +87,5 @@ async def list_categories(db: AsyncSession = Depends(get_db)):
         view = CategoryRead.model_validate(c)
         view.product_count = len(products)
         view.updated_at = max((edited[p] for p in products), default=None)
-        out.append(view)
+        out.append(localize.category_view(view, c.translations, lang))
     return out

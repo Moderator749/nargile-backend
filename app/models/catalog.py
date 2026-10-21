@@ -65,6 +65,10 @@ class Category(Base):
     # "Devamını Oku") and its meta description's source; null = the
     # storefront's built-in copy for the slug, if any.
     description: Mapped[str | None] = mapped_column(Text)
+    # The name and description in the storefront's other languages:
+    # {"en": {"name", "description"}, "ar": {...}} (app.schemas.i18n). Missing =
+    # the Turkish above.
+    translations: Mapped[dict | None] = mapped_column(JSONB)
 
     parent: Mapped["Category | None"] = relationship(
         remote_side="Category.id", back_populates="children"
@@ -94,6 +98,10 @@ class Product(Base):
     description: Mapped[str | None] = mapped_column(Text)
     meta_title: Mapped[str | None] = mapped_column(String(70))
     meta_description: Mapped[str | None] = mapped_column(String(160))
+    # The four fields above in the storefront's other languages:
+    # {"en": {"name", "description", "meta_title", "meta_description"}, "ar": {...}}
+    # (app.schemas.i18n). Missing = the Turkish.
+    translations: Mapped[dict | None] = mapped_column(JSONB)
     category_id: Mapped[int | None] = mapped_column(ForeignKey("categories.id"))
     tags: Mapped[list | None] = mapped_column(JSONB, default=list)
     # The cover photo: always the first of `image_urls`, kept here so cards,

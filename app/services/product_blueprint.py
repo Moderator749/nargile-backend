@@ -42,6 +42,7 @@ from app.models.user import CustomerSegment, SegmentType
 from app.services import slug_redirects
 from app.services.pricing_engine import pick_price_row
 from app.models.order import OrderItem
+from app.schemas import i18n
 from app.schemas.product_sheet import (
     CrossSellCard,
     ProductSheetRead,
@@ -202,6 +203,8 @@ async def save(
         product.slug = payload.slug
     for field in PRODUCT_FIELDS:
         setattr(product, field, getattr(payload, field))
+    if "translations" in payload.model_fields_set:
+        product.translations = i18n.stored(payload.translations)
     # The cover stays in `image_url`, where every one-photo reader looks.
     product.image_url = payload.image_urls[0] if payload.image_urls else None
     for field in RULE_FIELDS:
@@ -690,6 +693,7 @@ def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead
         category_ids.insert(0, product.category_id)
     fields["category_ids"] = category_ids
     fields["slug"] = product.slug
+    fields["translations"] = product.translations
     return ProductSheetRead(
         id=product.id,
         related_product_ids=[c.related_product_id for c in sorted(product.cross_sells, key=lambda c: c.position)],

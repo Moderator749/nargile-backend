@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+
 from app.models.catalog import CurrencyType
 from app.models.user import SegmentType
 
@@ -23,6 +24,9 @@ class CategoryRead(BaseModel):
     image_url: str | None = None
     # The page's introduction, as the admin wrote it; null = none of its own.
     description: str | None = None
+    # The languages it is translated into, Turkish first (?lang= answers in one
+    # of them; app.services.localize).
+    locales: list[str] = ["tr"]
     # Published products listed under it or any of its subcategories (each
     # once), and the newest `updated_at` among them: the sitemap lists a
     # category with products, dated by its newest one. Only the public list
@@ -128,6 +132,10 @@ class CatalogVariantRead(BaseModel):
 
 class CatalogProductRead(ProductRead):
     variants: list[CatalogVariantRead] = []
+    # The languages it is translated into, Turkish first: the storefront links
+    # and indexes an English or Arabic page only where one exists. With ?lang=
+    # the text fields above are already in that language (app.services.localize).
+    locales: list[str] = ["tr"]
 
 
 class CatalogProductDetail(CatalogProductRead):

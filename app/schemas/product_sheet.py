@@ -26,6 +26,7 @@ from app.core.slugs import PRODUCT_SLUG, PRODUCT_SLUG_MAX
 from app.models.catalog import CurrencyType
 from app.models.user import SegmentType
 from app.schemas.catalog import IMAGE_URL_PATTERN
+from app.schemas.i18n import ProductTranslations
 
 _IMAGE_URL = re.compile(IMAGE_URL_PATTERN)
 # youtu.be/ID, /watch?v=ID, /embed/ID, /shorts/ID — the id is what is stored.
@@ -204,6 +205,9 @@ class ProductSheetWrite(BaseModel):
     meta_title: str | None = Field(default=None, max_length=70)
     # Override its <meta name="description">; blank falls back to `description`.
     meta_description: str | None = Field(default=None, max_length=160)
+    # The four fields above in English and Arabic ("Çeviriler"). Left out = the
+    # stored ones stay (a caller that predates them must not wipe them).
+    translations: ProductTranslations | None = None
     # The page's address, /product/<slug>. Blank keeps the current one (a new
     # product's comes from its name). Changing it leaves the old address
     # redirecting here, so links already out there keep working.
