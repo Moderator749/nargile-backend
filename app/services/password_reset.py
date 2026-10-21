@@ -16,9 +16,9 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import hash_password
+from app.core.security import ADMIN_PASSWORD_MIN, hash_password
 from app.models.notification import EMAIL, SMS, PasswordResetToken
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.services.notify import dispatch
 from app.services.notify.phone import normalize_tr_mobile
 
@@ -168,17 +168,26 @@ async def _sms_token_row(db: AsyncSession, phone: str, code: str) -> PasswordRes
     return None
 
 
+class PasswordTooShort(ValueError):
+    """An admin account's new password is under ADMIN_PASSWORD_MIN; nothing was changed."""
+
+
 async def reset_password(
     db: AsyncSession, *, new_password: str, token: str | None = None, phone: str | None = None, code: str | None = None
 ) -> bool:
     """Set the password with a live secret and spend it (and every other open
-    one of the user). False when the secret is wrong, used or expired. Commits."""
+    one of the user). False when the secret is wrong, used or expired;
+    PasswordTooShort, with the secret left unspent, when an admin account's
+    new password is shorter than its minimum. Commits."""
     row = await link_token_row(db, token) if token else await _sms_token_row(db, phone or "", code or "")
     if row is None:
         return False
     user = await db.get(User, row.user_id)
     if user is None or not user.is_active:
         return False
+    # Customers may choose six characters; an account that runs the shop may not.
+    if user.role in (UserRole.SUPER_ADMIN, UserRole.ADMIN) and len(new_password) < ADMIN_PASSWORD_MIN:
+        raise PasswordTooShort
     user.hashed_password = hash_password(new_password)
     # Every session from before the reset ends with it: whoever had the old
     # password, or a token, is out.

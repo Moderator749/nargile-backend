@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import ADMIN_PASSWORD_MIN
 from app.schemas.communication import PasswordResetCheck, PasswordResetConfirm, PasswordResetRequest
 from app.services import password_reset
 
@@ -52,9 +53,15 @@ async def check_link(payload: PasswordResetCheck, db: AsyncSession = Depends(get
 async def confirm_reset(payload: PasswordResetConfirm, request: Request, db: AsyncSession = Depends(get_db)):
     if payload.code:
         _throttle(request)  # six digits: guessing them is what the limit is for
-    done = await password_reset.reset_password(
-        db, new_password=payload.new_password, token=payload.token, phone=payload.phone, code=payload.code
-    )
+    try:
+        done = await password_reset.reset_password(
+            db, new_password=payload.new_password, token=payload.token, phone=payload.phone, code=payload.code
+        )
+    except password_reset.PasswordTooShort:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Yönetici hesaplarında şifre en az {ADMIN_PASSWORD_MIN} karakter olmalı.",
+        ) from None
     if not done:
         raise HTTPException(status_code=400, detail="Bağlantı ya da kod geçersiz, kullanılmış veya süresi dolmuş.")
     return {"detail": "Şifreniz değiştirildi. Yeni şifrenizle giriş yapabilirsiniz."}

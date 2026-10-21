@@ -7,6 +7,7 @@ read and tested without a mail server.
 from decimal import Decimal
 
 from app.core.config import settings
+from app.core.money import format_tl
 from app.models.order import Carrier, Order, ShippingMethod, ShippingPayer
 from app.services.mailer import Mail
 
@@ -19,10 +20,8 @@ _TD = "border-bottom:1px solid #e8e8ed;padding:6px 4px"
 
 
 def _money(amount: Decimal | str) -> str:
-    """₺1.234,56 — Turkish grouping, written out without a locale dependency."""
-    whole, _, cents = f"{Decimal(amount):.2f}".partition(".")
-    grouped = f"{int(whole):,}".replace(",", ".")
-    return f"₺{grouped},{cents}"
+    """1.234,56 TL, as the storefront writes it."""
+    return format_tl(amount)
 
 
 def order_shipped(

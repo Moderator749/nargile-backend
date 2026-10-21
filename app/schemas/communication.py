@@ -3,6 +3,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.core.security import CUSTOMER_PASSWORD_MIN
 from app.services.sms_settings import ORDER_PLACED, ORDER_SHIPPED, unknown_placeholders
 
 Channel = Literal["email", "sms"]
@@ -24,7 +25,7 @@ class PasswordResetConfirm(BaseModel):
     token: str | None = Field(default=None, max_length=200)  # from the e-mailed link
     phone: str | None = Field(default=None, max_length=30)  # with the SMS code
     code: str | None = Field(default=None, pattern=r"^\s*\d{6}\s*$")
-    new_password: str = Field(min_length=8, max_length=128)
+    new_password: str = Field(min_length=CUSTOMER_PASSWORD_MIN, max_length=128)
 
     @model_validator(mode="after")
     def _one_way(self) -> "PasswordResetConfirm":

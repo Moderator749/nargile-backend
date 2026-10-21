@@ -126,6 +126,16 @@ def test_database():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def fresh_login_limit():
+    """Failed logins are counted in-process: no test inherits another's."""
+    from app.api.v1 import auth as auth_api
+
+    auth_api._failures.clear()
+    yield
+    auth_api._failures.clear()
+
+
 @pytest.fixture
 async def db_session():
     engine = create_async_engine(settings.DATABASE_URL, echo=False)

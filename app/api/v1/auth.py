@@ -1,4 +1,6 @@
+import time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -105,10 +107,33 @@ async def register(payload: RegistrationCreate, db: AsyncSession = Depends(get_d
     return user
 
 
+# Failed logins per account name per window, so guessing a password — six
+# characters is enough for a customer — stays slow. Counted per name, not per
+# client address: the API sits behind the storefront's proxy, where one
+# address is many shoppers. A success clears the count. In-process: one per
+# worker, which is enough to blunt a script.
+LOGIN_FAILURES, LOGIN_WINDOW = 10, 15 * 60
+_failures: dict[str, deque[float]] = defaultdict(deque)
+
+
+def _recent_failures(name: str, now: float) -> deque[float]:
+    failures = _failures[name]
+    while failures and now - failures[0] > LOGIN_WINDOW:
+        failures.popleft()
+    return failures
+
+
 @router.post("/login", response_model=Token)
 async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     """Either the e-mail address or the username, both matched case-insensitively."""
     given = payload.email.strip().lower()
+    now = time.monotonic()
+    failures = _recent_failures(given, now)
+    if len(failures) >= LOGIN_FAILURES:
+        raise HTTPException(
+            status_code=429,
+            detail="Çok fazla hatalı giriş denemesi. Lütfen 15 dakika sonra tekrar deneyin.",
+        )
     result = await db.execute(
         select(User)
         .where(or_(func.lower(User.email) == given, func.lower(User.username) == given))
@@ -117,7 +142,9 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     )
     user = result.scalars().first()
     if not user or not verify_password(payload.password, user.hashed_password):
+        failures.append(now)
         raise HTTPException(status_code=401, detail="Invalid credentials")
+    _failures.pop(given, None)
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
 

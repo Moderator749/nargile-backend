@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.core.money import format_tl
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
 from app.models.order import VOID_STATUSES, Order, OrderStatus
 from app.models.user import User
@@ -235,6 +236,6 @@ async def award_for_paid_order(db: AsyncSession, order: Order, now: datetime) ->
                 user_id=order.user_id, order_id=order.id, amount=bonus,
                 transaction_type=TransactionType.EARNED, source=PointSource.KUMBARA,
                 created_at=now, expires_at=now + POINT_LIFETIME,
-                note=f"Yıllık Sultan Puan bonusu · son {loyalty.annual_period_days} günde ₺{progress.spent:,.2f}",
+                note=f"Yıllık Sultan Puan bonusu · son {loyalty.annual_period_days} günde {format_tl(progress.spent)}",
             ))
     return standard, bonus

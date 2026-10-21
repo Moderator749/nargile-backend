@@ -8,6 +8,13 @@ from app.core.config import settings
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+#: The shortest password a customer may choose (registration, "Şifremi
+#: unuttum"). An admin account, which can change prices and orders, keeps the
+#: stronger minimum whenever its password is set.
+CUSTOMER_PASSWORD_MIN = 6
+ADMIN_PASSWORD_MIN = 8
+
+
 def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 

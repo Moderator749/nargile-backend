@@ -43,6 +43,7 @@ from typing import Annotated, Any, Union
 from pydantic import BaseModel, Discriminator, Field, Tag, field_validator, model_validator
 
 from app.core.countries import TURKEY
+from app.core.security import CUSTOMER_PASSWORD_MIN
 from app.core.tr_identity import normalize_tax_id, normalize_tckn, normalize_vkn
 from app.models.user import (
     SELECTABLE_ACCOUNT_TYPES,
@@ -130,7 +131,7 @@ class RegistrationCreate(BaseModel):
 
     account_type: AccountType = AccountType.INDIVIDUAL
     email: str = Field(max_length=255)
-    password: str = Field(min_length=8, max_length=128)
+    password: str = Field(min_length=CUSTOMER_PASSWORD_MIN, max_length=128)
     # Kullanıcı adı: optional, and a second way to log in once chosen.
     username: str | None = Field(default=None, min_length=3, max_length=30, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{1,28}[A-Za-z0-9]$")
     full_name: str | None = Field(default=None, max_length=150)  # İsim soyisim (bireysel)
