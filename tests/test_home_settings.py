@@ -194,7 +194,7 @@ async def test_the_mobile_settings_are_saved_and_read_back(client: AsyncClient, 
             {"slide_id": 3, "image": "https://cdn.example.com/hero-dikey.jpg"},
             {"slide_id": 5, "image": " /images/hero-mobil.jpg "},
         ],
-        "hidden": ["brand_ticker", "kumbara", "kumbara"],
+        "hidden": ["brand_ticker", "kumbara", "kumbara", "games"],
     }
     saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"mobile": mobile})
     assert saved.status_code == 200, saved.text
@@ -202,7 +202,7 @@ async def test_the_mobile_settings_are_saved_and_read_back(client: AsyncClient, 
     public = (await client.get("/api/v1/home/settings")).json()["data"]["mobile"]
     assert public["hero_images"][1] == {"slide_id": 5, "image": "/images/hero-mobil.jpg"}
     # A switch sent twice is stored once.
-    assert public["hidden"] == ["brand_ticker", "kumbara"]
+    assert public["hidden"] == ["brand_ticker", "kumbara", "games"]
 
 
 @pytest.mark.parametrize(
@@ -223,7 +223,7 @@ async def test_the_mobile_settings_are_held_to_their_rules(
 
 
 async def test_the_sections_order_is_saved_and_read_back(client: AsyncClient, admin_user: User, cleanup):
-    order = ["about", "deals", "perks", "kumbara"]
+    order = ["about", "games", "deals", "perks", "kozlukler", "kumbara"]
     saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"order": order})
     assert saved.status_code == 200, saved.text
     assert (await client.get("/api/v1/home/settings")).json()["data"]["order"] == order
@@ -248,6 +248,7 @@ async def test_the_top_brand_ticker_follows_an_older_brands_switch(client: Async
     await client.put("/api/v1/admin/home/settings", headers=h, json={"sections": {"brands": False}})
     sections = (await client.get("/api/v1/home/settings")).json()["data"]["sections"]
     assert (sections["brands"], sections["brands_top"], sections["kumbara"]) == (False, False, True)
+    assert (sections["kozlukler"], sections["games"]) == (True, True)  # new bands start on
 
     await client.put("/api/v1/admin/home/settings", headers=h, json={"sections": {"brands": False, "brands_top": True}})
     sections = (await client.get("/api/v1/home/settings")).json()["data"]["sections"]

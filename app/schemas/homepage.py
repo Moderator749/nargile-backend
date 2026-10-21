@@ -81,6 +81,8 @@ class Sections(_Strict):
     promos: bool = True  # "Sektörde Referans Noktası" (the key is older than the section)
     brands: bool = True  # the brand ticker under the statement
     brand_showcase: bool = True  # "Markalarımız"
+    kozlukler: bool = True  # "Közlükler": the dark heat-management band
+    games: bool = True  # "Oyun & Eğlence": the game-table band
     showcase: bool = True  # "Premium Ürün Yelpazesi" (the category bento)
     advantages: bool = True  # retired: the "Hacim büyür" grid is on no page now
     about: bool = True  # the homepage's closing passage ("Alt SEO Metni", seo_intro)
@@ -102,7 +104,7 @@ class Sections(_Strict):
 #: switch in `Sections`.
 HomeBlock = Literal[
     "perks", "brands_top", "picks", "lules", "sultanpuan", "kumbara", "deals",
-    "campaigns", "promos", "brands", "brand_showcase", "showcase", "about",
+    "campaigns", "promos", "brands", "brand_showcase", "kozlukler", "games", "showcase", "about",
 ]
 
 
@@ -280,6 +282,8 @@ MobileSection = Literal[
     "campaigns",  # the campaign boxes under the deals
     "brand_statement",  # "Sektörde Referans Noktası"
     "brand_showcase",  # "Markalarımız"
+    "kozlukler",  # the "Közlükler" band
+    "games",  # the "Oyun & Eğlence" band
     "showcase",  # "Premium Ürün Yelpazesi"
 ]
 
