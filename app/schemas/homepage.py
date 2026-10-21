@@ -81,8 +81,8 @@ class Sections(_Strict):
     promos: bool = True  # "Sektörde Referans Noktası" (the key is older than the section)
     brands: bool = True  # the brand ticker under the statement
     brand_showcase: bool = True  # "Markalarımız"
-    kozlukler: bool = True  # "Közlükler": the dark heat-management band
-    games: bool = True  # "Oyun & Eğlence": the game-table band
+    kozlukler: bool = True  # "Közlükler": its category as a product row
+    games: bool = True  # "Oyun & Eğlence": its category as a product row
     showcase: bool = True  # "Premium Ürün Yelpazesi" (the category bento)
     advantages: bool = True  # retired: the "Hacim büyür" grid is on no page now
     about: bool = True  # the homepage's closing passage ("Alt SEO Metni", seo_intro)
@@ -282,8 +282,8 @@ MobileSection = Literal[
     "campaigns",  # the campaign boxes under the deals
     "brand_statement",  # "Sektörde Referans Noktası"
     "brand_showcase",  # "Markalarımız"
-    "kozlukler",  # the "Közlükler" band
-    "games",  # the "Oyun & Eğlence" band
+    "kozlukler",  # the "Közlükler" row
+    "games",  # the "Oyun & Eğlence" row
     "showcase",  # "Premium Ürün Yelpazesi"
 ]
 
