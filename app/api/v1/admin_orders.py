@@ -5,13 +5,13 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_admin_user
+from app.api.deps import get_current_admin_user, get_session_factory
 from app.core.database import get_db
 from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
 from app.core.config import settings
@@ -21,7 +21,7 @@ from app.core.countries import TURKEY, country_name
 from app.schemas.address import address_line, international_line
 from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse
 from app.schemas.order import OrderItemRead, OrderRead
-from app.services import mailer, order_emails, order_lifecycle, shipping
+from app.services import mailer, order_emails, order_lifecycle, order_sms, shipping, sms_settings
 
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 
@@ -290,13 +290,16 @@ async def approve_order(
 async def ship_order(
     order_id: uuid.UUID,
     payload: ShipOrderRequest,
+    background: BackgroundTasks,
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
+    factory: async_sessionmaker = Depends(get_session_factory),
 ):
     """Hand a paid order to the carrier and tell the customer it is on its way.
 
-    The dispatch e-mail is best-effort: with no SMTP server configured the mailer
-    logs the message, and a send failure never undoes the dispatch.
+    The dispatch e-mail and SMS are best-effort: with no SMTP server or SMS
+    account configured they are only logged, and a send failure never undoes
+    the dispatch.
     """
     order, user = await _order_with_user(db, order_id)
     if order.status != OrderStatus.APPROVED:
@@ -342,6 +345,7 @@ async def ship_order(
         for item in order.items
     ]
     await mailer.send(order_emails.order_shipped(order, user.full_name, user.email, lines))
+    background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_SHIPPED)
     return _list_item(order, user, catalog)
 
 

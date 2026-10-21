@@ -5,9 +5,9 @@ import uuid
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.core.database import get_db
+from app.core.database import async_session, get_db
 from app.core.security import decode_access_token
 from app.models.user import User, UserRole
 
@@ -74,3 +74,9 @@ async def get_current_admin_user(
             detail="Admin privileges required",
         )
     return user
+
+
+def get_session_factory() -> async_sessionmaker:
+    """Where work that outlives the request (a campaign, an order's SMS) opens
+    its own session once the response has gone; the tests swap it for theirs."""
+    return async_session

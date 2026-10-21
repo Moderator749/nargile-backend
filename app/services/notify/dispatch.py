@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.notification import EMAIL, FAILED, SENT, SMS, NotificationLog
+from app.services import sms_settings
 from app.services.notify.drivers import Delivery, email_driver, sms_driver
 
 # Recipients per SMS gateway call in a campaign.
@@ -52,6 +53,13 @@ async def send_email(
     return log
 
 
+async def sms_driver_for(db: AsyncSession):
+    """The SMS driver as things stand: the Netgsm account in "SMS Ayarları"
+    (each blank field from the .env), else SMS_DRIVER's choice."""
+    panel = await sms_settings.load(db)
+    return sms_driver(panel.netgsm(), netgsm_chosen=panel.holds_account)
+
+
 async def send_sms(
     db: AsyncSession,
     *,
@@ -59,17 +67,18 @@ async def send_sms(
     text: str,
     purpose: str,
     campaign_id: int | None = None,
+    meta: dict | None = None,
 ) -> list[NotificationLog]:
     """The same SMS to (number, user id) pairs — numbers normalised — in
     batches, one log row each. The caller commits."""
-    driver = sms_driver()
+    driver = await sms_driver_for(db)
     logs: list[NotificationLog] = []
     for start in range(0, len(recipients), SMS_BATCH):
         batch = recipients[start : start + SMS_BATCH]
         rows = [
             NotificationLog(
                 channel=SMS, recipient=number, user_id=user_id, purpose=purpose, campaign_id=campaign_id,
-                provider=driver.name,
+                provider=driver.name, meta=meta,
             )
             for number, user_id in batch
         ]

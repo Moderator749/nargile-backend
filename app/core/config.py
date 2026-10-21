@@ -66,8 +66,13 @@ class Settings(BaseSettings):
     # "mock" logs SMS instead of sending. The gateways need their own keys.
     SMS_DRIVER: str = "mock"  # mock | netgsm | iletimerkezi | webhook
     SMS_SENDER: str = ""  # approved sender name (başlık), e.g. "NARGILEMLZ"
+    # Netgsm: the account (abone no / alt kullanıcı), its API password and the
+    # approved header. "SMS Ayarları" in the admin panel can hold all three;
+    # a field left blank there falls back to these, and NETGSM_HEADER to
+    # SMS_SENDER.
     NETGSM_USERCODE: str | None = None
     NETGSM_PASSWORD: str | None = None
+    NETGSM_HEADER: str | None = None
     ILETIMERKEZI_API_KEY: str | None = None
     ILETIMERKEZI_API_HASH: str | None = None
     SMS_WEBHOOK_URL: str | None = None

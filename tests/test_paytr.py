@@ -26,6 +26,7 @@ from app.api.v1 import payments
 from app.core.config import settings
 from app.models.catalog import Inventory, ProductVariant, WarehouseType
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
+from app.models.notification import NotificationLog
 from app.models.order import Order
 from app.models.payment import PaymentStatus, PaymentTransaction
 from app.models.user import User
@@ -239,6 +240,10 @@ async def test_a_signed_success_marks_the_order_paid_once(
         )
     )).scalars().all()
     assert earned == [2500]
+
+    # Placed now that it is paid: "Siparişiniz alınmıştır", once, repeats or not.
+    texted = (await db_session.scalars(select(NotificationLog).where(NotificationLog.purpose == "order_placed"))).all()
+    assert [log.status for log in texted if (log.meta or {}).get("order_id") == order["id"]] == ["sent"]
 
 
 async def test_a_bad_hash_is_refused_and_changes_nothing(

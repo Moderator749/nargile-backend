@@ -2,12 +2,12 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_session_factory
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.order import Order, PaymentMethod
@@ -15,6 +15,7 @@ from app.models.user import User
 from app.api.v1.payments import CARD_OFF
 from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingBreakdown, VolumeTier
 from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
+from app.services import order_sms, sms_settings
 from app.services.delivery import check_delivery_address
 from app.services.checkout_engine import CheckoutEngine
 
@@ -131,8 +132,10 @@ async def calculate_cart(
 @router.post("/checkout", response_model=OrderRead, status_code=status.HTTP_201_CREATED)
 async def checkout(
     payload: CheckoutRequest,
+    background: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    factory: async_sessionmaker = Depends(get_session_factory),
 ):
     """Execute the full checkout: validate, calculate, persist order, deduct inventory."""
     if payload.shipping_address is None:
@@ -183,6 +186,10 @@ async def checkout(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    # "Siparişiniz alınmıştır": now for a transfer or a quote; a card order is
+    # placed once PayTR reports it paid (payments.paytr_callback).
+    if order.payment_method != PaymentMethod.CREDIT_CARD:
+        background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_PLACED)
     return order
 
 

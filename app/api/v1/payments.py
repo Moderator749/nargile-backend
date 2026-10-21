@@ -20,23 +20,23 @@ import logging
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 import uuid
 
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, get_session_factory
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.catalog import Product, ProductVariant
 from app.models.order import Order, OrderItem, OrderStatus, PaymentMethod
 from app.models.payment import PaymentStatus, PaymentTransaction
 from app.models.user import User
-from app.services import order_lifecycle
+from app.services import order_lifecycle, order_sms, sms_settings
 from app.services.paytr_service import (
     IFRAME_URL,
     PaytrCredentials,
@@ -170,7 +170,12 @@ async def paytr_token(
 
 
 @router.post("/paytr/callback", response_class=PlainTextResponse)
-async def paytr_callback(request: Request, db: AsyncSession = Depends(get_db)):
+async def paytr_callback(
+    request: Request,
+    background: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    factory: async_sessionmaker = Depends(get_session_factory),
+):
     """PayTR's notification. Answers exactly "OK" once it is recorded — PayTR
     keeps retrying until it gets that — and refuses anything whose hash does not
     check out, so a forged request changes nothing."""
@@ -206,6 +211,8 @@ async def paytr_callback(request: Request, db: AsyncSession = Depends(get_db)):
             logger.error("PayTR collected %s kuruş for %s, expected %s", collected, tx.merchant_oid, kurus(tx.amount))
         elif order.status == OrderStatus.AWAITING_PAYMENT:
             await order_lifecycle.mark_paid(db, order, now)
+            # A card order is placed now that it is paid: "Siparişiniz alınmıştır".
+            background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_PLACED)
         else:
             # Paid after the order was released (it timed out or was cancelled):
             # the money is in, the stock is not held. A person has to decide.

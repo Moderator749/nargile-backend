@@ -3,6 +3,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.services.sms_settings import ORDER_PLACED, ORDER_SHIPPED, unknown_placeholders
+
 Channel = Literal["email", "sms"]
 # "all": every customer; a segment code; or "manual" (addresses typed in).
 Audience = Literal["all", "RETAIL", "CAFE", "WHOLESALE", "DEALER", "manual"]
@@ -119,3 +121,68 @@ class DriverStatus(BaseModel):
     email: str  # the driver in use: "smtp", "resend" or "mock"
     sms: str
     sms_opt_out_text: str
+
+
+# ── SMS Ayarları ─────────────────────────────────────────────────────────────
+
+
+class SmsTemplateIO(BaseModel):
+    enabled: bool = True
+    text: str = Field(min_length=1, max_length=480)
+
+    @model_validator(mode="after")
+    def _trim(self) -> "SmsTemplateIO":
+        self.text = self.text.strip()
+        if not self.text:
+            raise ValueError("Mesaj metni boş olamaz")
+        return self
+
+
+class SmsSettingsWrite(BaseModel):
+    """The panel's form. A blank account field falls back to the server's .env."""
+
+    usercode: str = Field(default="", max_length=32, pattern=r"^\s*\d*\s*$")
+    header: str = Field(default="", max_length=11)
+    # None keeps the stored password; a value replaces it.
+    password: str | None = Field(default=None, max_length=128)
+    clear_password: bool = False
+    order_placed: SmsTemplateIO
+    order_shipped: SmsTemplateIO
+
+    @model_validator(mode="after")
+    def _known_placeholders(self) -> "SmsSettingsWrite":
+        for event, template, label in (
+            (ORDER_PLACED, self.order_placed, "Sipariş alındı"),
+            (ORDER_SHIPPED, self.order_shipped, "Kargoya verildi"),
+        ):
+            unknown = unknown_placeholders(event, template.text)
+            if unknown:
+                raise ValueError(f"“{label}” mesajında bilinmeyen alan: {', '.join('{' + u + '}' for u in unknown)}")
+        self.usercode = self.usercode.strip()
+        self.header = self.header.strip()
+        return self
+
+
+class SmsSettingsRead(BaseModel):
+    usercode: str
+    header: str
+    password_set: bool  # the password itself is never sent back
+    # What the server's .env supplies for a field left blank here.
+    env_usercode: str
+    env_header: str
+    env_password_set: bool
+    # The driver that sends now: "netgsm", or "mock" when nothing leaves.
+    provider: str
+    order_placed: SmsTemplateIO
+    order_shipped: SmsTemplateIO
+    placeholders: dict[str, list[str]]
+
+
+class SmsTestRequest(BaseModel):
+    phone: str = Field(min_length=10, max_length=30)
+
+
+class SmsTestResult(BaseModel):
+    ok: bool
+    provider: str
+    error: str | None = None

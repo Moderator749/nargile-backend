@@ -49,6 +49,7 @@ from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine  # noqa: E402
 
+from app.api.deps import get_session_factory  # noqa: E402
 from app.core.database import get_db  # noqa: E402
 from app.core.security import create_access_token  # noqa: E402
 from app.main import app  # noqa: E402
@@ -140,6 +141,10 @@ async def client(db_session: AsyncSession):
         yield db_session
 
     app.dependency_overrides[get_db] = _override
+    # Work that runs once the response is out (an order's SMS, a campaign)
+    # opens its sessions on the test database too.
+    factory = async_sessionmaker(db_session.bind, expire_on_commit=False)
+    app.dependency_overrides[get_session_factory] = lambda: factory
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac

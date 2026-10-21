@@ -104,16 +104,44 @@ async def _post(url: str, **kwargs) -> httpx.Response:
         return await client.post(url, **kwargs)
 
 
+NETGSM_URL = "https://api.netgsm.com.tr/sms/rest/v2/send"
+
+
+@dataclass(frozen=True)
+class NetgsmAccount:
+    usercode: str
+    password: str
+    header: str
+
+    @property
+    def complete(self) -> bool:
+        return bool(self.usercode and self.password and self.header)
+
+
+def env_netgsm() -> NetgsmAccount:
+    """The Netgsm account in the server's .env."""
+    return NetgsmAccount(
+        usercode=(settings.NETGSM_USERCODE or "").strip(),
+        password=settings.NETGSM_PASSWORD or "",
+        header=(settings.NETGSM_HEADER or settings.SMS_SENDER or "").strip(),
+    )
+
+
 class NetgsmSms:
+    """Netgsm's REST v2 API: HTTP basic auth with the account, JSON body."""
+
     name = "netgsm"
+
+    def __init__(self, account: NetgsmAccount):
+        self.account = account
 
     async def send(self, numbers: list[str], text: str) -> Delivery:
         try:
             resp = await _post(
-                "https://api.netgsm.com.tr/sms/rest/v2/send",
-                auth=(settings.NETGSM_USERCODE or "", settings.NETGSM_PASSWORD or ""),
+                NETGSM_URL,
+                auth=(self.account.usercode, self.account.password),
                 json={
-                    "msgheader": settings.SMS_SENDER,
+                    "msgheader": self.account.header,
                     "encoding": "TR",
                     "messages": [{"msg": text, "no": n[2:]} for n in numbers],
                 },
@@ -172,11 +200,17 @@ class WebhookSms:
             return Delivery(False, self.name, error=f"{type(exc).__name__}: {exc}"[:500])
 
 
-def sms_driver():
-    """The configured SMS driver; the mock when its credentials are missing."""
+def sms_driver(netgsm: NetgsmAccount | None = None, *, netgsm_chosen: bool = False):
+    """The configured SMS driver; the mock when its credentials are missing.
+
+    `netgsm` is the account to send with (the panel's over the .env's, see
+    app.services.sms_settings); `netgsm_chosen` says the panel holds one, which
+    picks Netgsm whatever SMS_DRIVER says.
+    """
     choice = (settings.SMS_DRIVER or "mock").lower()
-    if choice == "netgsm" and settings.NETGSM_USERCODE and settings.NETGSM_PASSWORD and settings.SMS_SENDER:
-        return NetgsmSms()
+    account = netgsm or env_netgsm()
+    if (netgsm_chosen or choice == "netgsm") and account.complete:
+        return NetgsmSms(account)
     if choice == "iletimerkezi" and settings.ILETIMERKEZI_API_KEY and settings.ILETIMERKEZI_API_HASH and settings.SMS_SENDER:
         return IletimerkeziSms()
     if choice == "webhook" and settings.SMS_WEBHOOK_URL:
