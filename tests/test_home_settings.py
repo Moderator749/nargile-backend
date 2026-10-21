@@ -220,3 +220,35 @@ async def test_the_mobile_settings_are_held_to_their_rules(
 ):
     response = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"mobile": mobile})
     assert response.status_code == 422
+
+
+async def test_the_sections_order_is_saved_and_read_back(client: AsyncClient, admin_user: User, cleanup):
+    order = ["about", "deals", "perks", "kumbara"]
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"order": order})
+    assert saved.status_code == 200, saved.text
+    assert (await client.get("/api/v1/home/settings")).json()["data"]["order"] == order
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        ["deals", "deals"],  # twice
+        ["hero", "deals"],  # always first, not in the order
+        ["footer"],  # always last
+        ["nope"],
+    ],
+)
+async def test_the_sections_order_is_held_to_its_rules(client: AsyncClient, admin_user: User, cleanup, order: list):
+    response = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"order": order})
+    assert response.status_code == 422
+
+
+async def test_the_top_brand_ticker_follows_an_older_brands_switch(client: AsyncClient, admin_user: User, cleanup):
+    h = auth_header(admin_user)
+    await client.put("/api/v1/admin/home/settings", headers=h, json={"sections": {"brands": False}})
+    sections = (await client.get("/api/v1/home/settings")).json()["data"]["sections"]
+    assert (sections["brands"], sections["brands_top"], sections["kumbara"]) == (False, False, True)
+
+    await client.put("/api/v1/admin/home/settings", headers=h, json={"sections": {"brands": False, "brands_top": True}})
+    sections = (await client.get("/api/v1/home/settings")).json()["data"]["sections"]
+    assert (sections["brands"], sections["brands_top"]) == (False, True)

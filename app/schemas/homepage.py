@@ -69,14 +69,50 @@ class _Strict(BaseModel):
 
 
 class Sections(_Strict):
-    hero: bool = True  # hero slider and the category column beside it
-    promos: bool = True  # the promo boxes under the slider
+    hero: bool = True  # hero slider and the category column beside it (always first)
+    perks: bool = True  # the payment advantages bar
+    brands_top: bool = True  # the brand ticker under the perks bar
+    picks: bool = True  # "Sizin İçin Seçtiklerimiz"
+    lules: bool = True  # "Lüle Alırken Kararsız Kalacaksınız"
+    sultanpuan: bool = True  # the SultanPuan band
+    kumbara: bool = True  # "Kumbara 20.000 TL"
     deals: bool = True  # "Fırsatları Kaçırma"
-    brands: bool = True  # the brand ticker
-    showcase: bool = True  # "Premium Ürün Yelpazesi"
-    advantages: bool = True  # "Ayrıcalıklar & Avantajlar"
+    campaigns: bool = True  # the campaign boxes (the big one and the mini bento)
+    promos: bool = True  # "Sektörde Referans Noktası" (the key is older than the section)
+    brands: bool = True  # the brand ticker under the statement
+    brand_showcase: bool = True  # "Markalarımız"
+    showcase: bool = True  # "Premium Ürün Yelpazesi" (the category bento)
+    advantages: bool = True  # retired: the "Hacim büyür" grid is on no page now
     about: bool = True  # the homepage's closing passage ("Alt SEO Metni", seo_intro)
-    footer: bool = True
+    footer: bool = True  # every page's footer (always last)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _top_ticker_follows_brands(cls, data: object) -> object:
+        # "brands" once switched both brand tickers; a document saved before
+        # the top one had its own switch keeps it as "brands" said.
+        if isinstance(data, dict) and "brands_top" not in data and "brands" in data:
+            data = {**data, "brands_top": data["brands"]}
+        return data
+
+
+#: The homepage's sections between the hero (always first) and the footer
+#: (every page's, always last), in the order the storefront shows them unless
+#: the admin has dragged them into another ("Bölümler"). Each is also a
+#: switch in `Sections`.
+HomeBlock = Literal[
+    "perks", "brands_top", "picks", "lules", "sultanpuan", "kumbara", "deals",
+    "campaigns", "promos", "brands", "brand_showcase", "showcase", "about",
+]
+
+
+def _unique_blocks(order: list[str]) -> list[str]:
+    if len(order) != len(set(order)):
+        raise ValueError("A section appears once in the order")
+    return order
+
+
+BlockOrder = Annotated[list[HomeBlock], Field(max_length=len(HomeBlock.__args__)), AfterValidator(_unique_blocks)]
 
 
 # ── Menus ────────────────────────────────────────────────────────────────────
@@ -276,6 +312,9 @@ class HomepageDocument(_Strict):
     """What is stored: only the sections the admin has saved."""
 
     sections: Sections | None = None
+    # The sections' order; one left out (added since it was saved) takes its
+    # default place (see the storefront's lib/homeBlocks).
+    order: BlockOrder | None = None
     navigation: Navigation | None = None
     deals: Deals | None = None
     brands: Brands | None = None

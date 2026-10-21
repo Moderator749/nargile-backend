@@ -20,7 +20,7 @@ def _now() -> datetime:
 
 
 class NotificationCampaign(Base):
-    """A bulk e-mail or SMS from "İletişim & Bildirimler"."""
+    """A bulk e-mail or SMS from "SMS & Mail"."""
 
     __tablename__ = "notification_campaigns"
 

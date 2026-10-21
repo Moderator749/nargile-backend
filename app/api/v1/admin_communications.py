@@ -1,4 +1,4 @@
-""""İletişim & Bildirimler": bulk e-mail / SMS campaigns and the message log."""
+""""SMS & Mail": bulk e-mail / SMS campaigns and the message log."""
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from sqlalchemy import select

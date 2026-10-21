@@ -4,7 +4,7 @@
 
 Sent after the request has answered, in a session of its own, so a slow or
 failing gateway never holds up a checkout or a dispatch, and never raises:
-whatever happens is in the notification log (İletişim › Geçmiş) or the server
+whatever happens is in the notification log (SMS & Mail › Geçmiş) or the server
 log. When an order is "placed": at checkout for a bank transfer or a quote; a
 card order only once PayTR reports it paid, so nobody is thanked for an order
 whose payment then fails.
