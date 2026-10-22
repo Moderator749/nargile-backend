@@ -83,19 +83,34 @@ def test_a_foreign_sheet_gives_the_tl_figure_at_the_typed_rate():
     assert (out["retail"]["computed"], out["retail"]["price"], out["try_price"]) == ("24.00", "25", "1037.50")
 
 
-def test_extras_are_worked_out_as_retail_is_never_adding_vat_twice():
-    extras = [{"label": "Özel Fiyat 1", "percent": "10"}, {"label": "Özel Fiyat 2", "percent": "10", "desired": "2500"}]
+def test_an_extra_and_retail_are_parallel_branches_off_the_last_class():
+    extras = [{"label": "Özel Fiyat", "percent": "10", "desired": "1800"}, {"label": "Diğer", "percent": "30"}]
     out = compute_sheet(PricingSheetIn.model_validate(_sheet(extras=extras)))
-    # Retail before VAT 1587; +10% = 1745.70, + 20% VAT = 2094.84; +10% again = 1920.27 → 2304.32.
+    # Toptan (the last class) 1322.50: +10% = 1454.75, + 20% VAT = 1745.70; its typed 1800 is its price.
+    # The second branches off Toptan too, not off the first: +30% = 1719.25 → 2063.10.
     assert [(e["before_vat"], e["computed"], e["price"]) for e in out["extras"]] == [
-        ("1745.70", "2094.84", "2094.84"),
-        ("1920.27", "2304.32", "2500"),
+        ("1454.75", "1745.70", "1800"),
+        ("1719.25", "2063.10", "2063.10"),
     ]
-    # Retail itself is untouched, and a sheet without extras stores an empty list.
-    assert out["retail"]["computed"] == "1904.40"
-    assert compute_sheet(PricingSheetIn.model_validate(_sheet()))["extras"] == []
-    inclusive = compute_sheet(PricingSheetIn.model_validate(_sheet(vat_mode="INCL", extras=extras[:1])))
-    assert inclusive["extras"][0]["computed"] == inclusive["extras"][0]["before_vat"] == "1745.70"
+    # Retail is not inflated by them: 1322.50 + 20% = 1587, + 20% VAT = 1904.40, as with none.
+    assert (out["retail"]["before_vat"], out["retail"]["computed"]) == ("1587.00", "1904.40")
+    plain = compute_sheet(PricingSheetIn.model_validate(_sheet()))
+    assert plain["extras"] == [] and plain["retail"]["computed"] == "1904.40"
+    inclusive = compute_sheet(PricingSheetIn.model_validate(_sheet(vat_mode="INCL", extras=extras)))
+    assert inclusive["extras"][0]["computed"] == inclusive["extras"][0]["before_vat"] == "1454.75"
+
+
+def test_the_erp_percent_puts_each_calculated_price_plus_it_beside_it():
+    extras = [{"label": "Özel Fiyat", "percent": "10"}]
+    out = compute_sheet(PricingSheetIn.model_validate(_sheet(extras=extras, erp_percent="5")))
+    assert out["erp_percent"] == "5"
+    # From the calculated figures (1150, 1322.50, 1745.70, 1904.40), each + 5%
+    # (1388.625 and 1832.985 half a kuruş up, as the panel shows them).
+    assert [c["erp"] for c in out["columns"]] == ["1207.50", "1388.63"]
+    assert (out["extras"][0]["erp"], out["retail"]["erp"]) == ("1832.99", "1999.62")
+    # None given: no ERP figures at all.
+    plain = compute_sheet(PricingSheetIn.model_validate(_sheet()))
+    assert plain["erp_percent"] is None and "erp" not in plain["retail"]
 
 
 @pytest.mark.parametrize(
@@ -204,7 +219,8 @@ async def test_apply_writes_every_customer_groups_live_price(
     assert got[SegmentType.WHOLESALE] == ("TRY", Decimal("1322.50"), Decimal("1587.00"))
     assert got[SegmentType.CAFE] == ("TRY", Decimal("1350.00"), Decimal("1620.00"))
     # Retail runs on the calculated chain (1322.50 through the 0% columns) + 20%,
-    # not on Kafe's typed 1350; plus 20% VAT it is 1904.40 on the shelf.
+    # not on Kafe's typed 1350 nor on Özel Fiyat beside it; plus 20% VAT it is
+    # 1904.40 on the shelf.
     assert got[SegmentType.RETAIL] == ("TRY", Decimal("1587.00"), Decimal("1904.40"))
     assert all(len(rows) == 1 for rows in prices.values())
 

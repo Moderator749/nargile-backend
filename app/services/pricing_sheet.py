@@ -13,18 +13,22 @@ percent, plus VAT when the sheet's cost was before VAT. Its "uygulanacak fiyat"
 is the shelf price, after VAT too. The VAT rate is also what every price is
 stored with, so the other side (before ↔ after VAT) can be completed.
 
-After retail may come "extras" ("Özel Fiyat 1", "Özel Fiyat 2"), worked out
-exactly as retail is. The chain runs on before VAT — each extra is the
-previous step's before-VAT value plus its percent, then VAT — so VAT is
-never added twice. They are for the admin's reference only: no customer
-group has such a price, so applying a sheet reports them as not written.
+Between the classes and retail may come "extras" ("Özel Fiyat"): parallel
+branches, each worked out exactly as retail is — the last class plus its
+percent, plus VAT on a before-VAT sheet. Neither builds on the other, so an
+extra never moves retail. They are for the admin's reference only: no
+customer group has such a price, so applying a sheet reports them as not
+written.
+
+"ERP Fiyatı (%)", when given, puts beside every calculated price ("erp") that
+price plus the percent: a reference figure for the ERP, never sent anywhere.
 
 The panel does the same sums live; the server does them again on save, so a
 stored row never disagrees with its own figures.
 """
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -43,6 +47,13 @@ def _step(previous: Decimal, percent: Decimal) -> Decimal:
 
 def compute_sheet(sheet: PricingSheetIn) -> dict:
     """The worksheet with every column's calculated and final price, as stored."""
+
+    def erp(computed: Decimal) -> dict:
+        # Half a kuruş up, as the panel shows it (1322.50 + 5% = 1388.63).
+        if sheet.erp_percent is None:
+            return {}
+        return {"erp": str(_step(computed, sheet.erp_percent).quantize(CENT, rounding=ROUND_HALF_UP))}
+
     previous = sheet.cost
     columns = []
     for col in sheet.columns:
@@ -53,6 +64,7 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "segment": col.segment.value if col.segment else None,
             "percent": str(col.percent),
             "computed": str(computed.quantize(CENT)),
+            **erp(computed),
             "desired": str(col.desired) if col.desired is not None else None,
             "price": str(price),
         })
@@ -60,13 +72,9 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
 
     r = sheet.retail
     with_vat = (lambda v: v * (1 + r.vat_rate / 100)) if sheet.vat_mode == "EXCL" else (lambda v: v)
-    before_vat = _step(previous, r.percent)
-    retail_computed = with_vat(before_vat)
-    retail_price = r.desired if r.desired is not None else retail_computed.quantize(CENT)
-
     extras = []
-    previous = before_vat
     for extra in sheet.extras:
+        # A branch off the last class, as retail is: `previous` stays put.
         extra_before = _step(previous, extra.percent)
         extra_computed = with_vat(extra_before)
         extras.append({
@@ -75,11 +83,15 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "percent": str(extra.percent),
             "vat_rate": str(r.vat_rate),
             "computed": str(extra_computed.quantize(CENT)),
+            **erp(extra_computed),
             "before_vat": str(extra_before.quantize(CENT)),
             "desired": str(extra.desired) if extra.desired is not None else None,
             "price": str(extra.desired if extra.desired is not None else extra_computed.quantize(CENT)),
         })
-        previous = extra_before
+
+    before_vat = _step(previous, r.percent)
+    retail_computed = with_vat(before_vat)
+    retail_price = r.desired if r.desired is not None else retail_computed.quantize(CENT)
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
     try_price = (retail_price * rate).quantize(CENT) if rate else None
     return {
@@ -94,11 +106,13 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "vat_rate": str(r.vat_rate),
             # After VAT; `before_vat` is the markup step on its own.
             "computed": str(retail_computed.quantize(CENT)),
+            **erp(retail_computed),
             "before_vat": str(before_vat.quantize(CENT)),
             "desired": str(r.desired) if r.desired is not None else None,
             "price": str(retail_price),
         },
         "extras": extras,
+        "erp_percent": str(sheet.erp_percent) if sheet.erp_percent is not None else None,
         "usd_rate": str(sheet.usd_rate) if sheet.usd_rate is not None else None,
         "eur_rate": str(sheet.eur_rate) if sheet.eur_rate is not None else None,
         "try_price": str(try_price) if try_price is not None else None,

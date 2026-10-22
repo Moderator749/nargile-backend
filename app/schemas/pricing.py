@@ -45,9 +45,10 @@ class PricingRetailIn(BaseModel):
 
 
 class PricingExtraIn(BaseModel):
-    """A price after retail ("Özel Fiyat 1"…), worked out as retail is: the
-    previous step plus its percent, plus VAT on a before-VAT sheet. For the
-    admin's own reference: no customer group's price, never sent to the site."""
+    """A price between the classes and retail ("Özel Fiyat"), worked out as
+    retail is and beside it, not before it: the last class plus its percent,
+    plus VAT on a before-VAT sheet. Retail never builds on it. For the admin's
+    own reference: no customer group's price, never sent to the site."""
 
     label: str = Field(min_length=1, max_length=40)
     percent: Decimal = Field(ge=-99.99, le=10000, decimal_places=4)
@@ -69,6 +70,9 @@ class PricingSheetIn(BaseModel):
     columns: list[PricingColumnIn] = Field(default_factory=list, max_length=12)
     retail: PricingRetailIn
     extras: list[PricingExtraIn] = Field(default_factory=list, max_length=6)
+    # "ERP Fiyatı (%)": every calculated price plus this, shown beside it for
+    # the ERP. Reference only; empty for none.
+    erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
     # TRY per unit, typed in (prefilled from TCMB) when the sheet is in USD/EUR.
     usd_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
     eur_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
