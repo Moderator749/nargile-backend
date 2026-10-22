@@ -3,14 +3,16 @@
 Two rows, as on the paper sheet. The calculated row is one unbroken formula
 chain — every column is the previous *calculated* value plus its percent, in
 the cost's own VAT basis, so 1000 at +15%, +15%, +20% is 1150, 1322.50, 1587
-whatever is typed below it. The "ERP fiyatı" row is the price each column
-sends to the site: typed by the admin (`desired`), or else its calculated
-value plus its "uygulanacak oran" (`erp_percent`). It never feeds the chain.
+whatever is typed below it. Under it, per column, the "ERP fiyatı" is a base
+price the admin may type (`erp_price`), and the "uygulanacak fiyat" the price
+sent to the site: typed (`desired`), or else the base — the ERP fiyatı, or the
+calculated value without one — plus the sheet's "uygulanacak oran"
+(`applied_percent`). Neither feeds the chain.
 
 Retail is the last column and, as on the paper sheet ("KDV dahil perakende
 fiyat %KDV"), it is always after VAT: the previous calculated value plus its
-percent, plus VAT when the sheet's cost was before VAT. Its "ERP fiyatı" is
-the shelf price, after VAT too. The VAT rate is also what every price is
+percent, plus VAT when the sheet's cost was before VAT. Its ERP fiyatı and
+uygulanacak fiyat are shelf prices, after VAT too. The VAT rate is also what every price is
 stored with, so the other side (before ↔ after VAT) can be completed.
 
 Between the classes and retail may come "extras" ("Özel Fiyat"), links of
@@ -20,10 +22,7 @@ extra's before-VAT value plus its percent, then VAT — so VAT is added once.
 They are for the admin's reference only: no customer group has such a price,
 so applying a sheet reports them as not written.
 
-Each column may carry an "uygulanacak oran" (`erp_percent`): its ERP fiyatı,
-when none is typed, is then its calculated price plus that percent (half a
-kuruş up, as the panel shows it) — the price sent to the site. It never feeds
-the chain, which runs on calculated values only.
+The uygulanacak oran is added half a kuruş up, as the panel shows it.
 
 The panel does the same sums live; the server does them again on save, so a
 stored row never disagrees with its own figures.
@@ -47,16 +46,17 @@ def _step(previous: Decimal, percent: Decimal) -> Decimal:
     return previous * (1 + percent / 100)
 
 
-def _priced(computed: Decimal, erp_percent: Decimal | None, desired: Decimal | None) -> dict:
-    """A column's figures below its percent: calculated, its rate, the typed price, and the price it sends."""
-    if erp_percent:
+def _priced(computed: Decimal, erp_price: Decimal | None, desired: Decimal | None, applied: Decimal | None) -> dict:
+    """A column's figures below its percent: calculated, the ERP base, the typed price, and the price it sends."""
+    base = erp_price if erp_price is not None else computed
+    if applied:
         # Half a kuruş up, as the panel shows it (1322.50 + 5% = 1388.63).
-        auto = _step(computed, erp_percent).quantize(CENT, rounding=ROUND_HALF_UP)
+        auto = _step(base, applied).quantize(CENT, rounding=ROUND_HALF_UP)
     else:
-        auto = computed.quantize(CENT)
+        auto = base.quantize(CENT)
     return {
         "computed": str(computed.quantize(CENT)),
-        "erp_percent": str(erp_percent) if erp_percent is not None else None,
+        "erp_price": str(erp_price) if erp_price is not None else None,
         "desired": str(desired) if desired is not None else None,
         "price": str(desired if desired is not None else auto),
     }
@@ -72,7 +72,7 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "label": col.label,
             "segment": col.segment.value if col.segment else None,
             "percent": str(col.percent),
-            **_priced(computed, col.erp_percent, col.desired),
+            **_priced(computed, col.erp_price, col.desired, sheet.applied_percent),
         })
         previous = computed  # the chain runs on calculated values only
 
@@ -87,12 +87,12 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "percent": str(extra.percent),
             "vat_rate": str(r.vat_rate),
             "before_vat": str(extra_before.quantize(CENT)),
-            **_priced(with_vat(extra_before), extra.erp_percent, extra.desired),
+            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, sheet.applied_percent),
         })
         previous = extra_before  # retail builds on it, before VAT
 
     before_vat = _step(previous, r.percent)
-    retail = _priced(with_vat(before_vat), r.erp_percent, r.desired)
+    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, sheet.applied_percent)
     retail_price = Decimal(retail["price"])
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
     try_price = (retail_price * rate).quantize(CENT) if rate else None
@@ -111,6 +111,7 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             **retail,
         },
         "extras": extras,
+        "applied_percent": str(sheet.applied_percent) if sheet.applied_percent is not None else None,
         "usd_rate": str(sheet.usd_rate) if sheet.usd_rate is not None else None,
         "eur_rate": str(sheet.eur_rate) if sheet.eur_rate is not None else None,
         "try_price": str(try_price) if try_price is not None else None,

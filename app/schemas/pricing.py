@@ -23,15 +23,15 @@ class PricingColumnIn(BaseModel):
     segment: SegmentType | None = None
     # On top of the previous column's price.
     percent: Decimal = Field(ge=-99.99, le=10000, decimal_places=4)
-    # "ERP fiyatı" typed: the admin's rounded or chosen figure, sent to the site
-    # in place of the calculated one. It does not feed the next column: the
-    # calculated row is one unbroken chain. Empty: the calculated value (plus
-    # `erp_percent`).
+    # "Uygulanacak fiyat" typed: the admin's rounded or chosen figure, sent to
+    # the site as it is. It does not feed the next column: the calculated row
+    # is one unbroken chain. Empty: the base (`erp_price`, else the calculated
+    # value) plus the sheet's `applied_percent`.
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    # "Uygulanacak oran (%)": this column's price ("ERP fiyatı") is its
-    # calculated price plus this percent, unless one is typed (`desired`).
-    # Empty or 0: none.
-    erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
+    # "ERP fiyatı": a base price the admin types in place of the calculated one
+    # for this column's "uygulanacak fiyat" (the sheet's `applied_percent` is
+    # added to it). Empty: the calculated price is the base.
+    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
 
     @field_validator("label")
     @classmethod
@@ -47,10 +47,10 @@ class PricingRetailIn(BaseModel):
     # The VAT rate written with the prices, to complete their other side.
     vat_rate: Decimal = Field(ge=0, le=99.99, decimal_places=2)
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    # "Uygulanacak oran (%)": this column's price ("ERP fiyatı") is its
-    # calculated price plus this percent, unless one is typed (`desired`).
-    # Empty or 0: none.
-    erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
+    # "ERP fiyatı": a base price the admin types in place of the calculated one
+    # for this column's "uygulanacak fiyat" (the sheet's `applied_percent` is
+    # added to it). Empty: the calculated price is the base.
+    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
 
 
 class PricingExtraIn(BaseModel):
@@ -62,10 +62,10 @@ class PricingExtraIn(BaseModel):
     label: str = Field(min_length=1, max_length=40)
     percent: Decimal = Field(ge=-99.99, le=10000, decimal_places=4)
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    # "Uygulanacak oran (%)": this column's price ("ERP fiyatı") is its
-    # calculated price plus this percent, unless one is typed (`desired`).
-    # Empty or 0: none.
-    erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
+    # "ERP fiyatı": a base price the admin types in place of the calculated one
+    # for this column's "uygulanacak fiyat" (the sheet's `applied_percent` is
+    # added to it). Empty: the calculated price is the base.
+    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
 
     @field_validator("label")
     @classmethod
@@ -83,6 +83,9 @@ class PricingSheetIn(BaseModel):
     columns: list[PricingColumnIn] = Field(default_factory=list, max_length=12)
     retail: PricingRetailIn
     extras: list[PricingExtraIn] = Field(default_factory=list, max_length=6)
+    # "Uygulanacak oran (%)": added to every column's base for its price, unless
+    # a price is typed. Empty or 0: none.
+    applied_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
     # TRY per unit, typed in (prefilled from TCMB) when the sheet is in USD/EUR.
     usd_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
     eur_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
