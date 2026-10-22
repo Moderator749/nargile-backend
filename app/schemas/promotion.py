@@ -12,13 +12,15 @@ class FlashSaleWrite(BaseModel):
     sale_price_incl_tax: Decimal = Field(gt=0, max_digits=12, decimal_places=2)
     # Timezone required: a naive time would be read in the server's zone, not the admin's.
     starts_at: AwareDatetime
-    ends_at: AwareDatetime
+    # None: no deadline — the offer runs until it is switched off (or its deal
+    # stock runs out), as the database allows and the deals backfill wrote.
+    ends_at: AwareDatetime | None = None
     is_active: bool = True
 
     @model_validator(mode="after")
     def _window(self) -> "FlashSaleWrite":
         self.sku = self.sku.strip()
-        if self.ends_at <= self.starts_at:
+        if self.ends_at is not None and self.ends_at <= self.starts_at:
             raise ValueError("ends_at must be after starts_at")
         return self
 
@@ -35,6 +37,6 @@ class FlashSaleRead(BaseModel):
     # Public RETAIL price, for the admin's "was/now" check; None if unpriced.
     regular_price_incl_tax: Decimal | None
     starts_at: datetime
-    ends_at: datetime
+    ends_at: datetime | None = None  # no deadline
     is_active: bool
     is_live: bool

@@ -69,6 +69,11 @@ app = FastAPI(
     version="0.1.0",
     debug=settings.DEBUG,
     lifespan=lifespan,
+    # The interactive docs and the schema are for development only: in
+    # production (DEBUG off) the API does not describe itself to strangers.
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
     # Never answer with a slash redirect: its Location carries the Host the API
     # was reached on, which behind the storefront's proxy is not the page's
     # (see app/core/trailing_slash.py). Both spellings are served instead.

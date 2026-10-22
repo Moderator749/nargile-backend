@@ -260,6 +260,25 @@ async def test_admin_flash_sale_crud(client: AsyncClient, admin_user: User, cata
     assert (await client.delete(f"/api/v1/admin/flash-sales/{sale['id']}", headers=h)).status_code == 404
 
 
+async def test_admin_lists_and_edits_a_sale_without_a_deadline(
+    client: AsyncClient, admin_user: User, catalog, sales
+):
+    """Rows with no end date (the deals backfill wrote them; the column allows
+    it) once made the admin list fail as a whole. They list, and stay open."""
+    normal_v, _ = catalog
+    h = auth_header(admin_user)
+    open_ended = await sales(end=None)
+    listed = await client.get("/api/v1/admin/flash-sales", headers=h)
+    assert listed.status_code == 200, listed.text
+    row = next(s for s in listed.json() if s["id"] == open_ended.id)
+    assert row["ends_at"] is None and row["is_live"] is True
+
+    # Saved again from the panel with no end: still no deadline.
+    kept = await client.put(f"/api/v1/admin/flash-sales/{open_ended.id}", headers=h, json=_body(normal_v.sku, ends_at=None))
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["ends_at"] is None and kept.json()["is_live"] is True
+
+
 @pytest.mark.parametrize(
     ("overrides", "status"),
     [
