@@ -97,12 +97,12 @@ def test_an_extra_sits_before_retail_and_retail_builds_on_it_before_vat():
     assert inclusive["extras"][0]["computed"] == inclusive["extras"][0]["before_vat"] == "1454.75"
 
 
-def test_the_applied_percent_goes_on_each_erp_price_else_on_the_calculated_one():
+def test_the_applied_percent_goes_on_each_classs_erp_price_else_on_the_calculated_one():
     columns = [
         {"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "15", "erp_price": "1200"},
         {"label": "Toptan Fiyatı", "segment": "WHOLESALE", "percent": "15"},
     ]
-    extras = [{"label": "Özel Fiyat", "percent": "10"}]
+    extras = [{"label": "Mağaza Fiyatı", "percent": "10"}]
     retail = {"percent": "20", "vat_rate": "20", "erp_price": "2000"}
     sheet = _sheet(columns=columns, extras=extras, retail=retail, applied_percent="5")
     out = compute_sheet(PricingSheetIn.model_validate(sheet))
@@ -112,8 +112,9 @@ def test_the_applied_percent_goes_on_each_erp_price_else_on_the_calculated_one()
         ("1150.00", "1200", "1260.00"),
         ("1322.50", None, "1388.63"),
     ]
-    # Özel Fiyat on its calculated 1745.70 → 1832.99; retail on its ERP 2000 → 2100.
-    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("1832.99", "2100.00")
+    # Mağaza Fiyatı and retail never take the rate: the calculated 1745.70, and
+    # retail's ERP 2000, as they are.
+    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("1745.70", "2000.00")
     # The chain runs on calculated values only: retail is still 2094.84.
     assert out["retail"]["computed"] == "2094.84"
     # A typed uygulanacak fiyat still wins over all of it.

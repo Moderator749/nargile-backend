@@ -6,8 +6,9 @@ the cost's own VAT basis, so 1000 at +15%, +15%, +20% is 1150, 1322.50, 1587
 whatever is typed below it. Under it, per column, the "ERP fiyatı" is a base
 price the admin may type (`erp_price`), and the "uygulanacak fiyat" the price
 sent to the site: typed (`desired`), or else the base — the ERP fiyatı, or the
-calculated value without one — plus the sheet's "uygulanacak oran"
-(`applied_percent`). Neither feeds the chain.
+calculated value without one — plus, for the classes only, the sheet's
+"uygulanacak oran" (`applied_percent`). The extras and retail never take the
+rate: their price is their base as it is. Nothing of this feeds the chain.
 
 Retail is the last column and, as on the paper sheet ("KDV dahil perakende
 fiyat %KDV"), it is always after VAT: the previous calculated value plus its
@@ -15,7 +16,7 @@ percent, plus VAT when the sheet's cost was before VAT. Its ERP fiyatı and
 uygulanacak fiyat are shelf prices, after VAT too. The VAT rate is also what every price is
 stored with, so the other side (before ↔ after VAT) can be completed.
 
-Between the classes and retail may come "extras" ("Özel Fiyat"), links of
+Between the classes and retail may come "extras" ("Mağaza Fiyatı"), links of
 the same chain shown as retail is: the previous step plus its percent, plus
 VAT on a before-VAT sheet. The chain runs on before VAT — retail is the last
 extra's before-VAT value plus its percent, then VAT — so VAT is added once.
@@ -87,12 +88,13 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "percent": str(extra.percent),
             "vat_rate": str(r.vat_rate),
             "before_vat": str(extra_before.quantize(CENT)),
-            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, sheet.applied_percent),
+            # The rate is the classes' only: an extra's price is its base.
+            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None),
         })
         previous = extra_before  # retail builds on it, before VAT
 
     before_vat = _step(previous, r.percent)
-    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, sheet.applied_percent)
+    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None)  # retail never takes the rate
     retail_price = Decimal(retail["price"])
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
     try_price = (retail_price * rate).quantize(CENT) if rate else None
