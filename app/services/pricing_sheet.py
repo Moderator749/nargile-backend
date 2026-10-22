@@ -3,14 +3,14 @@
 Two rows, as on the paper sheet. The calculated row is one unbroken formula
 chain — every column is the previous *calculated* value plus its percent, in
 the cost's own VAT basis, so 1000 at +15%, +15%, +20% is 1150, 1322.50, 1587
-whatever is typed below it. The "uygulanacak fiyat" row is the admin's own
-figure per column; it never feeds the chain, it only replaces that column's
-calculated value as the price sent to the site.
+whatever is typed below it. The "ERP fiyatı" row is the price each column
+sends to the site: typed by the admin (`desired`), or else its calculated
+value plus its "uygulanacak oran" (`erp_percent`). It never feeds the chain.
 
 Retail is the last column and, as on the paper sheet ("KDV dahil perakende
 fiyat %KDV"), it is always after VAT: the previous calculated value plus its
-percent, plus VAT when the sheet's cost was before VAT. Its "uygulanacak fiyat"
-is the shelf price, after VAT too. The VAT rate is also what every price is
+percent, plus VAT when the sheet's cost was before VAT. Its "ERP fiyatı" is
+the shelf price, after VAT too. The VAT rate is also what every price is
 stored with, so the other side (before ↔ after VAT) can be completed.
 
 Between the classes and retail may come "extras" ("Özel Fiyat"), links of
@@ -20,10 +20,10 @@ extra's before-VAT value plus its percent, then VAT — so VAT is added once.
 They are for the admin's reference only: no customer group has such a price,
 so applying a sheet reports them as not written.
 
-Each column may carry an "ERP Fiyatı (%)": its "uygulanacak fiyat", when none
-is typed, is then its calculated price plus that percent (half a kuruş up, as
-the panel shows it) — so it is part of the price sent to the site. It never
-feeds the chain, which runs on calculated values only.
+Each column may carry an "uygulanacak oran" (`erp_percent`): its ERP fiyatı,
+when none is typed, is then its calculated price plus that percent (half a
+kuruş up, as the panel shows it) — the price sent to the site. It never feeds
+the chain, which runs on calculated values only.
 
 The panel does the same sums live; the server does them again on save, so a
 stored row never disagrees with its own figures.
@@ -48,7 +48,7 @@ def _step(previous: Decimal, percent: Decimal) -> Decimal:
 
 
 def _priced(computed: Decimal, erp_percent: Decimal | None, desired: Decimal | None) -> dict:
-    """A column's figures below its percent: calculated, ERP percent, typed, and the price it sends."""
+    """A column's figures below its percent: calculated, its rate, the typed price, and the price it sends."""
     if erp_percent:
         # Half a kuruş up, as the panel shows it (1322.50 + 5% = 1388.63).
         auto = _step(computed, erp_percent).quantize(CENT, rounding=ROUND_HALF_UP)

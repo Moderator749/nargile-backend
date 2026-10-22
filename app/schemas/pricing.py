@@ -23,12 +23,14 @@ class PricingColumnIn(BaseModel):
     segment: SegmentType | None = None
     # On top of the previous column's price.
     percent: Decimal = Field(ge=-99.99, le=10000, decimal_places=4)
-    # "Uygulanacak fiyat": the admin's rounded or chosen figure, sent to the site
+    # "ERP fiyatı" typed: the admin's rounded or chosen figure, sent to the site
     # in place of the calculated one. It does not feed the next column: the
-    # calculated row is one unbroken chain. Empty: the calculated value.
+    # calculated row is one unbroken chain. Empty: the calculated value (plus
+    # `erp_percent`).
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    # "ERP Fiyatı (%)": this column's "uygulanacak fiyat" is its calculated
-    # price plus this percent (unless a price is typed). Empty or 0: none.
+    # "Uygulanacak oran (%)": this column's price ("ERP fiyatı") is its
+    # calculated price plus this percent, unless one is typed (`desired`).
+    # Empty or 0: none.
     erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
 
     @field_validator("label")
@@ -45,8 +47,9 @@ class PricingRetailIn(BaseModel):
     # The VAT rate written with the prices, to complete their other side.
     vat_rate: Decimal = Field(ge=0, le=99.99, decimal_places=2)
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    # "ERP Fiyatı (%)": this column's "uygulanacak fiyat" is its calculated
-    # price plus this percent (unless a price is typed). Empty or 0: none.
+    # "Uygulanacak oran (%)": this column's price ("ERP fiyatı") is its
+    # calculated price plus this percent, unless one is typed (`desired`).
+    # Empty or 0: none.
     erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
 
 
@@ -59,8 +62,9 @@ class PricingExtraIn(BaseModel):
     label: str = Field(min_length=1, max_length=40)
     percent: Decimal = Field(ge=-99.99, le=10000, decimal_places=4)
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    # "ERP Fiyatı (%)": this column's "uygulanacak fiyat" is its calculated
-    # price plus this percent (unless a price is typed). Empty or 0: none.
+    # "Uygulanacak oran (%)": this column's price ("ERP fiyatı") is its
+    # calculated price plus this percent, unless one is typed (`desired`).
+    # Empty or 0: none.
     erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
 
     @field_validator("label")
