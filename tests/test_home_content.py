@@ -80,7 +80,7 @@ async def test_admin_crud(client: AsyncClient, admin_user: User, cleanup, path: 
         ("/api/v1/admin/hero-slides", {**SLIDE, "guest_cta_label": "Bayi"}),  # label without link
         ("/api/v1/admin/hero-slides", {**SLIDE, "image_url": "https://x.com/a.png\")"}),
         ("/api/v1/admin/hero-slides", {**SLIDE, "requires": "moon"}),
-        ("/api/v1/admin/hero-slides", {**SLIDE, "title": "  "}),
+        ("/api/v1/admin/hero-slides", {**SLIDE, "title": "x" * 121}),
         ("/api/v1/admin/promo-boxes", {**PROMO, "href": "data:text/html,x"}),
         ("/api/v1/admin/promo-boxes", {k: v for k, v in PROMO.items() if k != "widget"}),  # the box is its widget
         ("/api/v1/admin/promo-boxes", {**PROMO, "widget": {"youtube_href": "javascript:alert(1)"}}),

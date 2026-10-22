@@ -126,6 +126,24 @@ async def test_hero_slide_design_and_an_optional_button(client: AsyncClient, adm
         assert resp.status_code == 422, (bad, resp.text)
 
 
+async def test_a_slide_can_be_its_image_alone(client: AsyncClient, admin_user: User, cleanup, db_session: AsyncSession):
+    h = auth_header(admin_user)
+    # No eyebrow, title, subtitle or button: given as empty, as null, or left out.
+    for body in ({"title": "", "eyebrow": "", "cta_label": ""}, {"title": None, "eyebrow": None}, {}):
+        created = await client.post("/api/v1/admin/hero-slides", headers=h, json={**body, "image_url": "https://cdn.example.com/b.jpg"})
+        assert created.status_code == 201, created.text
+        got = created.json()
+        assert (got["eyebrow"], got["title"], got["subtitle"], got["cta_label"], got["cta_href"]) == ("", "", "", "", "")
+        assert got["image"] == "https://cdn.example.com/b.jpg"
+    # Blank space alone is no title either.
+    spaced = (await client.post("/api/v1/admin/hero-slides", headers=h, json={"title": "  \n  "})).json()
+    assert spaced["title"] == ""
+    public = (await client.get("/api/v1/home/content")).json()["slides"]
+    assert sum(1 for s in public if s["title"] == "") >= 4
+    await db_session.execute(delete(HeroSlide).where(HeroSlide.title == ""))
+    await db_session.commit()
+
+
 async def test_menu_entries_can_be_switched_off(client: AsyncClient, admin_user: User, cleanup):
     doc = {
         "navigation": {

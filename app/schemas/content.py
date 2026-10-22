@@ -117,9 +117,11 @@ def _required(value: str) -> str:
 
 
 class HeroSlideWrite(BaseModel):
+    # Every text is optional: a banner with its words in the photo needs none,
+    # and a slide with no text and no button is its image alone.
     eyebrow: str = Field(default="", max_length=60)
     # The title and subtitle may run over several lines ("\n").
-    title: str = Field(max_length=120)
+    title: str = Field(default="", max_length=120)
     subtitle: str = Field(default="", max_length=240)
     # The button is optional: with no label there is none, and its link is not kept.
     cta_label: str = Field(default="", max_length=40)
@@ -140,6 +142,11 @@ class HeroSlideWrite(BaseModel):
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
+    @field_validator("eyebrow", "title", "subtitle", "cta_label", mode="before")
+    @classmethod
+    def _none_is_empty(cls, v: str | None) -> str:
+        return "" if v is None else v
+
     @field_validator("title", "subtitle", mode="before")
     @classmethod
     def _lines(cls, v: str) -> str:
@@ -148,15 +155,10 @@ class HeroSlideWrite(BaseModel):
             v = "\n".join(line.strip() for line in v.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
         return v
 
-    @field_validator("eyebrow", "subtitle", "cta_label")
+    @field_validator("eyebrow", "title", "subtitle", "cta_label")
     @classmethod
     def _strip(cls, v: str) -> str:
         return v.strip()
-
-    @field_validator("title")
-    @classmethod
-    def _req(cls, v: str) -> str:
-        return _required(v)
 
     @field_validator("cta_href", "guest_cta_href")
     @classmethod
