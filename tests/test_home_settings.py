@@ -253,3 +253,61 @@ async def test_the_top_brand_ticker_follows_an_older_brands_switch(client: Async
     await client.put("/api/v1/admin/home/settings", headers=h, json={"sections": {"brands": False, "brands_top": True}})
     sections = (await client.get("/api/v1/home/settings")).json()["data"]["sections"]
     assert (sections["brands"], sections["brands_top"]) == (False, True)
+
+
+SECTIONS_COPY = {
+    "perks": {
+        "installments": {"icon": "credit-card", "label": "Taksit", "value": "6 taksit", "note": "Tüm kartlara."},
+        "volume": {"icon": "store", "label": "Sepette İndirim", "note": ""},
+        "transfer": {"icon": "landmark", "label": "Havale", "note": "Nakit indirimi."},
+    },
+    "picks": {
+        "title": "Seçtiklerimiz", "subtitle": "", "bestsellers": "Çok Satan", "newest": "Yeni",
+        "shipping_eyebrow": "Ücretsiz Kargo", "shipping_text": "{tutar} üzeri ücretsiz.",
+    },
+    "lules": {
+        "title": "Lüleler", "kinds": ["Sırlı", "Cam"], "closing": "Hepsi burada", "more": "Tümü",
+        "href": "/catalog/luleler", "courier_eyebrow": "Kurye", "courier_text": "Aynı gün",
+    },
+    "sultanpuan": {"subtitle": "{bant} alışverişlerde", "note": "Puan indirim olur.", "call": "Kazanın!"},
+    "kumbara": {"subtitle": "Her alışverişe puan", "note": "{tutar} barajı, {oran} ekstra.", "call": "Biriktirin!"},
+    "campaigns": {
+        "lead": {"eyebrow": "Sınırlı", "title": "Büyük Fırsat", "subtitle": "", "cta": "İncele", "href": "/firsat-urunleri",
+                 "image": "/images/kampanya.jpg"},
+        "minis": [{"title": f"Kutu {i}", "subtitle": "", "href": "/catalog"} for i in range(3)],
+    },
+    "statement": {"heading": "Referans", "lead": "Bir cümle.", "rest": "Devamı."},
+    "brand_showcase": {
+        "heading": "Markalarımız", "collection": "Keşfet",
+        "sultan": {"description": "Sultan.", "logo": None}, "oduman": {"description": "Oduman."},
+        "legend": {"description": "Legend.", "logo": "https://cdn.example.com/legend.png"},
+    },
+    "kozlukler": {"title": "Közlükler", "subtitle": "", "more": "Tümü"},
+    "games": {"title": "Oyunlar", "subtitle": "Tavla", "more": "Tümü"},
+}
+
+
+async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, admin_user: User, cleanup):
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json=SECTIONS_COPY)
+    assert saved.status_code == 200, saved.text
+    public = (await client.get("/api/v1/home/settings")).json()["data"]
+    assert set(public) == set(SECTIONS_COPY)
+    assert public["perks"]["installments"]["value"] == "6 taksit"
+    assert public["campaigns"]["lead"]["image"] == "/images/kampanya.jpg" and public["campaigns"]["minis"][2].get("image") is None
+    assert public["brand_showcase"]["legend"]["logo"] == "https://cdn.example.com/legend.png"
+    assert public["kumbara"]["note"] == "{tutar} barajı, {oran} ekstra."
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"campaigns": {**SECTIONS_COPY["campaigns"], "minis": SECTIONS_COPY["campaigns"]["minis"][:2]}},
+        {"campaigns": {**SECTIONS_COPY["campaigns"], "lead": {**SECTIONS_COPY["campaigns"]["lead"], "href": "javascript:x"}}},
+        {"lules": {**SECTIONS_COPY["lules"], "title": ""}},
+        {"perks": {**SECTIONS_COPY["perks"], "volume": {"icon": "rocket", "label": "X", "note": ""}}},
+        {"brand_showcase": {**SECTIONS_COPY["brand_showcase"], "sultan": {"description": "", "logo": "data:image/png;base64,AA"}}},
+    ],
+)
+async def test_every_sections_copy_is_held_to_its_rules(client: AsyncClient, admin_user: User, cleanup, bad: dict):
+    resp = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json=bad)
+    assert resp.status_code == 422, resp.text

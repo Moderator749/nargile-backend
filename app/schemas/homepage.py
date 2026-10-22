@@ -58,6 +58,7 @@ Slug = Annotated[str | None, Field(default=None, max_length=80, pattern=r"^[a-z0
 IconKey = Literal[
     "wind", "wrench", "flame", "layers", "sparkles", "shield", "package", "gamepad",
     "truck", "bike", "credit-card", "landmark", "trending-up", "badge-check", "headset", "store",
+    "shopping-cart", "trending-down",
 ]
 
 
@@ -309,6 +310,118 @@ class Mobile(_Strict):
         return self
 
 
+# ── The sections' own copy ───────────────────────────────────────────────────
+# Every section the homepage shows has its words (and, where it has any, its
+# pictures and links) here. A text may hold a placeholder the storefront fills
+# with a live figure from "Parametreler": {tutar} (an amount), {oran} (a rate),
+# {bant} (the SultanPuan band).
+
+
+class Perk(_Strict):
+    """One item of the "Avantaj Çubuğu"; its figure, for the two discounts, is live."""
+
+    icon: IconKey
+    label: _text(40, required=True)
+    note: _text(160)
+
+
+class InstallmentsPerk(Perk):
+    value: _text(60, required=True)
+
+
+class Perks(_Strict):
+    installments: InstallmentsPerk
+    volume: Perk
+    transfer: Perk
+
+
+class Picks(_Strict):
+    """ "Sizin İçin Seçtiklerimiz", its two tabs, and the free-shipping note beside it."""
+
+    title: _text(80, required=True)
+    subtitle: _text(200)
+    bestsellers: _text(30, required=True)
+    newest: _text(30, required=True)
+    shipping_eyebrow: _text(60)
+    shipping_text: _text(160)  # {tutar}: the free-shipping threshold
+
+
+class Lules(_Strict):
+    """ "Lüle Alırken Kararsız Kalacaksınız", and the courier note beside it."""
+
+    title: _text(80, required=True)
+    kinds: list[_text(40, required=True)] = Field(max_length=8)
+    closing: _text(160)
+    more: _text(40, required=True)
+    href: Link
+    courier_eyebrow: _text(60)
+    courier_text: _text(120)
+
+
+class SultanPuanCopy(_Strict):
+    subtitle: _text(120)  # {bant}
+    note: _text(200)
+    call: _text(40)
+
+
+class KumbaraCopy(_Strict):
+    subtitle: _text(120)
+    note: _text(200)  # {tutar}: the yearly target; {oran}: the bonus as a share of it
+    call: _text(40)
+
+
+class CampaignBox(_Strict):
+    title: _text(80, required=True)
+    subtitle: _text(160)
+    href: Link
+    # A photo behind the words; without one, the box keeps its gradient.
+    image: Image = None
+
+
+class CampaignLead(CampaignBox):
+    eyebrow: _text(40)
+    cta: _text(40, required=True)
+
+
+class Campaigns(_Strict):
+    """The big box and the mini bento: always three small boxes."""
+
+    lead: CampaignLead
+    minis: list[CampaignBox] = Field(min_length=3, max_length=3)
+
+
+class Statement(_Strict):
+    """ "Sektörde Referans Noktası": the heading, the line shown, the rest folded."""
+
+    heading: _text(80, required=True)
+    lead: _text(400)
+    rest: _text(1000)
+
+
+class BrandBlurb(_Strict):
+    description: _text(400)
+    # In place of the shop's own logo file.
+    logo: Image = None
+
+
+class BrandShowcaseCopy(_Strict):
+    """ "Markalarımız": its heading, the button's words, and each house brand's line."""
+
+    heading: _text(60, required=True)
+    collection: _text(40, required=True)
+    sultan: BrandBlurb
+    oduman: BrandBlurb
+    legend: BrandBlurb
+
+
+class ProductRowCopy(_Strict):
+    """A category's product row ("Közlükler", "Oyun & Eğlence")."""
+
+    title: _text(80, required=True)
+    subtitle: _text(200)
+    more: _text(40, required=True)
+
+
 # ── The document ─────────────────────────────────────────────────────────────
 
 
@@ -327,6 +440,16 @@ class HomepageDocument(_Strict):
     seo_intro: SeoIntro | None = None
     footer: Footer | None = None
     mobile: Mobile | None = None
+    perks: Perks | None = None
+    picks: Picks | None = None
+    lules: Lules | None = None
+    sultanpuan: SultanPuanCopy | None = None
+    kumbara: KumbaraCopy | None = None
+    campaigns: Campaigns | None = None
+    statement: Statement | None = None  # the "promos" section
+    brand_showcase: BrandShowcaseCopy | None = None
+    kozlukler: ProductRowCopy | None = None
+    games: ProductRowCopy | None = None
 
 
 class HomepageSettingsRead(BaseModel):
