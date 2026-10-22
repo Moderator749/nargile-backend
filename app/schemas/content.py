@@ -55,6 +55,16 @@ class HeroTextColors(BaseModel):
     subtitle: HexColor | None = None
 
 
+class HeroBgPosition(BaseModel):
+    """The photo's focal point (0–100 % across and down) and zoom (100 = fills the slide) on a phone."""
+
+    model_config = {"extra": "forbid"}
+
+    x: int = Field(ge=0, le=100)
+    y: int = Field(ge=0, le=100)
+    zoom: int = Field(default=100, ge=100, le=200)
+
+
 class HeroLayout(BaseModel):
     """Where each of a slide's four parts sits; all four or none."""
 
@@ -139,6 +149,12 @@ class HeroSlideWrite(BaseModel):
     enable_overlay: bool = True
     font_sizes: HeroTextSizes | None = None
     text_colors: HeroTextColors | None = None
+    # The phone's own design (below 768px), apart from the wide screen's: the
+    # parts' positions on a 4:5 stage, the texts' sizes (px on a 375px-wide
+    # stage) and the photo's crop. Null = as a phone has always shown it.
+    mobile_layout: HeroLayout | None = None
+    mobile_font_sizes: HeroTextSizes | None = None
+    mobile_bg_position: HeroBgPosition | None = None
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
@@ -210,6 +226,9 @@ class HeroSlideRead(BaseModel):
     enable_overlay: bool
     font_sizes: HeroTextSizes | None
     text_colors: HeroTextColors | None
+    mobile_layout: HeroLayout | None
+    mobile_font_sizes: HeroTextSizes | None
+    mobile_bg_position: HeroBgPosition | None
     is_active: bool
     sort_order: int
 

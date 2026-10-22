@@ -126,6 +126,37 @@ async def test_hero_slide_design_and_an_optional_button(client: AsyncClient, adm
         assert resp.status_code == 422, (bad, resp.text)
 
 
+async def test_a_slides_mobile_design_is_its_own(client: AsyncClient, admin_user: User, cleanup):
+    h = auth_header(admin_user)
+    layout = {p: {"x": 50, "y": 20 + i * 20} for i, p in enumerate(("eyebrow", "title", "subtitle", "button"))}
+    slide = {"title": f"Mobil {TAG}", "layout": layout, "font_sizes": {"title": 64}, "image_focus_x": 30}
+    created = (await client.post("/api/v1/admin/hero-slides", headers=h, json=slide)).json()
+    # Until designed, a phone shows the slide as before.
+    assert (created["mobile_layout"], created["mobile_font_sizes"], created["mobile_bg_position"]) == (None, None, None)
+
+    mobile = {
+        "mobile_layout": {**layout, "title": {"x": 40, "y": 70}},
+        "mobile_font_sizes": {"title": 30, "eyebrow": "sm"},
+        "mobile_bg_position": {"x": 80, "y": 10, "zoom": 140},
+    }
+    saved = await client.put(f"/api/v1/admin/hero-slides/{created['id']}", headers=h, json={**slide, **mobile})
+    assert saved.status_code == 200, saved.text
+    got = saved.json()
+    assert got["mobile_layout"]["title"] == {"x": 40, "y": 70} and got["mobile_font_sizes"] == {"eyebrow": 14, "title": 30, "subtitle": None}
+    assert got["mobile_bg_position"] == {"x": 80, "y": 10, "zoom": 140}
+    # The wide screen's design is untouched by the phone's.
+    assert got["layout"]["title"] == layout["title"] and got["font_sizes"]["title"] == 64 and got["image_focus_x"] == 30
+
+    for bad in (
+        {"mobile_bg_position": {"x": 120, "y": 0}},
+        {"mobile_bg_position": {"x": 10, "y": 10, "zoom": 50}},
+        {"mobile_layout": {"title": {"x": 1, "y": 1}}},  # all four parts or none
+        {"mobile_font_sizes": {"title": 400}},
+    ):
+        resp = await client.put(f"/api/v1/admin/hero-slides/{created['id']}", headers=h, json={**slide, **bad})
+        assert resp.status_code == 422, (bad, resp.text)
+
+
 async def test_a_slide_can_be_its_image_alone(client: AsyncClient, admin_user: User, cleanup, db_session: AsyncSession):
     h = auth_header(admin_user)
     # No eyebrow, title, subtitle or button: given as empty, as null, or left out.

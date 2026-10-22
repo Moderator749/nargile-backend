@@ -43,6 +43,12 @@ class HeroSlide(Base):
     enable_overlay: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     font_sizes: Mapped[dict | None] = mapped_column(JSONB)
     text_colors: Mapped[dict | None] = mapped_column(JSONB)
+    # A phone's own design, apart from the wide screen's (null = as phones have
+    # always shown it): the parts' positions on its 4:5 stage, the texts' sizes
+    # (px on a 375px-wide stage), the photo's crop {"x", "y", "zoom"}.
+    mobile_layout: Mapped[dict | None] = mapped_column(JSONB)
+    mobile_font_sizes: Mapped[dict | None] = mapped_column(JSONB)
+    mobile_bg_position: Mapped[dict | None] = mapped_column(JSONB)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
