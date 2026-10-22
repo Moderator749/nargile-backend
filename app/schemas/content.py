@@ -20,9 +20,13 @@ class Point(BaseModel):
     y: float = Field(ge=0, le=100)
 
 
-#: The sizes a slide's text can take, by Tailwind's names (sm 14px … 7xl 72px
-#: on the widest slider); the storefront scales them down with the slide.
-FontSize = Literal["sm", "base", "lg", "xl", "2xl", "3xl", "4xl", "5xl", "6xl", "7xl"]
+#: The named sizes the first version of the editor saved, as the pixels they
+#: stood for; a stored or sent name is read as its pixels.
+NAMED_FONT_PX = {"sm": 14, "base": 16, "lg": 18, "xl": 20, "2xl": 24, "3xl": 30, "4xl": 36, "5xl": 48, "6xl": 60, "7xl": 72}
+
+#: A slide text's size in px on the widest slider (≈952px); the storefront
+#: scales it down with the slide. Set by dragging the text's corner in the editor.
+FontPx = Annotated[int, Field(ge=8, le=160)]
 HexColor = Annotated[str, StringConstraints(pattern=r"^#[0-9a-fA-F]{6}$")]
 
 
@@ -31,9 +35,14 @@ class HeroTextSizes(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    eyebrow: FontSize | None = None
-    title: FontSize | None = None
-    subtitle: FontSize | None = None
+    eyebrow: FontPx | None = None
+    title: FontPx | None = None
+    subtitle: FontPx | None = None
+
+    @field_validator("eyebrow", "title", "subtitle", mode="before")
+    @classmethod
+    def _named(cls, v):
+        return NAMED_FONT_PX.get(v, v) if isinstance(v, str) else v
 
 
 class HeroTextColors(BaseModel):

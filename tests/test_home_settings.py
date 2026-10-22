@@ -102,21 +102,23 @@ async def test_hero_slide_design_and_an_optional_button(client: AsyncClient, adm
 
     design = {
         "enable_overlay": False,
-        "font_sizes": {"title": "5xl", "subtitle": "lg"},
+        "font_sizes": {"title": 57, "subtitle": "lg"},  # px; a name of the first version reads as its px
         "text_colors": {"eyebrow": "#FFD700", "title": "#000000"},
     }
     saved = await client.put(f"/api/v1/admin/hero-slides/{body['id']}", headers=h, json={**slide, **design})
     assert saved.status_code == 200, saved.text
     got = saved.json()
     assert got["enable_overlay"] is False
-    assert got["font_sizes"] == {"eyebrow": None, "title": "5xl", "subtitle": "lg"}
+    assert got["font_sizes"] == {"eyebrow": None, "title": 57, "subtitle": 18}
     assert got["text_colors"] == {"eyebrow": "#FFD700", "title": "#000000", "subtitle": None}
     public = (await client.get("/api/v1/home/content")).json()["slides"]
-    assert any(s["id"] == body["id"] and s["font_sizes"]["title"] == "5xl" for s in public)
+    assert any(s["id"] == body["id"] and s["font_sizes"]["title"] == 57 for s in public)
 
     for bad in (
         {"cta_label": "Git", "cta_href": ""},  # a button needs its link
         {"font_sizes": {"title": "9xl"}},
+        {"font_sizes": {"title": 4}},
+        {"font_sizes": {"title": 500}},
         {"text_colors": {"title": "red"}},
         {"text_colors": {"title": "#fff"}},
     ):
