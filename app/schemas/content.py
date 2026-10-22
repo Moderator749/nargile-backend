@@ -155,6 +155,9 @@ class HeroSlideWrite(BaseModel):
     mobile_layout: HeroLayout | None = None
     mobile_font_sizes: HeroTextSizes | None = None
     mobile_bg_position: HeroBgPosition | None = None
+    # A portrait photo for phones in place of the wide one (an uploaded file's
+    # address, an https URL, or a site path); none: the wide one, cropped.
+    mobile_image: str | None = Field(default=None, max_length=500)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
@@ -180,6 +183,18 @@ class HeroSlideWrite(BaseModel):
     @classmethod
     def _links(cls, v: str | None) -> str | None:
         return _href(v)
+
+    @field_validator("mobile_image", mode="before")
+    @classmethod
+    def _mobile_image(cls, v: str | None) -> str | None:
+        v = _blank_none(v)
+        if v is None:
+            return None
+        if v.startswith("/") and not v.startswith("//") and _HREF.match(v):
+            return v
+        if not re.match(IMAGE_URL_PATTERN, v):
+            raise ValueError("The mobile image must be a site path (/images/…) or an http(s) URL")
+        return v
 
     @field_validator("guest_cta_label", "image_url", mode="before")
     @classmethod
@@ -229,6 +244,7 @@ class HeroSlideRead(BaseModel):
     mobile_layout: HeroLayout | None
     mobile_font_sizes: HeroTextSizes | None
     mobile_bg_position: HeroBgPosition | None
+    mobile_image: str | None
     is_active: bool
     sort_order: int
 

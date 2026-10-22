@@ -147,7 +147,14 @@ async def test_a_slides_mobile_design_is_its_own(client: AsyncClient, admin_user
     # The wide screen's design is untouched by the phone's.
     assert got["layout"]["title"] == layout["title"] and got["font_sizes"]["title"] == 64 and got["image_focus_x"] == 30
 
+    # Its own phone photo: an uploaded file's address, a site path, or none.
+    for image, stored in (("https://cdn.example.com/dikey.jpg", "https://cdn.example.com/dikey.jpg"), ("/images/dikey.jpg", "/images/dikey.jpg"), ("  ", None)):
+        r = await client.put(f"/api/v1/admin/hero-slides/{created['id']}", headers=h, json={**slide, **mobile, "mobile_image": image})
+        assert r.status_code == 200 and r.json()["mobile_image"] == stored, r.text
+
     for bad in (
+        {"mobile_image": "javascript:alert(1)"},
+        {"mobile_image": "//evil.example/x.jpg"},
         {"mobile_bg_position": {"x": 120, "y": 0}},
         {"mobile_bg_position": {"x": 10, "y": 10, "zoom": 50}},
         {"mobile_layout": {"title": {"x": 1, "y": 1}}},  # all four parts or none
