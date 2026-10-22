@@ -44,6 +44,21 @@ class PricingRetailIn(BaseModel):
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
 
 
+class PricingExtraIn(BaseModel):
+    """A price after retail ("Özel Fiyat 1"…), worked out as retail is: the
+    previous step plus its percent, plus VAT on a before-VAT sheet. For the
+    admin's own reference: no customer group's price, never sent to the site."""
+
+    label: str = Field(min_length=1, max_length=40)
+    percent: Decimal = Field(ge=-99.99, le=10000, decimal_places=4)
+    desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+
+    @field_validator("label")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return " ".join(v.split())
+
+
 class PricingSheetIn(BaseModel):
     product_code: str = Field(default="", max_length=60)
     product_name: str = Field(default="", max_length=255)
@@ -53,6 +68,7 @@ class PricingSheetIn(BaseModel):
     cost: Money = Field(gt=0, le=Decimal("100000000"), decimal_places=4)
     columns: list[PricingColumnIn] = Field(default_factory=list, max_length=12)
     retail: PricingRetailIn
+    extras: list[PricingExtraIn] = Field(default_factory=list, max_length=6)
     # TRY per unit, typed in (prefilled from TCMB) when the sheet is in USD/EUR.
     usd_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
     eur_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)

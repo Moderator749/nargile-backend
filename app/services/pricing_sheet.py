@@ -13,6 +13,12 @@ percent, plus VAT when the sheet's cost was before VAT. Its "uygulanacak fiyat"
 is the shelf price, after VAT too. The VAT rate is also what every price is
 stored with, so the other side (before ↔ after VAT) can be completed.
 
+After retail may come "extras" ("Özel Fiyat 1", "Özel Fiyat 2"), worked out
+exactly as retail is. The chain runs on before VAT — each extra is the
+previous step's before-VAT value plus its percent, then VAT — so VAT is
+never added twice. They are for the admin's reference only: no customer
+group has such a price, so applying a sheet reports them as not written.
+
 The panel does the same sums live; the server does them again on save, so a
 stored row never disagrees with its own figures.
 """
@@ -53,9 +59,27 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
         previous = computed  # the chain runs on calculated values only
 
     r = sheet.retail
+    with_vat = (lambda v: v * (1 + r.vat_rate / 100)) if sheet.vat_mode == "EXCL" else (lambda v: v)
     before_vat = _step(previous, r.percent)
-    retail_computed = before_vat * (1 + r.vat_rate / 100) if sheet.vat_mode == "EXCL" else before_vat
+    retail_computed = with_vat(before_vat)
     retail_price = r.desired if r.desired is not None else retail_computed.quantize(CENT)
+
+    extras = []
+    previous = before_vat
+    for extra in sheet.extras:
+        extra_before = _step(previous, extra.percent)
+        extra_computed = with_vat(extra_before)
+        extras.append({
+            "label": extra.label,
+            "segment": None,
+            "percent": str(extra.percent),
+            "vat_rate": str(r.vat_rate),
+            "computed": str(extra_computed.quantize(CENT)),
+            "before_vat": str(extra_before.quantize(CENT)),
+            "desired": str(extra.desired) if extra.desired is not None else None,
+            "price": str(extra.desired if extra.desired is not None else extra_computed.quantize(CENT)),
+        })
+        previous = extra_before
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
     try_price = (retail_price * rate).quantize(CENT) if rate else None
     return {
@@ -74,6 +98,7 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "desired": str(r.desired) if r.desired is not None else None,
             "price": str(retail_price),
         },
+        "extras": extras,
         "usd_rate": str(sheet.usd_rate) if sheet.usd_rate is not None else None,
         "eur_rate": str(sheet.eur_rate) if sheet.eur_rate is not None else None,
         "try_price": str(try_price) if try_price is not None else None,
@@ -139,6 +164,7 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
             skipped.append(col["label"])
         else:
             targets.append((col["label"], SegmentType(col["segment"]), sheet.currency, Decimal(col["price"]), sheet.vat_mode))
+    skipped += [extra["label"] for extra in computed["extras"]]
     retail = computed["retail"]
     if sheet.currency != CurrencyType.TRY and sheet.final_try is not None:
         # "Son karar" is a retail price after VAT, in TRY.

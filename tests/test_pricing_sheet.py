@@ -83,6 +83,21 @@ def test_a_foreign_sheet_gives_the_tl_figure_at_the_typed_rate():
     assert (out["retail"]["computed"], out["retail"]["price"], out["try_price"]) == ("24.00", "25", "1037.50")
 
 
+def test_extras_are_worked_out_as_retail_is_never_adding_vat_twice():
+    extras = [{"label": "Özel Fiyat 1", "percent": "10"}, {"label": "Özel Fiyat 2", "percent": "10", "desired": "2500"}]
+    out = compute_sheet(PricingSheetIn.model_validate(_sheet(extras=extras)))
+    # Retail before VAT 1587; +10% = 1745.70, + 20% VAT = 2094.84; +10% again = 1920.27 → 2304.32.
+    assert [(e["before_vat"], e["computed"], e["price"]) for e in out["extras"]] == [
+        ("1745.70", "2094.84", "2094.84"),
+        ("1920.27", "2304.32", "2500"),
+    ]
+    # Retail itself is untouched, and a sheet without extras stores an empty list.
+    assert out["retail"]["computed"] == "1904.40"
+    assert compute_sheet(PricingSheetIn.model_validate(_sheet()))["extras"] == []
+    inclusive = compute_sheet(PricingSheetIn.model_validate(_sheet(vat_mode="INCL", extras=extras[:1])))
+    assert inclusive["extras"][0]["computed"] == inclusive["extras"][0]["before_vat"] == "1745.70"
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -90,6 +105,8 @@ def test_a_foreign_sheet_gives_the_tl_figure_at_the_typed_rate():
         {"columns": [{"label": "Ara", "segment": "RETAIL", "percent": "10"}]},
         {"columns": [{"label": "A", "segment": "CAFE", "percent": "1"}, {"label": "B", "segment": "CAFE", "percent": "1"}]},
         {"retail": {"percent": "10", "vat_rate": "120"}},
+        {"extras": [{"label": "", "percent": "10"}]},
+        {"extras": [{"label": "Özel", "percent": "10"}] * 7},
     ],
 )
 async def test_impossible_sheets_are_refused(client: AsyncClient, admin_user: User, change: dict):
@@ -169,11 +186,15 @@ async def test_apply_writes_every_customer_groups_live_price(
     ]
     resp = await client.post(
         f"{BASE}/apply-to-product", headers=auth_header(admin_user),
-        json={"file_name": "Uygulanan", "sheet": _sheet(product_code=code.lower(), columns=columns)},
+        json={
+            "file_name": "Uygulanan",
+            "sheet": _sheet(product_code=code.lower(), columns=columns, extras=[{"label": "Özel Fiyat 1", "percent": "5"}]),
+        },
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["variants_updated"] == 1 and body["skipped"] == ["Ara Hesap"]
+    # An extra is for reference only: reported, never written.
+    assert body["variants_updated"] == 1 and body["skipped"] == ["Ara Hesap", "Özel Fiyat 1"]
     assert body["record"]["applied_at"] is not None
 
     prices = await _prices(db_session, normal_v.id)
