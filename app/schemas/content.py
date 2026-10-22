@@ -1,7 +1,7 @@
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator, model_validator
 
 from app.schemas.catalog import IMAGE_URL_PATTERN
 
@@ -18,6 +18,32 @@ class Point(BaseModel):
 
     x: float = Field(ge=0, le=100)
     y: float = Field(ge=0, le=100)
+
+
+#: The sizes a slide's text can take, by Tailwind's names (sm 14px … 7xl 72px
+#: on the widest slider); the storefront scales them down with the slide.
+FontSize = Literal["sm", "base", "lg", "xl", "2xl", "3xl", "4xl", "5xl", "6xl", "7xl"]
+HexColor = Annotated[str, StringConstraints(pattern=r"^#[0-9a-fA-F]{6}$")]
+
+
+class HeroTextSizes(BaseModel):
+    """A size per text; one left out keeps the slide's own."""
+
+    model_config = {"extra": "forbid"}
+
+    eyebrow: FontSize | None = None
+    title: FontSize | None = None
+    subtitle: FontSize | None = None
+
+
+class HeroTextColors(BaseModel):
+    """A colour (#rrggbb) per text; one left out keeps the slide's own."""
+
+    model_config = {"extra": "forbid"}
+
+    eyebrow: HexColor | None = None
+    title: HexColor | None = None
+    subtitle: HexColor | None = None
 
 
 class HeroLayout(BaseModel):
@@ -83,10 +109,12 @@ def _required(value: str) -> str:
 
 class HeroSlideWrite(BaseModel):
     eyebrow: str = Field(default="", max_length=60)
+    # The title and subtitle may run over several lines ("\n").
     title: str = Field(max_length=120)
     subtitle: str = Field(default="", max_length=240)
-    cta_label: str = Field(max_length=40)
-    cta_href: str = Field(max_length=300)
+    # The button is optional: with no label there is none, and its link is not kept.
+    cta_label: str = Field(default="", max_length=40)
+    cta_href: str | None = Field(default="", max_length=300)
     guest_cta_label: str | None = Field(default=None, max_length=40)
     guest_cta_href: str | None = Field(default=None, max_length=300)
     image_url: str | None = Field(default=None, max_length=500)
@@ -96,15 +124,27 @@ class HeroSlideWrite(BaseModel):
     image_focus_y: int = Field(default=50, ge=0, le=100)
     image_zoom: int = Field(default=100, ge=100, le=200)
     layout: HeroLayout | None = None
+    # The dark wash over the photo (30%); off, the photo shows as it is.
+    enable_overlay: bool = True
+    font_sizes: HeroTextSizes | None = None
+    text_colors: HeroTextColors | None = None
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
-    @field_validator("eyebrow", "subtitle")
+    @field_validator("title", "subtitle", mode="before")
+    @classmethod
+    def _lines(cls, v: str) -> str:
+        # Line breaks kept, as "\n", with no blank space at either end of a line.
+        if isinstance(v, str):
+            v = "\n".join(line.strip() for line in v.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+        return v
+
+    @field_validator("eyebrow", "subtitle", "cta_label")
     @classmethod
     def _strip(cls, v: str) -> str:
         return v.strip()
 
-    @field_validator("title", "cta_label")
+    @field_validator("title")
     @classmethod
     def _req(cls, v: str) -> str:
         return _required(v)
@@ -128,8 +168,10 @@ class HeroSlideWrite(BaseModel):
 
     @model_validator(mode="after")
     def _guest_pair(self) -> "HeroSlideWrite":
-        if not self.cta_href:
-            raise ValueError("Button link is required")
+        if self.cta_label and not self.cta_href:
+            raise ValueError("The button needs a link")
+        if not self.cta_label:
+            self.cta_href = ""  # no button, no link
         if bool(self.guest_cta_label) != bool(self.guest_cta_href):
             raise ValueError("The guest button needs both a label and a link")
         return self
@@ -154,6 +196,9 @@ class HeroSlideRead(BaseModel):
     image_focus_y: int
     image_zoom: int
     layout: HeroLayout | None
+    enable_overlay: bool
+    font_sizes: HeroTextSizes | None
+    text_colors: HeroTextColors | None
     is_active: bool
     sort_order: int
 

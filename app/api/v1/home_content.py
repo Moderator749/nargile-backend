@@ -40,6 +40,7 @@ def slide_read(row: HeroSlide, request: Request) -> HeroSlideRead:
         image=_image(row, request), image_url=row.image_url, has_upload=bool(row.image_path),
         requires=row.requires, text_align=row.text_align, image_focus_x=row.image_focus_x,
         image_focus_y=row.image_focus_y, image_zoom=row.image_zoom, layout=row.layout,
+        enable_overlay=row.enable_overlay, font_sizes=row.font_sizes, text_colors=row.text_colors,
         is_active=row.is_active, sort_order=row.sort_order,
     )
 

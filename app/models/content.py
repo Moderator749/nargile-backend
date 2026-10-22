@@ -38,6 +38,11 @@ class HeroSlide(Base):
     # {"eyebrow": {"x": 50, "y": 24}, "title": …, "subtitle": …, "button": …}.
     # Null = the default centred stack.
     layout: Mapped[dict | None] = mapped_column(JSONB)
+    # The design: the dark wash over the photo (on by default), and a size and
+    # a colour per text ({"eyebrow": "sm", "title": "6xl", …}; null = the slide's own).
+    enable_overlay: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    font_sizes: Mapped[dict | None] = mapped_column(JSONB)
+    text_colors: Mapped[dict | None] = mapped_column(JSONB)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

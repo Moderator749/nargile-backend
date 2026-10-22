@@ -88,6 +88,42 @@ async def test_hero_slide_layout_fields(client: AsyncClient, admin_user: User, c
     assert too_far.status_code == 422
 
 
+async def test_hero_slide_design_and_an_optional_button(client: AsyncClient, admin_user: User, cleanup):
+    h = auth_header(admin_user)
+    # No button at all: neither label nor link is needed, and a stray link is not kept.
+    slide = {"title": f"İki satır\r\nbaşlık {TAG}  ", "subtitle": " Bir\n  iki ", "cta_label": "", "cta_href": "/catalog"}
+    created = await client.post("/api/v1/admin/hero-slides", headers=h, json=slide)
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert (body["cta_label"], body["cta_href"]) == ("", "")
+    assert body["title"] == f"İki satır\nbaşlık {TAG}" and body["subtitle"] == "Bir\niki"
+    # An existing slide's look by default: the wash on, its own sizes and colours.
+    assert (body["enable_overlay"], body["font_sizes"], body["text_colors"]) == (True, None, None)
+
+    design = {
+        "enable_overlay": False,
+        "font_sizes": {"title": "5xl", "subtitle": "lg"},
+        "text_colors": {"eyebrow": "#FFD700", "title": "#000000"},
+    }
+    saved = await client.put(f"/api/v1/admin/hero-slides/{body['id']}", headers=h, json={**slide, **design})
+    assert saved.status_code == 200, saved.text
+    got = saved.json()
+    assert got["enable_overlay"] is False
+    assert got["font_sizes"] == {"eyebrow": None, "title": "5xl", "subtitle": "lg"}
+    assert got["text_colors"] == {"eyebrow": "#FFD700", "title": "#000000", "subtitle": None}
+    public = (await client.get("/api/v1/home/content")).json()["slides"]
+    assert any(s["id"] == body["id"] and s["font_sizes"]["title"] == "5xl" for s in public)
+
+    for bad in (
+        {"cta_label": "Git", "cta_href": ""},  # a button needs its link
+        {"font_sizes": {"title": "9xl"}},
+        {"text_colors": {"title": "red"}},
+        {"text_colors": {"title": "#fff"}},
+    ):
+        resp = await client.put(f"/api/v1/admin/hero-slides/{body['id']}", headers=h, json={**slide, **bad})
+        assert resp.status_code == 422, (bad, resp.text)
+
+
 async def test_menu_entries_can_be_switched_off(client: AsyncClient, admin_user: User, cleanup):
     doc = {
         "navigation": {
