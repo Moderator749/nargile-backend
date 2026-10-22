@@ -27,6 +27,9 @@ class PricingColumnIn(BaseModel):
     # in place of the calculated one. It does not feed the next column: the
     # calculated row is one unbroken chain. Empty: the calculated value.
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    # "ERP Fiyatı (%)": this column's "uygulanacak fiyat" is its calculated
+    # price plus this percent (unless a price is typed). Empty or 0: none.
+    erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
 
     @field_validator("label")
     @classmethod
@@ -42,17 +45,23 @@ class PricingRetailIn(BaseModel):
     # The VAT rate written with the prices, to complete their other side.
     vat_rate: Decimal = Field(ge=0, le=99.99, decimal_places=2)
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    # "ERP Fiyatı (%)": this column's "uygulanacak fiyat" is its calculated
+    # price plus this percent (unless a price is typed). Empty or 0: none.
+    erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
 
 
 class PricingExtraIn(BaseModel):
-    """A price between the classes and retail ("Özel Fiyat"), worked out as
-    retail is and beside it, not before it: the last class plus its percent,
-    plus VAT on a before-VAT sheet. Retail never builds on it. For the admin's
-    own reference: no customer group's price, never sent to the site."""
+    """A price between the classes and retail ("Özel Fiyat"), shown as retail
+    is: the previous step plus its percent, plus VAT on a before-VAT sheet;
+    retail then builds on its step before VAT. For the admin's own reference:
+    no customer group's price, never sent to the site."""
 
     label: str = Field(min_length=1, max_length=40)
     percent: Decimal = Field(ge=-99.99, le=10000, decimal_places=4)
     desired: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    # "ERP Fiyatı (%)": this column's "uygulanacak fiyat" is its calculated
+    # price plus this percent (unless a price is typed). Empty or 0: none.
+    erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
 
     @field_validator("label")
     @classmethod
@@ -70,9 +79,6 @@ class PricingSheetIn(BaseModel):
     columns: list[PricingColumnIn] = Field(default_factory=list, max_length=12)
     retail: PricingRetailIn
     extras: list[PricingExtraIn] = Field(default_factory=list, max_length=6)
-    # "ERP Fiyatı (%)": every calculated price plus this, shown beside it for
-    # the ERP. Reference only; empty for none.
-    erp_percent: Decimal | None = Field(default=None, ge=-99.99, le=10000, decimal_places=4)
     # TRY per unit, typed in (prefilled from TCMB) when the sheet is in USD/EUR.
     usd_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
     eur_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
