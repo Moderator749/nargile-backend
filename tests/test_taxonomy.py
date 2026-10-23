@@ -194,6 +194,36 @@ async def test_brand_logo_upload(client: AsyncClient, admin_user: User, tag: str
     assert list((tmp_path / "brands").iterdir()) == []
 
 
+async def test_brand_update_clears_the_logo_only_when_asked(
+    client: AsyncClient, admin_user: User, tag: str, cleanup, tmp_path, monkeypatch
+):
+    """The edit form's "Logoyu kaldır" is saved with the rest: null or "" takes
+    the logo (and its file) off; leaving it out, or any other value, keeps it."""
+    monkeypatch.setattr(settings, "MEDIA_ROOT", tmp_path)
+    h = auth_header(admin_user)
+    brand = (await client.post("/api/v1/admin/brands", headers=h, json={"name": f"Temiz {tag}"})).json()
+    put = f"/api/v1/admin/brands/{brand['id']}"
+
+    async def upload():
+        r = await client.post(f"{put}/logo", headers=h, files={"file": ("l.png", PNG, "image/png")})
+        return r.json()["logo_url"]
+
+    logo = await upload()
+    for keep in ({}, {"logo_url": logo}, {"logo_url": "https://elsewhere.example/x.png"}):
+        kept = await client.put(put, headers=h, json={"name": brand["name"], **keep})
+        assert kept.status_code == 200, kept.text
+        assert kept.json()["logo_url"] == logo
+    assert len(list((tmp_path / "brands").iterdir())) == 1
+
+    for clear in (None, "", "  "):
+        cleared = await client.put(put, headers=h, json={"name": brand["name"], "logo_url": clear})
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["logo_url"] is None
+        assert list((tmp_path / "brands").iterdir()) == []
+        assert next(b for b in (await client.get("/api/v1/brands/")).json() if b["id"] == brand["id"])["logo_url"] is None
+        logo = await upload()
+
+
 async def test_uploads_are_addressed_through_public_media_url(
     client: AsyncClient, admin_user: User, tag: str, cleanup, tmp_path, monkeypatch
 ):

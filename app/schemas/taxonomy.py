@@ -107,8 +107,16 @@ class BrandWrite(BaseModel):
     search_term: str | None = Field(default=None, max_length=100)
     # For the brand's page (/marka/<slug>), above its products; blank = none.
     description: str | None = Field(default=None, max_length=1000)
+    # Only to take the logo off: null or "" clears it (the edit form's "Logoyu
+    # kaldır", saved with the rest). Left out, or any other value, keeps it; a
+    # logo is put on through POST /admin/brands/{id}/logo.
+    logo_url: str | None = Field(default=None, max_length=2000)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
+
+    @property
+    def clears_logo(self) -> bool:
+        return "logo_url" in self.model_fields_set and not (self.logo_url or "").strip()
 
     @field_validator("description")
     @classmethod

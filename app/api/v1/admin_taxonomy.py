@@ -260,7 +260,11 @@ async def update_brand(
 ):
     brand = await _brand(db, brand_id)
     await _apply_brand(db, brand, payload)
+    dropped = None
+    if payload.clears_logo:
+        dropped, brand.logo_path = brand.logo_path, None
     await db.commit()
+    delete_media(dropped)
     return brand_read(brand, request)
 
 
