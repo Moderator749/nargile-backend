@@ -404,14 +404,27 @@ class BentoTile(_Strict):
     focus_x: int = Field(default=50, ge=0, le=100)
 
 
+#: A tab's arrangement, and how many boxes it holds: "bento" is three tall
+#: boxes side by side and two wide ones stacked beside them; "row" is three
+#: 16:9 boxes in a row.
+BENTO_LAYOUT_BOXES = {"bento": 5, "row": 3}
+
+
 class BentoTab(_Strict):
     label: _text(30, required=True)
-    # Three tall boxes side by side, then two wide ones stacked beside them.
-    tiles: list[BentoTile] = Field(min_length=5, max_length=5)
+    layout: Literal["bento", "row"] = "bento"
+    tiles: list[BentoTile] = Field(min_length=3, max_length=5)
+
+    @model_validator(mode="after")
+    def _boxes_fit_layout(self) -> "BentoTab":
+        wanted = BENTO_LAYOUT_BOXES[self.layout]
+        if len(self.tiles) != wanted:
+            raise ValueError(f"A {self.layout} tab holds {wanted} boxes")
+        return self
 
 
 class Bento(_Strict):
-    """ "Görsel Vitrin": two tabs of photo boxes, swapped by the tab."""
+    """ "Görsel Vitrin": two tabs of photo boxes, each in its own arrangement; the tab slides one in for the other."""
 
     tabs: list[BentoTab] = Field(min_length=2, max_length=2)
 

@@ -374,12 +374,13 @@ SECTIONS_COPY = {
         "tabs": [
             {
                 "label": label,
+                "layout": layout,
                 "tiles": [
                     {"image": f"/images/vitrin-{label}-{i}.jpg", "href": "/catalog/oduman", "alt": f"Kutu {i}", "focus_x": 20 * i}
-                    for i in range(5)
+                    for i in range(boxes)
                 ],
             }
-            for label in ("Yeni", "Popüler")
+            for label, layout, boxes in (("Yeni", "bento", 5), ("Popüler", "row", 3))
         ]
     },
     "statement": {"heading": "Referans", "lead": "Bir cümle.", "rest": "Devamı."},
@@ -402,9 +403,9 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
     assert public["campaigns"]["lead"]["image"] == "/images/kampanya.jpg" and public["campaigns"]["minis"][2].get("image") is None
     assert public["brand_showcase"]["legend"]["logo"] == "https://cdn.example.com/legend.png"
     assert public["kumbara"]["note"] == "{tutar} barajı, {oran} ekstra."
-    assert [t["label"] for t in public["bento"]["tabs"]] == ["Yeni", "Popüler"]
-    assert public["bento"]["tabs"][1]["tiles"][4] == {
-        "image": "/images/vitrin-Popüler-4.jpg", "href": "/catalog/oduman", "alt": "Kutu 4", "focus_x": 80
+    assert [(t["label"], t["layout"], len(t["tiles"])) for t in public["bento"]["tabs"]] == [("Yeni", "bento", 5), ("Popüler", "row", 3)]
+    assert public["bento"]["tabs"][1]["tiles"][2] == {
+        "image": "/images/vitrin-Popüler-2.jpg", "href": "/catalog/oduman", "alt": "Kutu 2", "focus_x": 40
     }
 
 
@@ -416,7 +417,11 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
         {"lules": {**SECTIONS_COPY["lules"], "title": ""}},
         # Two tabs of five boxes, each with a photo and a safe link, its crop inside the photo.
         {"bento": {"tabs": SECTIONS_COPY["bento"]["tabs"][:1]}},
+        # Each layout holds its own number of boxes: no 4, no 5-box row, no 3-box bento.
         {"bento": {"tabs": [{**t, "tiles": t["tiles"][:4]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
+        {"bento": {"tabs": [SECTIONS_COPY["bento"]["tabs"][0], {**SECTIONS_COPY["bento"]["tabs"][0], "layout": "row"}]}},
+        {"bento": {"tabs": [{**SECTIONS_COPY["bento"]["tabs"][1], "layout": "bento"}, SECTIONS_COPY["bento"]["tabs"][1]]}},
+        {"bento": {"tabs": [{**t, "layout": "grid"} for t in SECTIONS_COPY["bento"]["tabs"]]}},
         {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "image": ""}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
         {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "href": "javascript:x"}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
         {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "focus_x": 101}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
