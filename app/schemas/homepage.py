@@ -77,6 +77,7 @@ class Sections(_Strict):
     lules: bool = True  # "Lüle Alırken Kararsız Kalacaksınız"
     sultanpuan: bool = True  # the SultanPuan band
     kumbara: bool = True  # "Kumbara 20.000 TL"
+    bento: bool = True  # "Görsel Vitrin": two tabs of photo boxes, over the deals
     deals: bool = True  # "Fırsatları Kaçırma"
     campaigns: bool = True  # the campaign boxes (the big one and the mini bento)
     promos: bool = True  # "Sektörde Referans Noktası" (the key is older than the section)
@@ -104,7 +105,7 @@ class Sections(_Strict):
 #: the admin has dragged them into another ("Bölümler"). Each is also a
 #: switch in `Sections`.
 HomeBlock = Literal[
-    "perks", "brands_top", "picks", "lules", "sultanpuan", "kumbara", "deals",
+    "perks", "brands_top", "picks", "lules", "sultanpuan", "kumbara", "bento", "deals",
     "campaigns", "promos", "brands", "brand_showcase", "kozlukler", "games", "showcase", "about",
 ]
 
@@ -280,6 +281,7 @@ MobileSection = Literal[
     "lules",  # "Lüle Alırken Kararsız Kalacaksınız"
     "sultanpuan",  # the SultanPuan band
     "kumbara",  # the Kumbara band
+    "bento",  # "Görsel Vitrin", the photo boxes
     "campaigns",  # the campaign boxes under the deals
     "brand_statement",  # "Sektörde Referans Noktası"
     "brand_showcase",  # "Markalarımız"
@@ -390,6 +392,30 @@ class Campaigns(_Strict):
     minis: list[CampaignBox] = Field(min_length=3, max_length=3)
 
 
+class BentoTile(_Strict):
+    """One photo box: the picture, where it leads, and words for those who cannot see it."""
+
+    image: RequiredImage
+    href: Link
+    # The box shows no words, so this is what a screen reader and a search engine get.
+    alt: _text(120)
+    # Where the crop centres across the photo (0 = its left edge): a wide photo
+    # in a tall box keeps its subject.
+    focus_x: int = Field(default=50, ge=0, le=100)
+
+
+class BentoTab(_Strict):
+    label: _text(30, required=True)
+    # Three tall boxes side by side, then two wide ones stacked beside them.
+    tiles: list[BentoTile] = Field(min_length=5, max_length=5)
+
+
+class Bento(_Strict):
+    """ "Görsel Vitrin": two tabs of photo boxes, swapped by the tab."""
+
+    tabs: list[BentoTab] = Field(min_length=2, max_length=2)
+
+
 class Statement(_Strict):
     """ "Sektörde Referans Noktası": the heading, the line shown, the rest folded."""
 
@@ -446,6 +472,7 @@ class HomepageDocument(_Strict):
     sultanpuan: SultanPuanCopy | None = None
     kumbara: KumbaraCopy | None = None
     campaigns: Campaigns | None = None
+    bento: Bento | None = None
     statement: Statement | None = None  # the "promos" section
     brand_showcase: BrandShowcaseCopy | None = None
     kozlukler: ProductRowCopy | None = None

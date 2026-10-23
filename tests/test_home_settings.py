@@ -370,6 +370,18 @@ SECTIONS_COPY = {
                  "image": "/images/kampanya.jpg"},
         "minis": [{"title": f"Kutu {i}", "subtitle": "", "href": "/catalog"} for i in range(3)],
     },
+    "bento": {
+        "tabs": [
+            {
+                "label": label,
+                "tiles": [
+                    {"image": f"/images/vitrin-{label}-{i}.jpg", "href": "/catalog/oduman", "alt": f"Kutu {i}", "focus_x": 20 * i}
+                    for i in range(5)
+                ],
+            }
+            for label in ("Yeni", "Popüler")
+        ]
+    },
     "statement": {"heading": "Referans", "lead": "Bir cümle.", "rest": "Devamı."},
     "brand_showcase": {
         "heading": "Markalarımız", "collection": "Keşfet",
@@ -390,6 +402,10 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
     assert public["campaigns"]["lead"]["image"] == "/images/kampanya.jpg" and public["campaigns"]["minis"][2].get("image") is None
     assert public["brand_showcase"]["legend"]["logo"] == "https://cdn.example.com/legend.png"
     assert public["kumbara"]["note"] == "{tutar} barajı, {oran} ekstra."
+    assert [t["label"] for t in public["bento"]["tabs"]] == ["Yeni", "Popüler"]
+    assert public["bento"]["tabs"][1]["tiles"][4] == {
+        "image": "/images/vitrin-Popüler-4.jpg", "href": "/catalog/oduman", "alt": "Kutu 4", "focus_x": 80
+    }
 
 
 @pytest.mark.parametrize(
@@ -398,6 +414,12 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
         {"campaigns": {**SECTIONS_COPY["campaigns"], "minis": SECTIONS_COPY["campaigns"]["minis"][:2]}},
         {"campaigns": {**SECTIONS_COPY["campaigns"], "lead": {**SECTIONS_COPY["campaigns"]["lead"], "href": "javascript:x"}}},
         {"lules": {**SECTIONS_COPY["lules"], "title": ""}},
+        # Two tabs of five boxes, each with a photo and a safe link, its crop inside the photo.
+        {"bento": {"tabs": SECTIONS_COPY["bento"]["tabs"][:1]}},
+        {"bento": {"tabs": [{**t, "tiles": t["tiles"][:4]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
+        {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "image": ""}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
+        {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "href": "javascript:x"}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
+        {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "focus_x": 101}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
         {"perks": {**SECTIONS_COPY["perks"], "volume": {"icon": "rocket", "label": "X", "note": ""}}},
         {"brand_showcase": {**SECTIONS_COPY["brand_showcase"], "sultan": {"description": "", "logo": "data:image/png;base64,AA"}}},
     ],
