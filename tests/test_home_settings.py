@@ -443,3 +443,16 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
 async def test_every_sections_copy_is_held_to_its_rules(client: AsyncClient, admin_user: User, cleanup, bad: dict):
     resp = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json=bad)
     assert resp.status_code == 422, resp.text
+
+
+async def test_the_slider_button_sizes_are_saved_and_held_to_three(client: AsyncClient, admin_user: User, cleanup):
+    h = auth_header(admin_user)
+    saved = await client.put("/api/v1/admin/home/settings", headers=h, json={"slider": {"button_size": "lg", "mobile_button_size": "sm"}})
+    assert saved.status_code == 200, saved.text
+    assert (await client.get("/api/v1/home/settings")).json()["data"]["slider"] == {"button_size": "lg", "mobile_button_size": "sm"}
+    # One left out keeps the shop's own size.
+    partial = await client.put("/api/v1/admin/home/settings", headers=h, json={"slider": {"mobile_button_size": "lg"}})
+    assert partial.json()["data"]["slider"] == {"button_size": "md", "mobile_button_size": "lg"}
+    for bad in ({"button_size": "xl"}, {"button_size": "md", "scale": 2}):
+        assert (await client.put("/api/v1/admin/home/settings", headers=h, json={"slider": bad})).status_code == 422
+

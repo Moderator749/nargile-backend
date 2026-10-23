@@ -392,6 +392,18 @@ class Campaigns(_Strict):
     minis: list[CampaignBox] = Field(min_length=3, max_length=3)
 
 
+#: The hero slider's buttons: a size down, the shop's own, a size up.
+ButtonSize = Literal["sm", "md", "lg"]
+
+
+class Slider(_Strict):
+    """The hero slider's own settings ("Hero Slider" in Ana Sayfa Düzenleme)."""
+
+    # Its buttons' size from a tablet up, and on a phone (below 768px).
+    button_size: ButtonSize = "md"
+    mobile_button_size: ButtonSize = "md"
+
+
 class BentoLayout(_Strict):
     """Where each text of a box sits: its centre, in % of the box; all three or none."""
 
@@ -483,6 +495,7 @@ class HomepageDocument(_Strict):
     """What is stored: only the sections the admin has saved."""
 
     sections: Sections | None = None
+    slider: Slider | None = None
     # The sections' order; one left out (added since it was saved) takes its
     # default place (see the storefront's lib/homeBlocks).
     order: BlockOrder | None = None
