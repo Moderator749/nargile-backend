@@ -13,6 +13,18 @@ Requirement = Literal["flash_sales"]
 TextAlign = Literal["left", "center", "right"]
 
 
+def _photo(v: str | None, what: str) -> str | None:
+    """A photo's address: a site path (/images/…) or an http(s) URL; blank is none."""
+    v = _blank_none(v)
+    if v is None:
+        return None
+    if v.startswith("/") and not v.startswith("//") and _HREF.match(v):
+        return v
+    if not re.match(IMAGE_URL_PATTERN, v):
+        raise ValueError(f"{what} must be a site path (/images/…) or an http(s) URL")
+    return v
+
+
 class Point(BaseModel):
     """A part's centre on the slide, in % of its width (x) and height (y)."""
 
@@ -187,14 +199,7 @@ class HeroSlideWrite(BaseModel):
     @field_validator("mobile_image", mode="before")
     @classmethod
     def _mobile_image(cls, v: str | None) -> str | None:
-        v = _blank_none(v)
-        if v is None:
-            return None
-        if v.startswith("/") and not v.startswith("//") and _HREF.match(v):
-            return v
-        if not re.match(IMAGE_URL_PATTERN, v):
-            raise ValueError("The mobile image must be a site path (/images/…) or an http(s) URL")
-        return v
+        return _photo(v, "The mobile image")
 
     @field_validator("guest_cta_label", "image_url", mode="before")
     @classmethod
@@ -253,8 +258,9 @@ class HeroSlideRead(BaseModel):
 
 
 class PromoBoxWrite(BaseModel):
-    """The promo box beside the hero ("Sosyal & Avantaj"): its top band jumps to
-    `href` (e.g. "/#avantajlar"), its bottom band lists the shop's channels."""
+    """The two cards beside the hero ("Promo Kutusu"): the community card on
+    top (`text`, the channels in `widget`), the advantages card under it
+    (`eyebrow`, `title`, `href`, the widget's link text), each on a photo."""
 
     eyebrow: str = Field(default="", max_length=60)
     title: str = Field(max_length=120)
@@ -262,8 +268,18 @@ class PromoBoxWrite(BaseModel):
     href: str = Field(max_length=300)
     requires: Requirement | None = None
     widget: SocialWidget
+    # Each card's photo, a site path or an http(s) URL; blank = the shop's own.
+    top_card_image_url: str | None = Field(default=None, max_length=500)
+    top_card_focus_x: int = Field(default=50, ge=0, le=100)
+    bottom_card_image_url: str | None = Field(default=None, max_length=500)
+    bottom_card_focus_x: int = Field(default=50, ge=0, le=100)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
+
+    @field_validator("top_card_image_url", "bottom_card_image_url", mode="before")
+    @classmethod
+    def _photo(cls, v: str | None) -> str | None:
+        return _photo(v, "A card's photo")
 
     @field_validator("eyebrow")
     @classmethod
@@ -300,6 +316,10 @@ class PromoBoxRead(BaseModel):
     href: str
     requires: Requirement | None
     widget: SocialWidget | None
+    top_card_image_url: str | None = None
+    top_card_focus_x: int = 50
+    bottom_card_image_url: str | None = None
+    bottom_card_focus_x: int = 50
     is_active: bool
     sort_order: int
 

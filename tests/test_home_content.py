@@ -123,3 +123,37 @@ async def test_the_retired_content_is_gone(client: AsyncClient, admin_user: User
     row = (await client.post("/api/v1/admin/promo-boxes", headers=h, json=PROMO)).json()
     up = await client.post(f"/api/v1/admin/promo-boxes/{row['id']}/image", headers=h, files={"file": ("a.png", PNG, "image/png")})
     assert up.status_code in (404, 405)
+
+
+async def test_each_promo_card_takes_its_own_photo(client: AsyncClient, admin_user: User, cleanup):
+    """A photo per card (a site path or an https URL) and its crop; none = the shop's own photo."""
+    h = auth_header(admin_user)
+    row = (await client.post("/api/v1/admin/promo-boxes", headers=h, json=PROMO)).json()
+    assert (row["top_card_image_url"], row["top_card_focus_x"], row["bottom_card_image_url"], row["bottom_card_focus_x"]) == (None, 50, None, 50)
+
+    photos = {
+        "top_card_image_url": "https://cdn.example.com/kanallar.jpg", "top_card_focus_x": 20,
+        "bottom_card_image_url": "/api/backend/media/uploads/avantaj.webp", "bottom_card_focus_x": 75,
+    }
+    saved = await client.put(f"/api/v1/admin/promo-boxes/{row['id']}", headers=h, json={**PROMO, **photos})
+    assert saved.status_code == 200, saved.text
+    public = next(p for p in (await client.get("/api/v1/home/content")).json()["promos"] if p["id"] == row["id"])
+    assert {k: public[k] for k in photos} == photos
+
+    # Blanked, a card goes back to the shop's own photo.
+    cleared = await client.put(f"/api/v1/admin/promo-boxes/{row['id']}", headers=h, json={**PROMO, **photos, "top_card_image_url": "  "})
+    assert cleared.json()["top_card_image_url"] is None and cleared.json()["bottom_card_image_url"] == photos["bottom_card_image_url"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"top_card_image_url": "javascript:alert(1)"},
+        {"bottom_card_image_url": "//evil.example/x.jpg"},
+        {"top_card_focus_x": 101},
+        {"bottom_card_focus_x": -1},
+    ],
+)
+async def test_promo_card_photos_are_held_to_their_rules(client: AsyncClient, admin_user: User, cleanup, bad: dict):
+    resp = await client.post("/api/v1/admin/promo-boxes", headers=auth_header(admin_user), json={**PROMO, **bad})
+    assert resp.status_code == 422, resp.text

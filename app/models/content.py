@@ -4,7 +4,7 @@ the advantages ("Avantajlar") bento, and the "Ana Sayfa Düzenleme" document."""
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, SmallInteger, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -56,9 +56,10 @@ class HeroSlide(Base):
 
 
 class PromoBox(Base):
-    """The promo box beside the hero ("Sosyal & Avantaj"): a top band that jumps
-    to `href` and a bottom band with the shop's channels (`widget`). The first
-    active one whose requirement is met is shown."""
+    """The two cards beside the hero ("Promo Kutusu"): the community card on
+    top (`text` and the channels in `widget`), the advantages card under it
+    (`eyebrow`, `title`, `href` and the widget's link text). The first active
+    one whose requirement is met is shown."""
 
     __tablename__ = "promo_boxes"
 
@@ -70,6 +71,12 @@ class PromoBox(Base):
     # The channel links and the jump button's text (SocialWidget).
     widget: Mapped[dict | None] = mapped_column(JSONB)
     requires: Mapped[str | None] = mapped_column(String(20))
+    # Each card's photo (a site path or an http(s) URL) and where its crop
+    # centres across it (0 = its left edge); none = the shop's own photo.
+    top_card_image_url: Mapped[str | None] = mapped_column(String(500))
+    top_card_focus_x: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=50, server_default="50")
+    bottom_card_image_url: Mapped[str | None] = mapped_column(String(500))
+    bottom_card_focus_x: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=50, server_default="50")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

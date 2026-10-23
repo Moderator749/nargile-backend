@@ -50,7 +50,10 @@ def slide_read(row: HeroSlide, request: Request) -> HeroSlideRead:
 def promo_read(row: PromoBox, _request: Request) -> PromoBoxRead:
     return PromoBoxRead(
         id=row.id, eyebrow=row.eyebrow, title=row.title, text=row.text, href=row.href,
-        requires=row.requires, widget=row.widget, is_active=row.is_active, sort_order=row.sort_order,
+        requires=row.requires, widget=row.widget,
+        top_card_image_url=row.top_card_image_url, top_card_focus_x=row.top_card_focus_x,
+        bottom_card_image_url=row.bottom_card_image_url, bottom_card_focus_x=row.bottom_card_focus_x,
+        is_active=row.is_active, sort_order=row.sort_order,
     )
 
 
