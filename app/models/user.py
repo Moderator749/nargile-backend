@@ -48,7 +48,7 @@ class AccountType(str, enum.Enum):
     """
 
     INDIVIDUAL = "INDIVIDUAL"  # Bireysel
-    CAFE = "CAFE"  # Kafe & Restorant
+    CAFE = "CAFE"  # Kafe & Restoran
     TOBACCO_SHOP = "TOBACCO_SHOP"  # Nargile & Tobacco Shop
     # Yurt dışı: a customer outside Turkey, business or private. Their identity
     # numbers and their address follow their own country's rules, not ours, so

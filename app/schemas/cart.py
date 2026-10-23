@@ -36,6 +36,18 @@ class CartItemBreakdown(BaseModel):
     available_quantity: int = 0
 
 
+class CartLineInfo(BaseModel):
+    """What a visitor's cart needs about one of its colours before they sign in
+    (they have no quote yet): its page, its code, and how many of it there are
+    in the retail quota — the most the cart lets them put in."""
+
+    variant_id: uuid.UUID
+    product_id: uuid.UUID
+    product_slug: str | None = None
+    sku: str
+    available_quantity: int
+
+
 class ShippingBreakdown(BaseModel):
     """Who pays the carriage and why, so the cart can explain it.
 

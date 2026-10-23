@@ -109,3 +109,73 @@ async def test_catalog_exposes_when_a_product_last_changed(
     inside.description = "Yeni açıklama"
     await db_session.commit()
     assert await stamp() > before
+
+
+@pytest.mark.parametrize("term", ["ozel nargile", "OZEL NARGILE", "özel nargıle"])
+async def test_search_folds_turkish_letters(client: AsyncClient, filter_fixture, term: str):
+    """A phone's keyboard types "lule" for "lüle": the letters fold to ASCII on both sides."""
+    _, inside, _, _, suffix = filter_fixture
+    assert str(inside.id) in await _ids(client, q=f"{term} {suffix}")
+
+
+async def test_search_finds_a_category_by_its_name(client: AsyncClient, db_session: AsyncSession):
+    suffix = uuid.uuid4().hex[:6]
+    cat = Category(name=f"Lüleler {suffix}", slug=f"luleler-{suffix}")
+    db_session.add(cat)
+    await db_session.flush()
+    filed = Product(base_code=f"KLR-{suffix}", name=f"Killer {suffix}", category_id=cat.id, tags=[])
+    db_session.add(filed)
+    await db_session.commit()
+    try:
+        assert str(filed.id) in await _ids(client, q=f"luleler {suffix}")
+    finally:
+        await db_session.execute(delete(Product).where(Product.id == filed.id))
+        await db_session.execute(delete(Category).where(Category.id == cat.id))
+        await db_session.commit()
+
+
+async def test_sold_out_products_come_last(client: AsyncClient, db_session: AsyncSession):
+    """Whatever the order, a product with no colour in the caller's stock sinks to the end."""
+    from app.models.catalog import Inventory, ProductVariant, WarehouseType
+
+    suffix = uuid.uuid4().hex[:6]
+    cat = Category(name=f"Stok {suffix}", slug=f"stok-{suffix}")
+    db_session.add(cat)
+    await db_session.flush()
+    products = {
+        name: Product(base_code=f"{name}-{suffix}", name=f"{name} {suffix}", category_id=cat.id, tags=[])
+        for name in ("Aaa", "Bbb", "Ccc")
+    }
+    db_session.add_all(products.values())
+    await db_session.flush()
+    for name, quantity in (("Aaa", None), ("Bbb", 5), ("Ccc", 0)):
+        variant = ProductVariant(product_id=products[name].id, sku=f"{name}-{suffix}")
+        db_session.add(variant)
+        await db_session.flush()
+        if quantity is not None:
+            db_session.add(Inventory(variant_id=variant.id, warehouse_type=WarehouseType.RETAIL_STOCK, quantity=quantity))
+    await db_session.commit()
+    try:
+        resp = await client.get("/api/v1/products/", params={"category": cat.slug})
+        assert [p["name"] for p in resp.json()] == [f"Bbb {suffix}", f"Aaa {suffix}", f"Ccc {suffix}"]
+    finally:
+        ids = [p.id for p in products.values()]
+        await db_session.execute(delete(Inventory).where(Inventory.variant_id.in_(
+            ProductVariant.__table__.select().with_only_columns(ProductVariant.id).where(ProductVariant.product_id.in_(ids))
+        )))
+        await db_session.execute(delete(ProductVariant).where(ProductVariant.product_id.in_(ids)))
+        await db_session.execute(delete(Product).where(Product.id.in_(ids)))
+        await db_session.execute(delete(Category).where(Category.id == cat.id))
+        await db_session.commit()
+
+
+async def test_cart_lines_give_a_visitor_the_retail_stock(client: AsyncClient, catalog):
+    """A guest's cart holds a quantity to the retail quota before any quote."""
+    normal_v, heavy_v = catalog
+    resp = await client.get("/api/v1/products/cart-lines", params={"ids": [str(normal_v.id), str(uuid.uuid4())]})
+    assert resp.status_code == 200, resp.text
+    [line] = resp.json()
+    assert line["variant_id"] == str(normal_v.id)
+    assert line["sku"] == normal_v.sku
+    assert line["available_quantity"] == 500
+    assert line["product_slug"]

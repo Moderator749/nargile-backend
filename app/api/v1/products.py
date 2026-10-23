@@ -10,7 +10,15 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_optional_user
 from app.core.database import get_db
-from app.models.catalog import Category, CategoryProductOrder, CurrencyType, Product, ProductCrossSell, ProductVariant
+from app.models.catalog import (
+    Category,
+    CategoryProductOrder,
+    CurrencyType,
+    Inventory,
+    Product,
+    ProductCrossSell,
+    ProductVariant,
+)
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
@@ -25,10 +33,11 @@ from app.schemas.catalog import (
     ProductRead,
     SultanPuanShowcase,
 )
+from app.schemas.cart import CartLineInfo
 from app.schemas.i18n import Locale
 from app.services import localize, slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
-from app.services.checkout_engine import stock_source
+from app.services.checkout_engine import stock_source, warehouse_for_segment
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
@@ -38,17 +47,20 @@ from app.services.store_parameters import load_parameters
 router = APIRouter(prefix="/products", tags=["products"])
 
 
-# Turkish I/İ/ı don't case-fold like ASCII under ILIKE (e.g. "nargile" misses
-# "NARGİLE"), so fold both sides to plain lowercase "i" before comparing.
-_TR_I = str.maketrans("İIı", "iii")
+# Turkish letters don't case-fold like ASCII under ILIKE ("nargile" misses
+# "NARGİLE"), and a phone's keyboard types "lule" for "lüle", "komur" for
+# "kömür": fold both sides to plain lowercase ASCII before comparing.
+_TR_FROM = "İIıÖöÜüŞşÇçĞğÂâÎîÛû"
+_TR_TO = "iiioouussccggaaiiuu"
+_TR_FOLD = str.maketrans(_TR_FROM, _TR_TO)
 
 
 def _fold_tr(text: str) -> str:
-    return text.translate(_TR_I).lower()
+    return text.translate(_TR_FOLD).lower()
 
 
 def _folded(column):
-    return func.lower(func.translate(column, "İIı", "iii"))
+    return func.lower(func.translate(column, _TR_FROM, _TR_TO))
 
 
 def _escape_like(term: str) -> str:
@@ -75,6 +87,8 @@ def apply_catalog_filters(
         stmt = stmt.where(Product.id.in_(products_in(category_subtree(category))))
     if q and q.strip():
         pattern = f"%{_escape_like(_fold_tr(q.strip()))}%"
+        # A category's name finds what is filed under it: "lule" lists the Lüleler.
+        named = select(Category.id).where(_folded(Category.name).like(pattern, escape="\\"))
         stmt = stmt.where(
             or_(
                 *(
@@ -85,7 +99,8 @@ def apply_catalog_filters(
                         Product.base_code,
                         *([Product.translations[lang]["name"].astext] if lang in ("en", "ar") else []),
                     )
-                )
+                ),
+                Product.id.in_(products_in(named)),
             )
         )
     return stmt
@@ -226,8 +241,29 @@ async def list_products(
     if ids:
         stmt = stmt.where(Product.id.in_(ids))
     order = (Product.name, Product.id)
+    # In the catalog's own order ("Önerilen"), what the caller cannot buy goes
+    # last: a colour of it in stock in the caller's own quota (as
+    # `_catalog_view` decides it) or not. "Yeni Gelenler" stays newest first.
+    code = (
+        await db.scalar(select(CustomerSegment.code).where(CustomerSegment.id == user.segment_id))
+        if user and user.segment_id
+        else None
+    )
+    buyable = (
+        select(ProductVariant.id)
+        .join(Inventory, Inventory.variant_id == ProductVariant.id)
+        .where(
+            ProductVariant.product_id == Product.id,
+            ProductVariant.is_active.is_(True),
+            Inventory.warehouse_type == warehouse_for_segment(code),
+            Inventory.quantity > 0,
+        )
+        .correlate(Product)
+        .exists()
+    )
     if sort == "newest":
         order = (Product.created_at.desc(), *order)
+        buyable = None
     elif category:
         # A category page in its own order ("Önerilen"): the products the
         # admin ranked for this very category first, the rest by name.
@@ -242,9 +278,47 @@ async def list_products(
         )
         order = (rank.asc().nulls_last(), *order)
     result = await db.execute(
-        stmt.options(*_VARIANT_LOADS).order_by(*order).offset(skip).limit(limit)
+        stmt.options(*_VARIANT_LOADS).order_by(*((buyable.desc(),) if buyable is not None else ()), *order).offset(skip).limit(limit)
     )
     return await _catalog_view(db, user, list(result.scalars().all()), lang)
+
+
+@router.get("/cart-lines", response_model=list[CartLineInfo])
+async def cart_lines(
+    ids: list[uuid.UUID] = Query(..., max_length=100, description="Variant ids in the cart"),
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The cart's lines as the cart page shows them before a quote: each live
+    colour of a published product with its page, its code and the stock of the
+    caller's own quota (retail for a visitor), so a quantity is held to what
+    can be ordered while it is typed. A colour no longer for sale is left out.
+
+    The count is the retail quota's, the one any bireysel account sees once
+    signed in; it is asked for live, never baked into a cached page."""
+    code = (
+        await db.scalar(select(CustomerSegment.code).where(CustomerSegment.id == user.segment_id))
+        if user and user.segment_id
+        else None
+    )
+    rows = (
+        await db.execute(
+            select(ProductVariant)
+            .join(Product, Product.id == ProductVariant.product_id)
+            .where(ProductVariant.id.in_(ids), ProductVariant.is_active.is_(True), Product.is_published.is_(True))
+            .options(selectinload(ProductVariant.inventory), selectinload(ProductVariant.product))
+        )
+    ).scalars().all()
+    return [
+        CartLineInfo(
+            variant_id=v.id,
+            product_id=v.product_id,
+            product_slug=v.product.slug,
+            sku=v.sku,
+            available_quantity=stock_source(v.inventory, code)[1],
+        )
+        for v in rows
+    ]
 
 
 # Which price groups a B2B account may put in a catalogue for its own customers:

@@ -7,7 +7,7 @@ proprietorship (şahıs firması) or a company (şirket) — and so do the rules
   billing address are optional, and they may ask for the invoice to be made out
   to a firm instead ("Faturayı firmaya istiyorum") — which then needs the firm's
   own address, because that is where the invoice goes.
-* **Kafe & Restorant / Nargile & Tobacco Shop** — a firm, by what it sells —
+* **Kafe & Restoran / Nargile & Tobacco Shop** — a firm, by what it sells —
   gives its invoice identity: whether it is a şahıs firması or a şirket, its
   unvan, the name on its tax plate, vergi dairesi, vergi numarası and an
   address. A şirket is registered under a 10-digit VKN and is not a person, so
