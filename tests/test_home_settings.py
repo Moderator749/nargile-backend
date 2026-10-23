@@ -53,6 +53,18 @@ async def test_saving_requires_an_admin(client: AsyncClient, customer_user: User
     assert forbidden.status_code == 403
 
 
+async def test_a_bento_saved_with_tabs_reads_as_its_three_boxes(client: AsyncClient, admin_user: User, cleanup):
+    """The section's first version (two tabs, no words) carries its row of three over."""
+    tile = lambda i: {"image": f"/images/v{i}.jpg", "href": "/catalog", "alt": f"K{i}", "focus_x": 30}
+    legacy = {"tabs": [{"label": "Yeni", "layout": "bento", "tiles": [tile(i) for i in range(5)]},
+                       {"label": "Popüler", "layout": "row", "tiles": [tile(i) for i in range(10, 13)]}]}
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"bento": legacy})
+    assert saved.status_code == 200, saved.text
+    boxes = (await client.get("/api/v1/home/settings")).json()["data"]["bento"]["boxes"]
+    assert [b["image"] for b in boxes] == ["/images/v10.jpg", "/images/v11.jpg", "/images/v12.jpg"]
+    assert boxes[0]["focus_x"] == 30 and boxes[0]["overlay"] is True and boxes[0]["title"] == ""
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -371,16 +383,15 @@ SECTIONS_COPY = {
         "minis": [{"title": f"Kutu {i}", "subtitle": "", "href": "/catalog"} for i in range(3)],
     },
     "bento": {
-        "tabs": [
+        "boxes": [
             {
-                "label": label,
-                "layout": layout,
-                "tiles": [
-                    {"image": f"/images/vitrin-{label}-{i}.jpg", "href": "/catalog/oduman", "alt": f"Kutu {i}", "focus_x": 20 * i}
-                    for i in range(boxes)
-                ],
+                "image": f"/images/vitrin-{i}.jpg", "href": "/catalog/oduman", "alt": f"Kutu {i}", "focus_x": 20 * i, "focus_y": 40,
+                "eyebrow": "Yeni", "title": "Nargile\nKömürleri", "subtitle": "",
+                "layout": {"eyebrow": {"x": 50, "y": 60}, "title": {"x": 50, "y": 72.5}, "subtitle": {"x": 50, "y": 85}},
+                "font_sizes": {"title": 40}, "text_colors": {"title": "#FFFFFF", "eyebrow": "#F59E0B"},
+                "overlay": i != 2, "overlay_strength": 60,
             }
-            for label, layout, boxes in (("Yeni", "bento", 5), ("Popüler", "row", 3))
+            for i in range(3)
         ]
     },
     "statement": {"heading": "Referans", "lead": "Bir cümle.", "rest": "Devamı."},
@@ -403,10 +414,10 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
     assert public["campaigns"]["lead"]["image"] == "/images/kampanya.jpg" and public["campaigns"]["minis"][2].get("image") is None
     assert public["brand_showcase"]["legend"]["logo"] == "https://cdn.example.com/legend.png"
     assert public["kumbara"]["note"] == "{tutar} barajı, {oran} ekstra."
-    assert [(t["label"], t["layout"], len(t["tiles"])) for t in public["bento"]["tabs"]] == [("Yeni", "bento", 5), ("Popüler", "row", 3)]
-    assert public["bento"]["tabs"][1]["tiles"][2] == {
-        "image": "/images/vitrin-Popüler-2.jpg", "href": "/catalog/oduman", "alt": "Kutu 2", "focus_x": 40
-    }
+    box = public["bento"]["boxes"][1]
+    assert len(public["bento"]["boxes"]) == 3 and box["title"] == "Nargile\nKömürleri"  # the line break kept
+    assert box["layout"]["title"] == {"x": 50, "y": 72.5} and box["font_sizes"] == {"title": 40}
+    assert box["text_colors"]["eyebrow"] == "#F59E0B" and public["bento"]["boxes"][2]["overlay"] is False
 
 
 @pytest.mark.parametrize(
@@ -415,16 +426,16 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
         {"campaigns": {**SECTIONS_COPY["campaigns"], "minis": SECTIONS_COPY["campaigns"]["minis"][:2]}},
         {"campaigns": {**SECTIONS_COPY["campaigns"], "lead": {**SECTIONS_COPY["campaigns"]["lead"], "href": "javascript:x"}}},
         {"lules": {**SECTIONS_COPY["lules"], "title": ""}},
-        # Two tabs of five boxes, each with a photo and a safe link, its crop inside the photo.
-        {"bento": {"tabs": SECTIONS_COPY["bento"]["tabs"][:1]}},
-        # Each layout holds its own number of boxes: no 4, no 5-box row, no 3-box bento.
-        {"bento": {"tabs": [{**t, "tiles": t["tiles"][:4]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
-        {"bento": {"tabs": [SECTIONS_COPY["bento"]["tabs"][0], {**SECTIONS_COPY["bento"]["tabs"][0], "layout": "row"}]}},
-        {"bento": {"tabs": [{**SECTIONS_COPY["bento"]["tabs"][1], "layout": "bento"}, SECTIONS_COPY["bento"]["tabs"][1]]}},
-        {"bento": {"tabs": [{**t, "layout": "grid"} for t in SECTIONS_COPY["bento"]["tabs"]]}},
-        {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "image": ""}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
-        {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "href": "javascript:x"}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
-        {"bento": {"tabs": [{**t, "tiles": [{**t["tiles"][0], "focus_x": 101}] + t["tiles"][1:]} for t in SECTIONS_COPY["bento"]["tabs"]]}},
+        # Three boxes, each with a photo and a safe link, its crop and words held to their bounds.
+        {"bento": {"boxes": SECTIONS_COPY["bento"]["boxes"][:2]}},
+        {"bento": {"boxes": [{**SECTIONS_COPY["bento"]["boxes"][0], "image": ""}] + SECTIONS_COPY["bento"]["boxes"][1:]}},
+        {"bento": {"boxes": [{**SECTIONS_COPY["bento"]["boxes"][0], "href": "javascript:x"}] + SECTIONS_COPY["bento"]["boxes"][1:]}},
+        {"bento": {"boxes": [{**SECTIONS_COPY["bento"]["boxes"][0], "focus_y": 101}] + SECTIONS_COPY["bento"]["boxes"][1:]}},
+        {"bento": {"boxes": [{**SECTIONS_COPY["bento"]["boxes"][0], "overlay_strength": 95}] + SECTIONS_COPY["bento"]["boxes"][1:]}},
+        {"bento": {"boxes": [{**SECTIONS_COPY["bento"]["boxes"][0], "text_colors": {"title": "red"}}] + SECTIONS_COPY["bento"]["boxes"][1:]}},
+        {"bento": {"boxes": [{**SECTIONS_COPY["bento"]["boxes"][0], "font_sizes": {"title": 400}}] + SECTIONS_COPY["bento"]["boxes"][1:]}},
+        {"bento": {"boxes": [{**SECTIONS_COPY["bento"]["boxes"][0], "layout": {"title": {"x": 50, "y": 50}}}] + SECTIONS_COPY["bento"]["boxes"][1:]}},
+        {"bento": {"boxes": [{**SECTIONS_COPY["bento"]["boxes"][0], "title": "x" * 121}] + SECTIONS_COPY["bento"]["boxes"][1:]}},
         {"perks": {**SECTIONS_COPY["perks"], "volume": {"icon": "rocket", "label": "X", "note": ""}}},
         {"brand_showcase": {**SECTIONS_COPY["brand_showcase"], "sultan": {"description": "", "logo": "data:image/png;base64,AA"}}},
     ],

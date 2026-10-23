@@ -19,7 +19,7 @@ from typing import Annotated, Literal
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from app.schemas.catalog import IMAGE_URL_PATTERN
-from app.schemas.content import _href
+from app.schemas.content import HeroTextColors, HeroTextSizes, Point, _href
 
 Text = Annotated[str, StringConstraints(strip_whitespace=True)]
 
@@ -392,41 +392,56 @@ class Campaigns(_Strict):
     minis: list[CampaignBox] = Field(min_length=3, max_length=3)
 
 
-class BentoTile(_Strict):
-    """One photo box: the picture, where it leads, and words for those who cannot see it."""
+class BentoLayout(_Strict):
+    """Where each text of a box sits: its centre, in % of the box; all three or none."""
+
+    eyebrow: Point
+    title: Point
+    subtitle: Point
+
+
+class BentoBox(_Strict):
+    """One photo box of "Görsel Vitrin", with words on it as a hero slide has them.
+
+    The box keeps one shape (3:4) at every width, so a text placed at x/y and
+    sized in px of a 400px-wide box lands and scales the same on any screen.
+    """
 
     image: RequiredImage
     href: Link
-    # The box shows no words, so this is what a screen reader and a search engine get.
+    # For screen readers and search engines; the visible words may not name the photo.
     alt: _text(120)
-    # Where the crop centres across the photo (0 = its left edge): a wide photo
-    # in a tall box keeps its subject.
+    # The photo's focal point, in % (0 = its left / top edge): dragged on the editor's preview.
     focus_x: int = Field(default=50, ge=0, le=100)
-
-
-#: A tab's arrangement, and how many boxes it holds: "bento" is three tall
-#: boxes side by side and two wide ones stacked beside them; "row" is three
-#: 16:9 boxes in a row.
-BENTO_LAYOUT_BOXES = {"bento": 5, "row": 3}
-
-
-class BentoTab(_Strict):
-    label: _text(30, required=True)
-    layout: Literal["bento", "row"] = "bento"
-    tiles: list[BentoTile] = Field(min_length=3, max_length=5)
-
-    @model_validator(mode="after")
-    def _boxes_fit_layout(self) -> "BentoTab":
-        wanted = BENTO_LAYOUT_BOXES[self.layout]
-        if len(self.tiles) != wanted:
-            raise ValueError(f"A {self.layout} tab holds {wanted} boxes")
-        return self
+    focus_y: int = Field(default=50, ge=0, le=100)
+    # Each optional; line breaks kept.
+    eyebrow: _text(60) = ""
+    title: _text(120) = ""
+    subtitle: _text(240) = ""
+    # None: the texts stacked at the bottom of the box.
+    layout: BentoLayout | None = None
+    font_sizes: HeroTextSizes | None = None
+    text_colors: HeroTextColors | None = None
+    # A dark wash rising from the bottom, so white words read over a light photo.
+    overlay: bool = True
+    overlay_strength: int = Field(default=55, ge=10, le=90)
 
 
 class Bento(_Strict):
-    """ "Görsel Vitrin": two tabs of photo boxes, each in its own arrangement; the tab slides one in for the other."""
+    """ "Görsel Vitrin": three photo boxes side by side, words on each."""
 
-    tabs: list[BentoTab] = Field(min_length=2, max_length=2)
+    boxes: list[BentoBox] = Field(min_length=3, max_length=3)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_tabs(cls, data: object) -> object:
+        # The section's first version had two tabs of boxes without words: its
+        # three-box row (or else the first tab's first three) carries over.
+        if isinstance(data, dict) and "tabs" in data and "boxes" not in data:
+            tabs = [t for t in data.get("tabs") or [] if isinstance(t, dict)]
+            row = next((t for t in tabs if t.get("layout") == "row"), tabs[0] if tabs else {})
+            data = {"boxes": [{k: v for k, v in tile.items() if k in ("image", "href", "alt", "focus_x")} for tile in (row.get("tiles") or [])[:3]]}
+        return data
 
 
 class Statement(_Strict):
