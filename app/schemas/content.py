@@ -13,6 +13,10 @@ Requirement = Literal["flash_sales"]
 TextAlign = Literal["left", "center", "right"]
 
 
+#: A hero slide's buttons: a size down, the shop's own, a size up.
+ButtonSize = Literal["sm", "md", "lg"]
+
+
 def _photo(v: str | None, what: str) -> str | None:
     """A photo's address: a site path (/images/…) or an http(s) URL; blank is none."""
     v = _blank_none(v)
@@ -170,6 +174,10 @@ class HeroSlideWrite(BaseModel):
     # A portrait photo for phones in place of the wide one (an uploaded file's
     # address, an https URL, or a site path); none: the wide one, cropped.
     mobile_image: str | None = Field(default=None, max_length=500)
+    # Its buttons' size from a tablet up and on a phone: a size down, the
+    # shop's own, a size up. Left out (a slide saved before they existed) = "md".
+    button_size_desktop: ButtonSize = "md"
+    button_size_mobile: ButtonSize = "md"
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
@@ -250,6 +258,8 @@ class HeroSlideRead(BaseModel):
     mobile_font_sizes: HeroTextSizes | None
     mobile_bg_position: HeroBgPosition | None
     mobile_image: str | None
+    button_size_desktop: ButtonSize = "md"
+    button_size_mobile: ButtonSize = "md"
     is_active: bool
     sort_order: int
 

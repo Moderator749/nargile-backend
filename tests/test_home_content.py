@@ -157,3 +157,17 @@ async def test_each_promo_card_takes_its_own_photo(client: AsyncClient, admin_us
 async def test_promo_card_photos_are_held_to_their_rules(client: AsyncClient, admin_user: User, cleanup, bad: dict):
     resp = await client.post("/api/v1/admin/promo-boxes", headers=auth_header(admin_user), json={**PROMO, **bad})
     assert resp.status_code == 422, resp.text
+
+
+async def test_each_slide_sizes_its_own_buttons(client: AsyncClient, admin_user: User, cleanup):
+    """Desktop and phone each: sm, md or lg; a slide saved without them has the shop's own (md)."""
+    h = auth_header(admin_user)
+    row = (await client.post("/api/v1/admin/hero-slides", headers=h, json=SLIDE)).json()
+    assert (row["button_size_desktop"], row["button_size_mobile"]) == ("md", "md")
+    saved = await client.put(f"/api/v1/admin/hero-slides/{row['id']}", headers=h, json={**SLIDE, "button_size_desktop": "lg", "button_size_mobile": "sm"})
+    assert saved.status_code == 200, saved.text
+    public = next(s for s in (await client.get("/api/v1/home/content")).json()["slides"] if s["id"] == row["id"])
+    assert (public["button_size_desktop"], public["button_size_mobile"]) == ("lg", "sm")
+    bad = await client.put(f"/api/v1/admin/hero-slides/{row['id']}", headers=h, json={**SLIDE, "button_size_mobile": "xl"})
+    assert bad.status_code == 422
+

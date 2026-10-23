@@ -43,6 +43,7 @@ def slide_read(row: HeroSlide, request: Request) -> HeroSlideRead:
         enable_overlay=row.enable_overlay, font_sizes=row.font_sizes, text_colors=row.text_colors,
         mobile_layout=row.mobile_layout, mobile_font_sizes=row.mobile_font_sizes,
         mobile_bg_position=row.mobile_bg_position, mobile_image=row.mobile_image,
+        button_size_desktop=row.button_size_desktop, button_size_mobile=row.button_size_mobile,
         is_active=row.is_active, sort_order=row.sort_order,
     )
 

@@ -51,6 +51,10 @@ class HeroSlide(Base):
     mobile_bg_position: Mapped[dict | None] = mapped_column(JSONB)
     # The portrait photo phones show in place of the wide one; none: the wide one, cropped.
     mobile_image: Mapped[str | None] = mapped_column(String(500))
+    # Its buttons' size from a tablet up, and on a phone: "sm", "md" (the
+    # shop's own) or "lg".
+    button_size_desktop: Mapped[str] = mapped_column(String(2), nullable=False, default="md", server_default="md")
+    button_size_mobile: Mapped[str] = mapped_column(String(2), nullable=False, default="md", server_default="md")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
