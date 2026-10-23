@@ -95,6 +95,29 @@ Kafe, restoran ve tütün mamulü satış noktaları için açılan hesaplarda f
 
 Soru ve talepleriniz için: [E-posta] · [Telefon]"""
 
+# What the site keeps in the visitor's browser, as the storefront's code has it:
+# no advertising or tracking cookies, no analytics.
+COOKIES_BODY = """## Çerezler ve tarayıcı verileri
+
+Bu site reklam, izleme veya analiz amaçlı çerez kullanmaz. Sitenin çalışması için gereken birkaç bilgi tarayıcınızın kendi deposunda (yerel depolama) tutulur ve yalnızca bu sitede, sizin cihazınızda kalır:
+
+- Sepetinizdeki ürünler ve adetleri
+- Giriş yaptıysanız oturum bilginiz
+- Görünüm tercihleriniz: açık/koyu tema, para birimi, kategori sütununun açık ya da kapalı olması, ürün listesinin görünümü
+- Kapattığınız duyurular, aynı duyuru size yeniden gösterilmesin diye
+
+## Üçüncü taraf içerikler
+
+Ürün sayfalarındaki videolar YouTube'un gelişmiş gizlilik modu (youtube-nocookie.com) ile ve yalnızca oynat düğmesine bastığınızda yüklenir. Kartla ödemede ödeme sayfası anlaşmalı ödeme kuruluşunca açılır; o sayfada ödeme kuruluşunun kendi çerez kuralları geçerlidir.
+
+## Tercihleriniz
+
+Tarayıcınızın ayarlarından bu siteye ait verileri silebilir veya engelleyebilirsiniz. Bu durumda sepetiniz ve tercihleriniz sıfırlanır, oturumunuz kapanır.
+
+## İletişim
+
+Sorularınız için: [E-posta] · [Telefon]"""
+
 # key -> (title, body). The order is the order the panel lists them in.
 # Written above in the old plain format ("## " headings, blank lines between
 # paragraphs) because that is easier to read here; served and stored as the
@@ -106,5 +129,6 @@ DEFAULT_LEGAL: dict[str, tuple[str, str]] = {
         "PRIVACY": ("Gizlilik Kuralları", PRIVACY_BODY),
         "DISTANCE_SALES": ("Mesafeli Satış Sözleşmesi", DISTANCE_SALES_BODY),
         "TERMS": ("Şartlar ve Kurallar Sözleşmesi", TERMS_BODY),
+        "COOKIES": ("Çerez Politikası", COOKIES_BODY),
     }.items()
 }

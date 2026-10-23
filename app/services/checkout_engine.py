@@ -118,6 +118,13 @@ def warehouse_for_segment(code: SegmentType | None) -> WarehouseType:
     return WAREHOUSE_BY_SEGMENT.get(code, WarehouseType.RETAIL_STOCK)
 
 
+def shows_stock_count(code: SegmentType | None) -> bool:
+    """Whether a buyer is told how many there are: a firm's account (Bayi,
+    Toptan, Kafe) orders against a quota of its own and plans by it; a visitor
+    and a bireysel buyer are held to the stock without being told the number."""
+    return code is not None and code != SegmentType.RETAIL
+
+
 def stock_source(inventory: Iterable[Inventory], code: SegmentType | None) -> tuple[WarehouseType, int]:
     """Where a segment's purchase of a variant comes out of, and how many it may buy.
 
@@ -866,7 +873,11 @@ class CheckoutEngine:
             if available < item.quantity:
                 name = item.product.name + (f" ({item.variant.color_name})" if item.variant.color_name else "")
                 raise ValueError(
-                    f"{name} için stokta yalnızca {available} adet var; sepetinizde {item.quantity} adet bulunuyor"
+                    (
+                        f"{name} için stokta yalnızca {available} adet var; sepetinizde {item.quantity} adet bulunuyor"
+                        if shows_stock_count(segment_code)
+                        else f"{name} için stok sınırına ulaştınız; lütfen adedi azaltın"
+                    )
                     if available
                     else f"{name} tükendi; lütfen sepetinizden çıkarın"
                 )

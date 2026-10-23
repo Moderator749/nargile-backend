@@ -193,3 +193,17 @@ class PriceListItem(BaseModel):
     image_url: str | None
     # One entry per requested group the product is sold to, in TRY.
     prices: dict[SegmentType, CatalogPrice]
+
+
+class SuggestedCategory(BaseModel):
+    name: str
+    slug: str
+
+
+class SearchSuggestions(BaseModel):
+    """The header search's suggestions (`GET /products/suggest`)."""
+
+    # How many products the full search finds.
+    total: int
+    products: list[CatalogProductRead]
+    categories: list[SuggestedCategory]

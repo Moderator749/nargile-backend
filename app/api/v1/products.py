@@ -24,6 +24,8 @@ from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.catalog import (
     CatalogPrice,
+    SearchSuggestions,
+    SuggestedCategory,
     CatalogProductDetail,
     CatalogProductRead,
     CatalogVariantRead,
@@ -33,11 +35,11 @@ from app.schemas.catalog import (
     ProductRead,
     SultanPuanShowcase,
 )
-from app.schemas.cart import CartLineInfo
+from app.schemas.cart import CartLineInfo, StockCheckLine, StockCheckRequest
 from app.schemas.i18n import Locale
 from app.services import localize, slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
-from app.services.checkout_engine import stock_source, warehouse_for_segment
+from app.services.checkout_engine import shows_stock_count, stock_source, warehouse_for_segment
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
@@ -66,6 +68,10 @@ def _folded(column):
 def _escape_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
+
+#: How many of each the header search suggests while a visitor types.
+SUGGESTED_PRODUCTS = 6
+SUGGESTED_CATEGORIES = 4
 
 #: `lang` on the storefront's reads: the answer in English or Arabic (app.services.localize).
 LANG = Query(None, description="en | ar — the product text in that language; Turkish when absent")
@@ -201,7 +207,8 @@ async def _catalog_view(
                     list_price=_price_for(v, retail_id, rates)[0],
                     flash_sale=_flash_sale_for(price, sales.get(v.id)),
                     in_stock=available > 0,
-                    available_quantity=available if user else None,
+                    # The count for a firm's account only (`shows_stock_count`).
+                    available_quantity=available if user and shows_stock_count(segment) else None,
                 )
             )
         view = ProductRead.model_validate(product).model_dump()
@@ -283,6 +290,27 @@ async def list_products(
     return await _catalog_view(db, user, list(result.scalars().all()), lang)
 
 
+async def _segment_code(db: AsyncSession, user: User | None) -> SegmentType | None:
+    """The caller's price list, whose stock quota they buy from; None for a visitor."""
+    if not user or not user.segment_id:
+        return None
+    return await db.scalar(select(CustomerSegment.code).where(CustomerSegment.id == user.segment_id))
+
+
+async def _live_variants(db: AsyncSession, ids) -> list[ProductVariant]:
+    """These colours, where they are still for sale (live, of a published product), with their stock."""
+    return list(
+        (
+            await db.execute(
+                select(ProductVariant)
+                .join(Product, Product.id == ProductVariant.product_id)
+                .where(ProductVariant.id.in_(ids), ProductVariant.is_active.is_(True), Product.is_published.is_(True))
+                .options(selectinload(ProductVariant.inventory), selectinload(ProductVariant.product))
+            )
+        ).scalars()
+    )
+
+
 @router.get("/cart-lines", response_model=list[CartLineInfo])
 async def cart_lines(
     ids: list[uuid.UUID] = Query(..., max_length=100, description="Variant ids in the cart"),
@@ -290,35 +318,97 @@ async def cart_lines(
     db: AsyncSession = Depends(get_db),
 ):
     """The cart's lines as the cart page shows them before a quote: each live
-    colour of a published product with its page, its code and the stock of the
-    caller's own quota (retail for a visitor), so a quantity is held to what
-    can be ordered while it is typed. A colour no longer for sale is left out.
-
-    The count is the retail quota's, the one any bireysel account sees once
-    signed in; it is asked for live, never baked into a cached page."""
-    code = (
-        await db.scalar(select(CustomerSegment.code).where(CustomerSegment.id == user.segment_id))
-        if user and user.segment_id
-        else None
-    )
-    rows = (
-        await db.execute(
-            select(ProductVariant)
-            .join(Product, Product.id == ProductVariant.product_id)
-            .where(ProductVariant.id.in_(ids), ProductVariant.is_active.is_(True), Product.is_published.is_(True))
-            .options(selectinload(ProductVariant.inventory), selectinload(ProductVariant.product))
-        )
-    ).scalars().all()
+    colour of a published product with its page, its code and whether the
+    caller's own quota (retail for a visitor) has any left. A colour no longer
+    for sale is left out. How many are left is not said (`stock_check` holds
+    a quantity to it)."""
+    code = await _segment_code(db, user)
     return [
         CartLineInfo(
             variant_id=v.id,
             product_id=v.product_id,
             product_slug=v.product.slug,
             sku=v.sku,
-            available_quantity=stock_source(v.inventory, code)[1],
+            in_stock=stock_source(v.inventory, code)[1] > 0,
         )
-        for v in rows
+        for v in await _live_variants(db, ids)
     ]
+
+
+@router.post("/stock-check", response_model=list[StockCheckLine])
+async def stock_check(
+    payload: StockCheckRequest,
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Quantities held to the caller's own stock quota (retail for a visitor),
+    so the cart and the product page can take a quantity down to the most
+    there is the moment it is typed — "Stok sınırına ulaştınız" — without
+    being told the count: each line comes back as asked, or as the most there
+    is when that is less. A colour no longer for sale comes back as 0. Checkout
+    holds the order to the same stock under a lock."""
+    code = await _segment_code(db, user)
+    have = {v.id: stock_source(v.inventory, code)[1] for v in await _live_variants(db, [i.variant_id for i in payload.items])}
+    out = []
+    for item in payload.items:
+        allowed = min(item.quantity, have.get(item.variant_id, 0))
+        out.append(StockCheckLine(variant_id=item.variant_id, quantity=allowed, capped=allowed < item.quantity))
+    return out
+
+
+@router.get("/suggest", response_model=SearchSuggestions)
+async def suggest(
+    q: str = Query(..., min_length=2, max_length=100),
+    lang: Locale | None = LANG,
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The header search's suggestions as a visitor types (from the second
+    letter): the first few products the full search would list, priced for
+    the caller, the categories whose name matches, and how many products the
+    full search finds. Matched as the search matches (`apply_catalog_filters`:
+    Turkish letters folded, so "lule" suggests the Lüleler)."""
+    found = apply_catalog_filters(select(Product.id), category=None, q=q, published_only=True, lang=lang)
+    total = await db.scalar(select(func.count()).select_from(found.subquery()))
+    code = await _segment_code(db, user)
+    buyable = (
+        select(ProductVariant.id)
+        .join(Inventory, Inventory.variant_id == ProductVariant.id)
+        .where(
+            ProductVariant.product_id == Product.id,
+            ProductVariant.is_active.is_(True),
+            Inventory.warehouse_type == warehouse_for_segment(code),
+            Inventory.quantity > 0,
+        )
+        .correlate(Product)
+        .exists()
+    )
+    products = (
+        await db.execute(
+            apply_catalog_filters(select(Product), category=None, q=q, published_only=True, lang=lang)
+            .options(*_VARIANT_LOADS)
+            .order_by(buyable.desc(), Product.name, Product.id)
+            .limit(SUGGESTED_PRODUCTS)
+        )
+    ).scalars().all()
+    pattern = f"%{_escape_like(_fold_tr(q.strip()))}%"
+    categories = (
+        await db.execute(
+            select(Category)
+            .where(Category.is_active.is_(True), _folded(Category.name).like(pattern, escape="\\"))
+            .order_by(Category.sort_order, Category.name)
+            .limit(SUGGESTED_CATEGORIES)
+        )
+    ).scalars().all()
+    return SearchSuggestions(
+        total=total or 0,
+        products=await _catalog_view(db, user, list(products), lang),
+        categories=[
+            # In the page's language where the category has been translated.
+            SuggestedCategory(name=(((c.translations or {}).get(lang) or {}).get("name") or c.name), slug=c.slug)
+            for c in categories
+        ],
+    )
 
 
 # Which price groups a B2B account may put in a catalogue for its own customers:

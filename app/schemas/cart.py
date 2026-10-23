@@ -31,22 +31,42 @@ class CartItemBreakdown(BaseModel):
     # The havale discount on this line itself (VAT-inclusive); 0 unless it is a
     # havale_eligible line paid by transfer. Included in `discount_amount`.
     havale_discount: Decimal = Decimal("0.00")
-    # How many the buyer may have (their own list's quota): a
-    # line above it cannot be ordered, and the cart says so before checkout.
-    available_quantity: int = 0
+    # How many the buyer may have (their own list's quota) — told to a firm's
+    # account only (`shows_stock_count`); null for a bireysel buyer, who gets
+    # `stock_short` instead. A line above it cannot be ordered.
+    available_quantity: int | None = None
+    # More in the cart than can be had: the cart says so before checkout.
+    stock_short: bool = False
 
 
 class CartLineInfo(BaseModel):
     """What a visitor's cart needs about one of its colours before they sign in
-    (they have no quote yet): its page, its code, and how many of it there are
-    in the retail quota — the most the cart lets them put in."""
+    (they have no quote yet): its page, its code, and whether any is left —
+    not how many (`StockCheckLine` holds a quantity to the stock)."""
 
     variant_id: uuid.UUID
     product_id: uuid.UUID
     product_slug: str | None = None
     sku: str
-    available_quantity: int
+    in_stock: bool
 
+
+class StockCheckItem(BaseModel):
+    variant_id: uuid.UUID
+    quantity: int = Field(ge=1, le=999_999)
+
+
+class StockCheckRequest(BaseModel):
+    items: list[StockCheckItem] = Field(min_length=1, max_length=100)
+
+
+class StockCheckLine(BaseModel):
+    """A quantity held to the caller's stock: what was asked for, or the most
+    there is when that is less (`capped`). The count itself is never sent."""
+
+    variant_id: uuid.UUID
+    quantity: int
+    capped: bool
 
 class ShippingBreakdown(BaseModel):
     """Who pays the carriage and why, so the cart can explain it.

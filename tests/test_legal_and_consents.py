@@ -40,7 +40,7 @@ CORPORATE = {
 
 pytestmark = pytest.mark.asyncio
 
-KEYS = ["PRIVACY_NOTICE", "PRIVACY", "DISTANCE_SALES", "TERMS"]
+KEYS = ["PRIVACY_NOTICE", "PRIVACY", "DISTANCE_SALES", "TERMS", "COOKIES"]
 # Over the free-shipping threshold, so no karşı ödemeli consent is in the way of
 # what these tests are actually about.
 PRICE = Decimal("5000.00")

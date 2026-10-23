@@ -17,7 +17,7 @@ from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingB
 from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
 from app.services import order_sms, sms_settings
 from app.services.delivery import check_delivery_address
-from app.services.checkout_engine import CheckoutEngine
+from app.services.checkout_engine import CheckoutEngine, shows_stock_count
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -67,6 +67,8 @@ async def calculate_cart(
 
     s = cart.shipping
     params = cart.params
+    # A firm's account is told its quota; a bireysel buyer only that a line is short.
+    counts = shows_stock_count(user.segment.code if user.segment else None)
     subtotal_excl = sum((i.line_total_excl_tax for i in cart.items), Decimal("0.00"))
     # After each line's own discount (a bayi's havale); the same as above without one.
     net_excl = sum((i.net_line_total_excl_tax for i in cart.items), Decimal("0.00"))
@@ -122,7 +124,8 @@ async def calculate_cart(
                 vat_rate=i.vat_rate,
                 havale_eligible=i.havale_eligible,
                 havale_discount=i.havale_discount,
-                available_quantity=i.available,
+                available_quantity=i.available if counts else None,
+                stock_short=i.quantity > i.available,
             )
             for i in cart.items
         ],

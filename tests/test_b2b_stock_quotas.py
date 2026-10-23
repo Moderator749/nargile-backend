@@ -161,7 +161,8 @@ async def test_perakende_is_held_to_the_retail_stock(client, db_session, segment
         db_session, segments, RETAIL_STOCK=0, B2B_STOCK=10, CAFE_STOCK=10, DEALER_STOCK=10
     )
     seen = await _storefront(client, variant, shopper)
-    assert (seen["in_stock"], seen["available_quantity"]) == (False, 0)
+    # A bireysel buyer is told whether there is any, never how many.
+    assert (seen["in_stock"], seen["available_quantity"]) == (False, None)
     resp = await client.post("/api/v1/orders/checkout", headers=shopper, json=_body([(variant, 1)]))
     assert resp.status_code == 422
     assert await _quotas(db_session, variant) == {

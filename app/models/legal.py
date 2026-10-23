@@ -18,12 +18,14 @@ from app.core.database import Base
 
 class LegalKey(str, enum.Enum):
     """Which text. PRIVACY_NOTICE is the short framed notice in the cart; the
-    other three are the documents the footer and the checkout modals show."""
+    next three are the documents the footer and the checkout modals show, and
+    COOKIES the footer's "Çerez Politikası"."""
 
     PRIVACY_NOTICE = "PRIVACY_NOTICE"
     PRIVACY = "PRIVACY"
     DISTANCE_SALES = "DISTANCE_SALES"
     TERMS = "TERMS"
+    COOKIES = "COOKIES"
 
 
 class LegalDocument(Base):

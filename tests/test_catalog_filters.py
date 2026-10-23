@@ -169,13 +169,57 @@ async def test_sold_out_products_come_last(client: AsyncClient, db_session: Asyn
         await db_session.commit()
 
 
-async def test_cart_lines_give_a_visitor_the_retail_stock(client: AsyncClient, catalog):
-    """A guest's cart holds a quantity to the retail quota before any quote."""
+async def test_cart_lines_link_a_visitors_lines_without_a_count(client: AsyncClient, catalog):
+    """A guest's cart learns each line's page, code and whether any is left — never how many."""
     normal_v, heavy_v = catalog
     resp = await client.get("/api/v1/products/cart-lines", params={"ids": [str(normal_v.id), str(uuid.uuid4())]})
     assert resp.status_code == 200, resp.text
     [line] = resp.json()
-    assert line["variant_id"] == str(normal_v.id)
-    assert line["sku"] == normal_v.sku
-    assert line["available_quantity"] == 500
+    assert line == {
+        "variant_id": str(normal_v.id),
+        "product_id": line["product_id"],
+        "product_slug": line["product_slug"],
+        "sku": normal_v.sku,
+        "in_stock": True,
+    }
     assert line["product_slug"]
+
+
+async def test_stock_check_holds_a_quantity_to_the_stock_without_the_count(client: AsyncClient, catalog):
+    normal_v, heavy_v = catalog
+    gone = str(uuid.uuid4())
+    resp = await client.post("/api/v1/products/stock-check", json={"items": [
+        {"variant_id": str(normal_v.id), "quantity": 3},
+        {"variant_id": str(heavy_v.id), "quantity": 9999},
+        {"variant_id": gone, "quantity": 2},
+    ]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == [
+        {"variant_id": str(normal_v.id), "quantity": 3, "capped": False},
+        {"variant_id": str(heavy_v.id), "quantity": 500, "capped": True},
+        {"variant_id": gone, "quantity": 0, "capped": True},
+    ]
+
+
+async def test_suggestions_fold_turkish_letters(client: AsyncClient, db_session: AsyncSession):
+    """From the second letter: products as the search lists them, the matching categories, the total."""
+    suffix = uuid.uuid4().hex[:6]
+    cat = Category(name=f"Lüleler {suffix}", slug=f"luleler-{suffix}")
+    db_session.add(cat)
+    await db_session.flush()
+    killer = Product(base_code=f"KL-{suffix}", name=f"Sırlı Lüle {suffix}", category_id=cat.id, tags=[])
+    db_session.add(killer)
+    await db_session.commit()
+    try:
+        resp = await client.get("/api/v1/products/suggest", params={"q": f"lule {suffix}"})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 1
+        assert [p["id"] for p in body["products"]] == [str(killer.id)]
+        resp = await client.get("/api/v1/products/suggest", params={"q": f"luleler {suffix}"})
+        assert resp.json()["categories"] == [{"name": cat.name, "slug": cat.slug}]
+        assert (await client.get("/api/v1/products/suggest", params={"q": "l"})).status_code == 422
+    finally:
+        await db_session.execute(delete(Product).where(Product.id == killer.id))
+        await db_session.execute(delete(Category).where(Category.id == cat.id))
+        await db_session.commit()
