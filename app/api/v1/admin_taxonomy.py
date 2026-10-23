@@ -53,7 +53,7 @@ async def _category_rows(db: AsyncSession, ids: list[int] | None = None) -> list
         AdminCategoryRead(
             id=c.id, name=c.name, slug=c.slug, parent_id=c.parent_id, sort_order=c.sort_order,
             is_active=c.is_active, image_url=c.image_url, description=c.description,
-            translations=c.translations, product_count=n
+            seo_title=c.seo_title, seo_text=c.seo_text, translations=c.translations, product_count=n
         )
         for c, n in (await db.execute(stmt)).all()
     ]
@@ -93,6 +93,9 @@ async def _apply_category(db: AsyncSession, category: Category, payload: Categor
     # Only when sent: a caller that predates the field must not wipe it.
     if "description" in payload.model_fields_set:
         category.description = payload.description
+    for field in ("seo_title", "seo_text"):
+        if field in payload.model_fields_set:
+            setattr(category, field, getattr(payload, field))
     if "translations" in payload.model_fields_set:
         category.translations = i18n.stored(payload.translations)
 

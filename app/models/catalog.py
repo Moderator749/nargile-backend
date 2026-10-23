@@ -65,6 +65,11 @@ class Category(Base):
     # "Devamını Oku") and its meta description's source; null = the
     # storefront's built-in copy for the slug, if any.
     description: Mapped[str | None] = mapped_column(Text)
+    # The passage closing the category's page, in place of the shop's own
+    # ("Alt SEO Metni"): its heading, and its text (HTML from the panel's
+    # editor, cleaned); both null = the shop's.
+    seo_title: Mapped[str | None] = mapped_column(String(160))
+    seo_text: Mapped[str | None] = mapped_column(Text)
     # The name and description in the storefront's other languages:
     # {"en": {"name", "description"}, "ar": {...}} (app.schemas.i18n). Missing =
     # the Turkish above.

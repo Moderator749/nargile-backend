@@ -309,3 +309,27 @@ async def test_category_description(client: AsyncClient, admin_user: User, tag: 
         json={"name": f"Açıklamalı {tag}", "slug": f"aciklamali-{tag}", "parent_id": None, "sort_order": 0, "is_active": True, "image_url": None},
     )
     assert resp.json()["description"] == "<p>Uzun bir tanıtım.</p>"
+
+
+async def test_category_closing_passage(client: AsyncClient, admin_user: User, tag: str, cleanup):
+    """A category's own passage at the foot of its page, in place of the shop's "Alt SEO Metni"."""
+    h = auth_header(admin_user)
+    created = await _create_category(
+        client, admin_user, name=f"Pasajlı {tag}", slug=f"pasajli-{tag}",
+        seo_title="  Lüle Seçiminde Bilinmesi Gerekenler ", seo_text="İlk paragraf.\n\nİkinci <script>x</script>paragraf.",
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["seo_title"] == "Lüle Seçiminde Bilinmesi Gerekenler"
+    assert "<script>" not in body["seo_text"] and "İlk paragraf." in body["seo_text"]
+    public = (await client.get(f"/api/v1/categories/by-slug/pasajli-{tag}")).json()
+    assert (public["seo_title"], public["seo_text"]) == (body["seo_title"], body["seo_text"])
+
+    # A save that does not mention them leaves them alone; blank clears them.
+    base = {"name": f"Pasajlı {tag}", "slug": f"pasajli-{tag}", "parent_id": None, "sort_order": 0, "is_active": True, "image_url": None}
+    kept = await client.put(f"/api/v1/admin/categories/{body['id']}", headers=h, json=base)
+    assert kept.json()["seo_title"] == body["seo_title"]
+    cleared = await client.put(f"/api/v1/admin/categories/{body['id']}", headers=h, json={**base, "seo_title": " ", "seo_text": ""})
+    assert (cleared.json()["seo_title"], cleared.json()["seo_text"]) == (None, None)
+    assert (await _create_category(client, admin_user, name=f"Uzun {tag}", seo_title="x" * 161)).status_code == 422
+

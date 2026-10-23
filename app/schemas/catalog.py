@@ -24,6 +24,9 @@ class CategoryRead(BaseModel):
     image_url: str | None = None
     # The page's introduction, as the admin wrote it; null = none of its own.
     description: str | None = None
+    # The passage closing its page (heading, HTML); null = the shop's own. Turkish only.
+    seo_title: str | None = None
+    seo_text: str | None = None
     # The languages it is translated into, Turkish first (?lang= answers in one
     # of them; app.services.localize).
     locales: list[str] = ["tr"]

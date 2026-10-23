@@ -39,14 +39,24 @@ class CategoryWrite(BaseModel):
     # The page's introduction, HTML from the panel's editor (cleaned here);
     # blank = the storefront's built-in copy.
     description: str | None = Field(default=None, max_length=RICH_TEXT_MAX)
+    # The passage closing the page, in place of the shop's own "Alt SEO
+    # Metni": a heading and HTML from the panel's editor (cleaned here).
+    # Blank = the shop's; left out = the stored ones stay.
+    seo_title: str | None = Field(default=None, max_length=160)
+    seo_text: str | None = Field(default=None, max_length=RICH_TEXT_MAX)
     # The name and introduction in English and Arabic. Left out = the stored
     # ones stay.
     translations: CategoryTranslations | None = None
 
-    @field_validator("description")
+    @field_validator("description", "seo_text")
     @classmethod
     def _clean_description(cls, v: str | None) -> str | None:
         return to_rich_html(v)
+
+    @field_validator("seo_title")
+    @classmethod
+    def _blank_title(cls, v: str | None) -> str | None:
+        return (v or "").strip() or None
 
     @field_validator("image_url")
     @classmethod
@@ -81,6 +91,8 @@ class AdminCategoryRead(BaseModel):
     is_active: bool
     image_url: str | None
     description: str | None = None
+    seo_title: str | None = None
+    seo_text: str | None = None
     translations: CategoryTranslations | None = None
     # Products listed directly under this category (not its subcategories),
     # whether it is their primary category or one more.
