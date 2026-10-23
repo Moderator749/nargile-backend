@@ -10,7 +10,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_optional_user
 from app.core.database import get_db
-from app.models.catalog import CurrencyType, Product, ProductCrossSell, ProductVariant
+from app.models.catalog import Category, CategoryProductOrder, CurrencyType, Product, ProductCrossSell, ProductVariant
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
@@ -228,6 +228,19 @@ async def list_products(
     order = (Product.name, Product.id)
     if sort == "newest":
         order = (Product.created_at.desc(), *order)
+    elif category:
+        # A category page in its own order ("Önerilen"): the products the
+        # admin ranked for this very category first, the rest by name.
+        rank = (
+            select(CategoryProductOrder.position)
+            .where(
+                CategoryProductOrder.category_id == select(Category.id).where(Category.slug == category).scalar_subquery(),
+                CategoryProductOrder.product_id == Product.id,
+            )
+            .correlate(Product)
+            .scalar_subquery()
+        )
+        order = (rank.asc().nulls_last(), *order)
     result = await db.execute(
         stmt.options(*_VARIANT_LOADS).order_by(*order).offset(skip).limit(limit)
     )

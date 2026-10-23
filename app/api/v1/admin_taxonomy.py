@@ -9,20 +9,23 @@ from app.api.deps import get_current_admin_user, get_session_factory
 from app.api.v1.brands import brand_read
 from app.core.database import get_db
 from app.models.brand import Brand
-from app.models.catalog import Category, Product, ProductCategory
+from app.models.catalog import Category, CategoryProductOrder, Product, ProductCategory
 from app.models.user import User
 from app.schemas import i18n
 from app.schemas.taxonomy import (
     AdminCategoryRead,
+    BrandOrderWrite,
     BrandRead,
     BrandWrite,
+    CategoryProductOrderRow,
+    CategoryProductOrderWrite,
     CategoryWrite,
     ProductCategoryAssign,
     ProductCategoryAssignResult,
     slugify,
 )
 from app.services import slug_redirects
-from app.services.categories import memberships, products_in
+from app.services.categories import category_subtree, memberships, products_in
 from app.services.media import MAX_IMAGE_BYTES, InvalidImage, delete_media, save_image
 from app.services import auto_translate
 
@@ -199,6 +202,7 @@ async def _apply_brand(db: AsyncSession, brand: Brand, payload: BrandWrite) -> N
     brand.name = payload.name
     brand.slug = slug
     brand.search_term = (payload.search_term or "").strip() or payload.name
+    brand.description = payload.description
     brand.is_active = payload.is_active
     brand.sort_order = payload.sort_order
 
@@ -223,6 +227,27 @@ async def create_brand(
     db.add(brand)
     await db.commit()
     return brand_read(brand, request)
+
+
+@router.put("/brands/order", response_model=list[BrandRead])
+async def reorder_brands(
+    payload: BrandOrderWrite,
+    request: Request,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The brands' order in the menu and the marquee, first to last (as dragged)."""
+    if len(set(payload.ids)) != len(payload.ids):
+        raise HTTPException(status_code=422, detail="A brand is listed twice")
+    brands = {b.id: b for b in (await db.scalars(select(Brand).where(Brand.id.in_(payload.ids)))).all()}
+    missing = [i for i in payload.ids if i not in brands]
+    if missing:
+        raise HTTPException(status_code=404, detail=f"Unknown brand ids: {missing}")
+    for place, brand_id in enumerate(payload.ids, start=1):
+        brands[brand_id].sort_order = place * 10
+    await db.commit()
+    result = await db.execute(select(Brand).order_by(Brand.sort_order, Brand.name))
+    return [brand_read(b, request) for b in result.scalars()]
 
 
 @router.put("/brands/{brand_id}", response_model=BrandRead)
@@ -284,3 +309,74 @@ async def delete_brand_logo(
     await db.commit()
     delete_media(old)
     return brand_read(brand, request)
+
+
+# ── A category page's own product order ("Önerilen") ─────────────────────────
+
+
+async def _order_rows(db: AsyncSession, category: Category) -> list[CategoryProductOrderRow]:
+    """Every product the category's page lists (its subcategories' too), in the
+    page's order: the ranked first by position, the rest by name."""
+    rank = (
+        select(CategoryProductOrder.position)
+        .where(CategoryProductOrder.category_id == category.id, CategoryProductOrder.product_id == Product.id)
+        .correlate(Product)
+        .scalar_subquery()
+    )
+    rows = await db.execute(
+        select(Product, rank.label("position"))
+        .where(Product.id.in_(products_in(category_subtree(category.slug))))
+        .order_by(rank.asc().nulls_last(), Product.name, Product.id)
+    )
+    return [
+        CategoryProductOrderRow(
+            product_id=p.id,
+            name=p.name,
+            base_code=p.base_code,
+            brand=p.brand,
+            image_url=p.image_url,
+            is_published=p.is_published,
+            position=position,
+        )
+        for p, position in rows.all()
+    ]
+
+
+async def _category(db: AsyncSession, category_id: int) -> Category:
+    category = await db.get(Category, category_id)
+    if category is None:
+        raise HTTPException(status_code=404, detail="Category not found")
+    return category
+
+
+@router.get("/categories/{category_id}/product-order", response_model=list[CategoryProductOrderRow])
+async def category_product_order(
+    category_id: int, _admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
+):
+    return await _order_rows(db, await _category(db, category_id))
+
+
+@router.put("/categories/{category_id}/product-order", response_model=list[CategoryProductOrderRow])
+async def set_category_product_order(
+    category_id: int,
+    payload: CategoryProductOrderWrite,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rank these products first, in this order, on this category's page (and
+    only there: a group and its subcategories each keep their own). Products
+    left out are unranked: they follow, by name. An empty list clears it."""
+    category = await _category(db, category_id)
+    if len(set(payload.product_ids)) != len(payload.product_ids):
+        raise HTTPException(status_code=422, detail="A product is listed twice")
+    listed = set((await db.scalars(products_in(category_subtree(category.slug)))).all())
+    strangers = [str(p) for p in payload.product_ids if p not in listed]
+    if strangers:
+        raise HTTPException(status_code=422, detail=f"Not on this category's page: {strangers[:5]}")
+    await db.execute(delete(CategoryProductOrder).where(CategoryProductOrder.category_id == category.id))
+    db.add_all(
+        CategoryProductOrder(category_id=category.id, product_id=product_id, position=place)
+        for place, product_id in enumerate(payload.product_ids)
+    )
+    await db.commit()
+    return await _order_rows(db, category)

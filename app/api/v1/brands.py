@@ -19,6 +19,7 @@ def brand_read(brand: Brand, request: Request) -> BrandRead:
         slug=brand.slug,
         search_term=brand.search_term,
         logo_url=media_url(request, brand.logo_path) if brand.logo_path else None,
+        description=brand.description,
         is_active=brand.is_active,
         sort_order=brand.sort_order,
     )

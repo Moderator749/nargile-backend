@@ -105,8 +105,15 @@ class BrandWrite(BaseModel):
     slug: str | None = Field(default=None, max_length=100)
     # Catalog search the brand links to; blank = the name.
     search_term: str | None = Field(default=None, max_length=100)
+    # For the brand's page (/marka/<slug>), above its products; blank = none.
+    description: str | None = Field(default=None, max_length=1000)
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
+
+    @field_validator("description")
+    @classmethod
+    def _blank_description(cls, v: str | None) -> str | None:
+        return (v or "").strip() or None
 
     @field_validator("slug")
     @classmethod
@@ -128,5 +135,31 @@ class BrandRead(BaseModel):
     slug: str
     search_term: str
     logo_url: str | None
+    description: str | None = None
     is_active: bool
     sort_order: int
+
+
+class BrandOrderWrite(BaseModel):
+    """Every brand, in the order the menu and the marquee show them."""
+
+    ids: list[int] = Field(min_length=1, max_length=500)
+
+
+class CategoryProductOrderRow(BaseModel):
+    """One product of a category page, as the order editor lists it."""
+
+    product_id: uuid.UUID
+    name: str
+    base_code: str
+    brand: str | None
+    image_url: str | None
+    is_published: bool
+    # Its place in the admin's order; None for one not ranked (it follows the ranked, by name).
+    position: int | None
+
+
+class CategoryProductOrderWrite(BaseModel):
+    """The ranked products, first to last; the category's others follow by name."""
+
+    product_ids: list[uuid.UUID] = Field(max_length=2000)

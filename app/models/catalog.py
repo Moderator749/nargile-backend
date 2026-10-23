@@ -244,6 +244,25 @@ class ProductCategory(Base):
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
+
+class CategoryProductOrder(Base):
+    """The admin's own order of a category page's products ("Önerilen"): a
+    position per product, per category — a group page has its own, apart from
+    its subcategories'. Ranked products come first, in this order; the rest
+    follow in the catalog's usual order (by name). Rows go with their product
+    or category.
+    """
+
+    __tablename__ = "category_product_orders"
+    __table_args__ = (Index("ix_category_product_orders_position", "category_id", "position"),)
+
+    category_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="CASCADE"), primary_key=True)
+    product_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="CASCADE"), primary_key=True
+    )
+    position: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
 class ProductVariant(Base):
     """One buyable colour of a product — the thing stock, prices and orders hang off.
 

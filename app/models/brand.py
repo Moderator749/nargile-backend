@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Index, Integer, String
+from sqlalchemy import Boolean, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -20,6 +20,8 @@ class Brand(Base):
     search_term: Mapped[str] = mapped_column(String(100), nullable=False)
     # Path under MEDIA_ROOT (e.g. "brands/3f2a….png"); None = show the name as a wordmark.
     logo_path: Mapped[str | None] = mapped_column(String(255))
+    # A line or two for the brand's own page (/marka/<slug>), above its products.
+    description: Mapped[str | None] = mapped_column(Text)
     # Shown in the menu and the marquee.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
