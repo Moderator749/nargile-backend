@@ -200,6 +200,15 @@ class SuggestedCategory(BaseModel):
     slug: str
 
 
+class CatalogSummary(BaseModel):
+    """A listing as a whole (`GET /products/summary`): its size and price range for the caller."""
+
+    total: int
+    # The cheapest and dearest card price, VAT included, in TRY; None with no priced product.
+    price_min: Decimal | None = None
+    price_max: Decimal | None = None
+
+
 class SearchSuggestions(BaseModel):
     """The header search's suggestions (`GET /products/suggest`)."""
 

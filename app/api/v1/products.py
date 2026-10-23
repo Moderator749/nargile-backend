@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -10,6 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user, get_optional_user
 from app.core.database import get_db
+from app.models.brand import Brand
 from app.models.catalog import (
     Category,
     CategoryProductOrder,
@@ -24,6 +26,7 @@ from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.catalog import (
     CatalogPrice,
+    CatalogSummary,
     SearchSuggestions,
     SuggestedCategory,
     CatalogProductDetail,
@@ -67,6 +70,33 @@ def _folded(column):
 
 def _escape_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def _brand_terms(db: AsyncSession) -> list[tuple[re.Pattern[str], str]]:
+    """The active brands, each as the whole word its page searches for (folded) and its name."""
+    rows = (await db.execute(select(Brand.name, Brand.search_term).where(Brand.is_active.is_(True)))).all()
+    return [
+        (re.compile(rf"(?<![0-9a-z]){re.escape(_fold_tr(term.strip()))}(?![0-9a-z])"), name)
+        for name, term in rows
+        if term and term.strip()
+    ]
+
+
+def brand_in_name(name: str, terms: list[tuple[re.Pattern[str], str]]) -> str | None:
+    """The brand a product's name carries, for one whose own brand field is empty.
+
+    Most of the imported catalogue has none ("Alpha Hookah Echo Gold Noir"),
+    though its brand page lists it, found by the brand's search term: the
+    brand whose term comes first in the name, as a whole word, the longer term
+    on a tie. None when no brand's term is in it.
+    """
+    folded = _fold_tr(name)
+    best: tuple[tuple[int, int], str] | None = None
+    for pattern, brand in terms:
+        found = pattern.search(folded)
+        if found and (best is None or (found.start(), -len(pattern.pattern)) < best[0]):
+            best = ((found.start(), -len(pattern.pattern)), brand)
+    return best[1] if best else None
 
 
 #: How many of each the header search suggests while a visitor types.
@@ -167,6 +197,14 @@ def _flash_sale_for(price: CatalogPrice | None, sale: FlashSale | None) -> Flash
     )
 
 
+async def _price_lists(db: AsyncSession, user: User | None) -> tuple[int, SegmentType | None, int]:
+    """(the caller's price list, its code, the retail list's id): RETAIL for a visitor."""
+    segments = {s.id: s.code for s in (await db.execute(select(CustomerSegment))).scalars()}
+    retail_id = next(sid for sid, code in segments.items() if code == SegmentType.RETAIL)
+    segment_id = (user.segment_id if user else None) or retail_id
+    return segment_id, segments.get(segment_id), retail_id
+
+
 async def _catalog_view(
     db: AsyncSession, user: User | None, products: list[Product], lang: str | None = None
 ) -> list[CatalogProductRead]:
@@ -178,14 +216,12 @@ async def _catalog_view(
     choice between these. A retired colour is left out: it exists for the orders
     that contain it, not to be bought again.
     """
-    segments = {s.id: s.code for s in (await db.execute(select(CustomerSegment))).scalars()}
-    retail_id = next(sid for sid, code in segments.items() if code == SegmentType.RETAIL)
-    segment_id = (user.segment_id if user else None) or retail_id
-    segment = segments.get(segment_id)
+    segment_id, segment, retail_id = await _price_lists(db, user)
     rates = await _rates_if_needed(products)
     sales = await live_flash_sales(
         db, (v.id for p in products for v in p.variants), datetime.now(timezone.utc)
     )
+    brands = await _brand_terms(db)
 
     views = []
     for product in products:
@@ -212,6 +248,9 @@ async def _catalog_view(
                 )
             )
         view = ProductRead.model_validate(product).model_dump()
+        # The card's line over the name says the brand: the one its name carries where the field is empty.
+        if not (view.get("brand") or "").strip():
+            view["brand"] = brand_in_name(product.name, brands)
         # The labels the live variants carry, so the picker and the pills agree
         # even if a colour was retired after the product's own list was written.
         view["color_names"] = [v.color_name for v in variants if v.color_name]
@@ -308,6 +347,47 @@ async def _live_variants(db: AsyncSession, ids) -> list[ProductVariant]:
                 .options(selectinload(ProductVariant.inventory), selectinload(ProductVariant.product))
             )
         ).scalars()
+    )
+
+
+@router.get("/summary", response_model=CatalogSummary)
+async def catalog_summary(
+    category: str | None = Query(None, max_length=180, description="Category slug"),
+    q: str | None = Query(None, max_length=100, description="Search name, brand or code"),
+    lang: Locale | None = LANG,
+    user: User | None = Depends(get_optional_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A listing as a whole, where its page shows it a page at a time: how
+    many products it has, and the cheapest and dearest of them as their cards
+    price them for the caller — the colour a card shows (the first in the
+    caller's stock, else the first), at a live flash sale's price, else the
+    caller's own, else the retail one; in TRY."""
+    products = (
+        await db.execute(
+            apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang).options(
+                *_VARIANT_LOADS
+            )
+        )
+    ).scalars().all()
+    segment_id, segment, retail_id = await _price_lists(db, user)
+    rates = await _rates_if_needed(list(products))
+    sales = await live_flash_sales(db, (v.id for p in products for v in p.variants), datetime.now(timezone.utc))
+    prices: list[Decimal] = []
+    for product in products:
+        live = sorted((v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku))
+        if not live:
+            continue
+        shown = next((v for v in live if stock_source(v.inventory, segment)[1] > 0), live[0])
+        own, _ = _price_for(shown, segment_id, rates)
+        sale = _flash_sale_for(own, sales.get(shown.id))
+        price = sale.price if sale else (own or _price_for(shown, retail_id, rates)[0])
+        if price is not None and price.currency == CurrencyType.TRY:
+            prices.append(price.price_incl_tax)
+    return CatalogSummary(
+        total=len(products),
+        price_min=min(prices) if prices else None,
+        price_max=max(prices) if prices else None,
     )
 
 

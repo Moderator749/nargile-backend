@@ -223,3 +223,77 @@ async def test_suggestions_fold_turkish_letters(client: AsyncClient, db_session:
         await db_session.execute(delete(Product).where(Product.id == killer.id))
         await db_session.execute(delete(Category).where(Category.id == cat.id))
         await db_session.commit()
+
+
+async def test_summary_counts_a_listing_and_prices_it_as_its_cards(
+    client: AsyncClient, db_session: AsyncSession, segments
+):
+    """The whole listing's size and price range, each product at the colour its card shows."""
+    from decimal import Decimal
+
+    from app.models.catalog import Inventory, ProductVariant, VariantPrice, WarehouseType
+    from app.models.user import SegmentType
+
+    retail_id = segments[SegmentType.RETAIL].id
+    suffix = uuid.uuid4().hex[:6]
+    cat = Category(name=f"Özet {suffix}", slug=f"ozet-{suffix}")
+    db_session.add(cat)
+    await db_session.flush()
+    # (name, [(price, stock), …] in colour order)
+    rows = {"Aaa": [(100, 3)], "Bbb": [(50, 0)], "Ccc": [(10, 0), (300, 2)]}
+    products = []
+    for name, colours in rows.items():
+        product = Product(base_code=f"{name}-{suffix}", name=f"{name} {suffix}", category_id=cat.id, tags=[])
+        db_session.add(product)
+        await db_session.flush()
+        products.append(product)
+        for i, (price, stock) in enumerate(colours):
+            variant = ProductVariant(product_id=product.id, sku=f"{name}-{i}-{suffix}", position=i)
+            db_session.add(variant)
+            await db_session.flush()
+            db_session.add(VariantPrice(
+                variant_id=variant.id, segment_id=retail_id, currency="TRY",
+                price_excl_tax=Decimal(price), price_incl_tax=Decimal(price), vat_rate=Decimal("0"),
+            ))
+            db_session.add(Inventory(variant_id=variant.id, warehouse_type=WarehouseType.RETAIL_STOCK, quantity=stock))
+    await db_session.commit()
+    try:
+        resp = await client.get("/api/v1/products/summary", params={"category": cat.slug})
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # Ccc's card shows its second colour, the one in stock: 300, not 10.
+        assert (body["total"], Decimal(body["price_min"]), Decimal(body["price_max"])) == (3, Decimal(50), Decimal(300))
+        assert (await client.get("/api/v1/products/summary", params={"q": f"yok-{suffix}"})).json() == {
+            "total": 0, "price_min": None, "price_max": None,
+        }
+    finally:
+        ids = [p.id for p in products]
+        variants = ProductVariant.__table__.select().with_only_columns(ProductVariant.id).where(ProductVariant.product_id.in_(ids))
+        await db_session.execute(delete(VariantPrice).where(VariantPrice.variant_id.in_(variants)))
+        await db_session.execute(delete(Inventory).where(Inventory.variant_id.in_(variants)))
+        await db_session.execute(delete(ProductVariant).where(ProductVariant.product_id.in_(ids)))
+        await db_session.execute(delete(Product).where(Product.id.in_(ids)))
+        await db_session.execute(delete(Category).where(Category.id == cat.id))
+        await db_session.commit()
+
+
+async def test_a_product_without_a_brand_takes_the_one_its_name_carries(client: AsyncClient, db_session: AsyncSession):
+    from app.models.brand import Brand
+
+    suffix = uuid.uuid4().hex[:6]
+    brand = Brand(name=f"Zeta {suffix}", slug=f"zeta-{suffix}", search_term=f"zeta{suffix}")
+    db_session.add(brand)
+    bare = Product(base_code=f"ZT-{suffix}", name=f"ZETA{suffix} Bowl - Nargile Lülesi", tags=[])
+    own = Product(base_code=f"OW-{suffix}", name=f"Zeta{suffix} Bowl", brand="Kendi", tags=[])
+    # The term inside another word is not the brand.
+    inside = Product(base_code=f"IN-{suffix}", name=f"Xzeta{suffix} Bowl", tags=[])
+    db_session.add_all([bare, own, inside])
+    await db_session.commit()
+    try:
+        resp = await client.get("/api/v1/products/", params={"q": f"zeta{suffix}", "limit": 10})
+        brands = {p["base_code"]: p["brand"] for p in resp.json()}
+        assert brands == {bare.base_code: brand.name, own.base_code: "Kendi", inside.base_code: None}
+    finally:
+        await db_session.execute(delete(Product).where(Product.id.in_([bare.id, own.id, inside.id])))
+        await db_session.execute(delete(Brand).where(Brand.id == brand.id))
+        await db_session.commit()
