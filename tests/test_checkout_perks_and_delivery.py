@@ -26,7 +26,7 @@ from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice,
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
 from app.models.order import Order, OrderStatus, PaymentMethod
 from app.models.user import AccountType, CustomerSegment, SegmentType, User, UserRole
-from app.services.checkout_engine import warehouse_for_segment
+from app.services.checkout_engine import CENTRAL_STOCK
 from app.services.loyalty_service import get_user_loyalty_balance
 from tests.conftest import ADDRESS, CONSENTS, auth_header
 
@@ -88,7 +88,8 @@ async def _variant(
             price_excl_tax=(UNIT_PRICE / Decimal("1.20")).quantize(Decimal("0.01")),
             price_incl_tax=UNIT_PRICE, vat_rate=Decimal("20.00"),
         ))
-        db.add(Inventory(variant_id=variant.id, warehouse_type=warehouse_for_segment(code), quantity=quota))
+    # One stock for every price list.
+    db.add(Inventory(variant_id=variant.id, warehouse_type=CENTRAL_STOCK, quantity=quota))
     await db.commit()
     return variant
 

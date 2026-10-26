@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice
 from app.models.user import CustomerSegment, SegmentType, User
-from app.services.checkout_engine import HAVALE_SWITCH, warehouse_for_segment
+from app.services.checkout_engine import CENTRAL_STOCK, HAVALE_SWITCH
 from tests.conftest import CONSENTS, auth_header
 from tests.test_b2b_checkout import CORPORATE, ISTANBUL_ADDRESS, ISTANBUL_REGISTERED
 
@@ -47,7 +47,8 @@ async def _product(db: AsyncSession, segments, price: Decimal, switches: set[str
             variant_id=variant.id, segment_id=segments[code].id, currency="TRY",
             price_excl_tax=(incl / D("1.20")).quantize(D("0.01")), price_incl_tax=incl, vat_rate=D("20.00"),
         ))
-        db.add(Inventory(variant_id=variant.id, warehouse_type=warehouse_for_segment(code), quantity=100))
+    # One stock for every price list.
+    db.add(Inventory(variant_id=variant.id, warehouse_type=CENTRAL_STOCK, quantity=100))
     await db.commit()
     return variant
 

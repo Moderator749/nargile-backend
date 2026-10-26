@@ -247,10 +247,10 @@ class OrderItem(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     line_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    # The stock quota the line was taken from (the buyer's list's own), so a
-    # cancellation puts it back there even if the account has since moved to
-    # another list. None on a request (nothing taken) and on lines from before
-    # it was kept.
+    # The stock the line was taken from: the central pool (RETAIL_STOCK) since
+    # the shop has one; a per-segment quota on older lines. A cancellation puts
+    # it back into the central pool either way. None on a request (nothing
+    # taken) and on lines from before it was kept.
     stock_warehouse: Mapped[WarehouseType | None] = mapped_column(Enum(WarehouseType), nullable=True)
 
     order: Mapped[Order] = relationship(back_populates="items")

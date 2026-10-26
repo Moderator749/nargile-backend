@@ -1,13 +1,13 @@
 """The admin's product sheet ("Ürün Ekle / Düzenle"), as one payload.
 
-The sheet is a grid: product info, the stock quotas, a currency × segment price
+The sheet is a grid: product info, the stock, a currency × segment price
 matrix, the commercial rule flags, the "Açıklama ve SEO" block and the "Fırsat"
 block. It maps onto several tables (products, product_variants, inventory,
 variant_prices, flash_sales), so it travels as one object and is written in one
 transaction — the admin fills one form and presses save once.
 
 Stock is per colour. `color_names` is the colour list as the admin arranged the
-pills, and `variants` carries one block of four quotas for each of them; a
+pills, and `variants` carries one stock count for each of them; a
 product with no colours has one unnamed ("Standart") variant instead. The two
 are reconciled into a canonical `variants` list before the sheet is saved, so
 the writer has one list to walk and cannot be handed a colour with no stock
@@ -49,22 +49,23 @@ def vat_from_pair(excl: Decimal | None, incl: Decimal | None) -> Decimal:
 
 
 class SheetStock(BaseModel):
-    """One quota per segment; the sheet's total is the sum, computed for display."""
+    """"Mevcut Stok Adedi": the one stock every buyer draws from — Perakende and
+    the Bayi / Toptan / Kafe lists alike (`checkout_engine.CENTRAL_STOCK`)."""
 
-    bayi: int = Field(default=0, ge=0)
-    toptan: int = Field(default=0, ge=0)
-    kafe: int = Field(default=0, ge=0)
-    perakende: int = Field(default=0, ge=0)
+    quantity: int = Field(default=0, ge=0)
 
-    @property
-    def total(self) -> int:
-        return self.bayi + self.toptan + self.kafe + self.perakende
+    @model_validator(mode="before")
+    @classmethod
+    def _from_quotas(cls, data):
+        # The form before the single stock sent four per-segment quotas; its
+        # Perakende box was the stock everyone now shares. Read that, so a page
+        # left open across the change still saves what it shows.
+        if isinstance(data, dict) and "quantity" not in data and "perakende" in data:
+            return {"quantity": data["perakende"]}
+        return data
 
     def __add__(self, other: "SheetStock") -> "SheetStock":
-        return SheetStock(**{f: getattr(self, f) + getattr(other, f) for f in STOCK_FIELD_NAMES})
-
-
-STOCK_FIELD_NAMES = ("bayi", "toptan", "kafe", "perakende")
+        return SheetStock(quantity=self.quantity + other.quantity)
 
 
 def fold(label: str) -> str:
@@ -73,7 +74,7 @@ def fold(label: str) -> str:
 
 
 class SheetVariant(BaseModel):
-    """One colour of the product, with the four stock quotas that colour sells from.
+    """One colour of the product, with its stock.
 
     `color` is None on the single "Standart" variant a colourless product has.
     `id` names a variant that already exists, so renaming a colour keeps its
@@ -226,11 +227,11 @@ class ProductSheetWrite(BaseModel):
     # Off the storefront while false (the products list toggles this per row too).
     is_published: bool = True
 
-    # The four quotas as one block. On a colourless product it *is* the stock. On
-    # a coloured one it is the total across the colours when read back, and the
-    # opening stock of the first colour when a caller sends no `variants` at all.
+    # On a colourless product it *is* the stock. On a coloured one it is the
+    # total across the colours when read back, and the opening stock of the
+    # first colour when a caller sends no `variants` at all.
     stock: SheetStock = SheetStock()
-    # One block of quotas per colour, in `color_names` order. Reconciled against
+    # One stock per colour, in `color_names` order. Reconciled against
     # `color_names` on the way in (see `_reconcile_variants`), so the saver always
     # gets exactly one entry per colour — or one unnamed entry when there are none.
     variants: list[SheetVariant] = Field(default_factory=list, max_length=20)

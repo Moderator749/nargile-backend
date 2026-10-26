@@ -34,10 +34,12 @@ class CurrencyType(str, enum.Enum):
 
 
 class WarehouseType(str, enum.Enum):
-    """One stock quota per customer segment ("Perakende / Kafe / Toptan / Bayi").
+    """Where an inventory row's stock sits.
 
-    B2B_STOCK is the Toptan (wholesale) quota; it keeps its original name because
-    it predates the split, when wholesale and dealers shared one pool.
+    RETAIL_STOCK is the shop's one stock, which every buyer draws from
+    (`checkout_engine.CENTRAL_STOCK`). The other three are the per-segment
+    quotas (Kafe / Toptan / Bayi) it replaced: kept so their old rows and the
+    order lines taken from them still load, and neither read nor written now.
     """
 
     RETAIL_STOCK = "RETAIL_STOCK"

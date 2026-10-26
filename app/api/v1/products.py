@@ -42,7 +42,7 @@ from app.schemas.cart import CartLineInfo, StockCheckLine, StockCheckRequest
 from app.schemas.i18n import Locale
 from app.services import localize, slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
-from app.services.checkout_engine import shows_stock_count, stock_source, warehouse_for_segment
+from app.services.checkout_engine import CENTRAL_STOCK, shows_stock_count, stock_on_hand
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
@@ -230,8 +230,8 @@ async def _catalog_view(
             (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku)
         ):
             price, origin = _price_for(v, segment_id, rates)
-            # The segment's own quota only.
-            _, available = stock_source(v.inventory, segment)
+            # The central pool: the same stock for every buyer, whatever their price list.
+            available = stock_on_hand(v.inventory)
             variants.append(
                 CatalogVariantRead(
                     id=v.id,
@@ -287,26 +287,9 @@ async def list_products(
     if ids:
         stmt = stmt.where(Product.id.in_(ids))
     order = (Product.name, Product.id)
-    # In the catalog's own order ("Önerilen"), what the caller cannot buy goes
-    # last: a colour of it in stock in the caller's own quota (as
-    # `_catalog_view` decides it) or not. "Yeni Gelenler" stays newest first.
-    code = (
-        await db.scalar(select(CustomerSegment.code).where(CustomerSegment.id == user.segment_id))
-        if user and user.segment_id
-        else None
-    )
-    buyable = (
-        select(ProductVariant.id)
-        .join(Inventory, Inventory.variant_id == ProductVariant.id)
-        .where(
-            ProductVariant.product_id == Product.id,
-            ProductVariant.is_active.is_(True),
-            Inventory.warehouse_type == warehouse_for_segment(code),
-            Inventory.quantity > 0,
-        )
-        .correlate(Product)
-        .exists()
-    )
+    # In the catalog's own order ("Önerilen"), what nobody can buy goes last: a
+    # colour of it in the central stock or not. "Yeni Gelenler" stays newest first.
+    buyable = _buyable()
     if sort == "newest":
         order = (Product.created_at.desc(), *order)
         buyable = None
@@ -329,11 +312,21 @@ async def list_products(
     return await _catalog_view(db, user, list(result.scalars().all()), lang)
 
 
-async def _segment_code(db: AsyncSession, user: User | None) -> SegmentType | None:
-    """The caller's price list, whose stock quota they buy from; None for a visitor."""
-    if not user or not user.segment_id:
-        return None
-    return await db.scalar(select(CustomerSegment.code).where(CustomerSegment.id == user.segment_id))
+def _buyable():
+    """Whether a product has a live colour in the central stock, for ordering by
+    (sold out last). The same for every caller: there is one stock."""
+    return (
+        select(ProductVariant.id)
+        .join(Inventory, Inventory.variant_id == ProductVariant.id)
+        .where(
+            ProductVariant.product_id == Product.id,
+            ProductVariant.is_active.is_(True),
+            Inventory.warehouse_type == CENTRAL_STOCK,
+            Inventory.quantity > 0,
+        )
+        .correlate(Product)
+        .exists()
+    )
 
 
 async def _live_variants(db: AsyncSession, ids) -> list[ProductVariant]:
@@ -378,7 +371,7 @@ async def catalog_summary(
         live = sorted((v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku))
         if not live:
             continue
-        shown = next((v for v in live if stock_source(v.inventory, segment)[1] > 0), live[0])
+        shown = next((v for v in live if stock_on_hand(v.inventory) > 0), live[0])
         own, _ = _price_for(shown, segment_id, rates)
         sale = _flash_sale_for(own, sales.get(shown.id))
         price = sale.price if sale else (own or _price_for(shown, retail_id, rates)[0])
@@ -394,22 +387,19 @@ async def catalog_summary(
 @router.get("/cart-lines", response_model=list[CartLineInfo])
 async def cart_lines(
     ids: list[uuid.UUID] = Query(..., max_length=100, description="Variant ids in the cart"),
-    user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
     """The cart's lines as the cart page shows them before a quote: each live
     colour of a published product with its page, its code and whether the
-    caller's own quota (retail for a visitor) has any left. A colour no longer
-    for sale is left out. How many are left is not said (`stock_check` holds
-    a quantity to it)."""
-    code = await _segment_code(db, user)
+    central stock has any left. A colour no longer for sale is left out. How
+    many are left is not said (`stock_check` holds a quantity to it)."""
     return [
         CartLineInfo(
             variant_id=v.id,
             product_id=v.product_id,
             product_slug=v.product.slug,
             sku=v.sku,
-            in_stock=stock_source(v.inventory, code)[1] > 0,
+            in_stock=stock_on_hand(v.inventory) > 0,
         )
         for v in await _live_variants(db, ids)
     ]
@@ -418,17 +408,15 @@ async def cart_lines(
 @router.post("/stock-check", response_model=list[StockCheckLine])
 async def stock_check(
     payload: StockCheckRequest,
-    user: User | None = Depends(get_optional_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Quantities held to the caller's own stock quota (retail for a visitor),
-    so the cart and the product page can take a quantity down to the most
+    """Quantities held to the central stock — the same for every caller — so
+    the cart and the product page can take a quantity down to the most
     there is the moment it is typed — "Stok sınırına ulaştınız" — without
     being told the count: each line comes back as asked, or as the most there
     is when that is less. A colour no longer for sale comes back as 0. Checkout
     holds the order to the same stock under a lock."""
-    code = await _segment_code(db, user)
-    have = {v.id: stock_source(v.inventory, code)[1] for v in await _live_variants(db, [i.variant_id for i in payload.items])}
+    have = {v.id: stock_on_hand(v.inventory) for v in await _live_variants(db, [i.variant_id for i in payload.items])}
     out = []
     for item in payload.items:
         allowed = min(item.quantity, have.get(item.variant_id, 0))
@@ -450,19 +438,7 @@ async def suggest(
     Turkish letters folded, so "lule" suggests the Lüleler)."""
     found = apply_catalog_filters(select(Product.id), category=None, q=q, published_only=True, lang=lang)
     total = await db.scalar(select(func.count()).select_from(found.subquery()))
-    code = await _segment_code(db, user)
-    buyable = (
-        select(ProductVariant.id)
-        .join(Inventory, Inventory.variant_id == ProductVariant.id)
-        .where(
-            ProductVariant.product_id == Product.id,
-            ProductVariant.is_active.is_(True),
-            Inventory.warehouse_type == warehouse_for_segment(code),
-            Inventory.quantity > 0,
-        )
-        .correlate(Product)
-        .exists()
-    )
+    buyable = _buyable()
     products = (
         await db.execute(
             apply_catalog_filters(select(Product), category=None, q=q, published_only=True, lang=lang)

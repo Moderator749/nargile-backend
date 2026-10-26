@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice
 from app.models.order import Order, PaymentMethod
 from app.models.user import CustomerSegment, SegmentType
-from app.services.checkout_engine import warehouse_for_segment
+from app.services.checkout_engine import CENTRAL_STOCK
 from tests.conftest import CONSENTS
 
 UNIT_PRICE = Decimal("1000.00")
@@ -85,9 +85,8 @@ async def _variant(
             price_excl_tax=(UNIT_PRICE / Decimal("1.20")).quantize(Decimal("0.01")),
             price_incl_tax=UNIT_PRICE, vat_rate=Decimal("20.00"),
         ))
-        db.add(Inventory(
-            variant_id=variant.id, warehouse_type=warehouse_for_segment(code), quantity=IN_STOCK,
-        ))
+    # One stock for every price list.
+    db.add(Inventory(variant_id=variant.id, warehouse_type=CENTRAL_STOCK, quantity=IN_STOCK))
     await db.commit()
     return variant
 
@@ -231,8 +230,8 @@ async def test_a_domestic_order_still_takes_its_stock(
     })
     assert placed.status_code == 201, placed.text
     db_session.expire_all()
-    # One warehouse is one unit lighter; the others are untouched.
-    assert await _stock(db_session, variant_id) == sorted([IN_STOCK - 1] + [IN_STOCK] * 3)
+    # The one stock is one unit lighter.
+    assert await _stock(db_session, variant_id) == [IN_STOCK - 1]
 
 
 # ── The guard, both ways ─────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.catalog import Inventory
 from app.models.order import Carrier, Order, OrderStatus
 from app.models.user import User
-from app.services.checkout_engine import warehouse_for_segment
+from app.services.checkout_engine import CENTRAL_STOCK
 from app.services.wallet import award_for_paid_order
 
 
@@ -65,19 +65,23 @@ async def fail_payment(db: AsyncSession, order: Order, user: User, reason: str, 
 async def _release(
     db: AsyncSession, order: Order, user: User, reason: str, now: datetime, status: OrderStatus
 ) -> None:
-    # Lines from before the source was recorded go back to the buyer's quota.
-    legacy = warehouse_for_segment(user.segment.code if user.segment else None)
     for item in order.items:
-        warehouse = item.stock_warehouse or (None if order.is_quote else legacy)
-        if warehouse is None:  # a request took nothing out of stock
+        # A request took nothing out of stock. Every other line goes back to the
+        # central pool — one taken from a since-retired segment quota included,
+        # as the shop now has a single stock.
+        if item.stock_warehouse is None and order.is_quote:
             continue
+        # Locked like checkout's read, so a sale at the same moment cannot
+        # overwrite what is put back.
         inv = await db.scalar(
-            select(Inventory).where(Inventory.variant_id == item.variant_id, Inventory.warehouse_type == warehouse)
+            select(Inventory)
+            .where(Inventory.variant_id == item.variant_id, Inventory.warehouse_type == CENTRAL_STOCK)
+            .with_for_update()
         )
         if inv is not None:
             inv.quantity += item.quantity
         else:  # inventory row was deleted: recreate it
-            db.add(Inventory(variant_id=item.variant_id, warehouse_type=warehouse, quantity=item.quantity))
+            db.add(Inventory(variant_id=item.variant_id, warehouse_type=CENTRAL_STOCK, quantity=item.quantity))
     order.status = status
     order.cancelled_at = now
     order.cancel_reason = reason[:300]

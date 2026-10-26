@@ -19,7 +19,7 @@ def _sheet(code: str, name: str, *, price: str, stock: int, **overrides) -> dict
     return {
         "base_code": code,
         "name": name,
-        "stock": {"bayi": 0, "toptan": 0, "kafe": 0, "perakende": stock},
+        "stock": {"quantity": stock},
         "prices": [{"currency": "TRY", "cells": {"RETAIL": {"price_excl_tax": price, "vat_rate": "20.00"}}}],
         "rules": {},
         "opportunity": {},
@@ -83,7 +83,7 @@ async def test_a_product_without_a_price_sorts_last_either_way(client: AsyncClie
         {
             "base_code": f"GZ-{grid['suffix']}",
             "name": f"Fiyatsız {grid['suffix']}",
-            "stock": {"bayi": 0, "toptan": 0, "kafe": 0, "perakende": 0},
+            "stock": {"quantity": 0},
             "prices": [{"currency": "USD", "cells": {"DEALER": {"price_incl_tax": "10.00"}}}],
             "rules": {},
             "opportunity": {},
@@ -165,7 +165,7 @@ async def test_duplicate_copies_everything_as_a_draft(
         ),
     )
     # Give the one colour a dealer quota too, so the copy has two to carry.
-    colour = {**source["variants"][0], "stock": {**source["variants"][0]["stock"], "bayi": 3}}
+    colour = {**source["variants"][0], "stock": {"quantity": 10}}
     await client.put(
         f"/api/v1/admin/products/{source['id']}/sheet",
         headers=auth_header(admin_user),
@@ -182,7 +182,7 @@ async def test_duplicate_copies_everything_as_a_draft(
     assert row["base_code"] != source["base_code"]
 
     copy = (await client.get(f"/api/v1/admin/products/{row['id']}/sheet", headers=auth_header(admin_user))).json()
-    assert copy["stock"] == {"bayi": 3, "toptan": 0, "kafe": 0, "perakende": 7}
+    assert copy["stock"] == {"quantity": 10}
     assert copy["color_names"] == ["Gümüş"]
     assert copy["image_urls"] == ["https://cdn.example.com/a.jpg", "https://cdn.example.com/b.jpg"]
     assert copy["youtube_video_url"].endswith("dQw4w9WgXcQ")
@@ -201,7 +201,7 @@ async def test_duplicate_copies_everything_as_a_draft(
     assert sale is not None and sale.is_active
 
     # And its stock is its own, not shared with the source.
-    quotas = {
+    rows = {
         i.warehouse_type: i.quantity
         for i in (
             await db_session.execute(
@@ -209,7 +209,7 @@ async def test_duplicate_copies_everything_as_a_draft(
             )
         ).scalars()
     }
-    assert quotas[WarehouseType.RETAIL_STOCK] == 7 and quotas[WarehouseType.DEALER_STOCK] == 3
+    assert rows == {WarehouseType.RETAIL_STOCK: 10}
 
 
 async def test_duplicating_a_product_from_before_the_sheet(

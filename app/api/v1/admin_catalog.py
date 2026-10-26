@@ -35,6 +35,7 @@ from app.schemas.admin import (
 )
 from app.schemas.product_sheet import ProductSheetRead, ProductSheetWrite
 from app.services import product_blueprint
+from app.services.checkout_engine import CENTRAL_STOCK
 from app.services import auto_translate
 
 router = APIRouter(prefix="/admin", tags=["admin-catalog"])
@@ -70,7 +71,7 @@ async def create_product_sheet(
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a product from the whole sheet: info, stock quotas, price matrix,
+    """Create a product from the whole sheet: info, stock, price matrix,
     rule flags and the Fırsat block, in one transaction."""
     try:
         product = await product_blueprint.save(db, payload)
@@ -142,7 +143,7 @@ async def _product_order(db: AsyncSession, sort: ProductSort | None, direction: 
         .where(
             ProductVariant.product_id == Product.id,
             ProductVariant.is_active.is_(True),
-            Inventory.warehouse_type == WarehouseType.RETAIL_STOCK,
+            Inventory.warehouse_type == CENTRAL_STOCK,
         )
         .correlate(Product)
         .scalar_subquery()
@@ -187,7 +188,7 @@ async def list_products_admin(
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Products with every segment price and all stock quotas, for the admin panel.
+    """Products with every segment price and their stock, for the admin panel.
     The X-Total-Count header carries the number of matches, for page controls."""
     total = await db.scalar(
         select(func.count()).select_from(apply_catalog_filters(select(Product.id), category=category, q=q).subquery())
@@ -225,7 +226,12 @@ def _admin_product_row(product: Product) -> AdminProductDetail:
                 cost_price=v.cost_price,
                 weight_kg=v.weight_kg,
                 prices=[AdminVariantPrice.model_validate(pr) for pr in v.prices],
-                inventory=[AdminInventoryRead.model_validate(inv) for inv in v.inventory],
+                # The central stock only: the retired per-segment quota rows are not stock.
+                inventory=[
+                    AdminInventoryRead.model_validate(inv)
+                    for inv in v.inventory
+                    if WarehouseType(inv.warehouse_type) is CENTRAL_STOCK
+                ],
             )
             # Live colours only, in the admin's order: the table's stock column is
             # the sum of these, and a retired colour has no stock to add.

@@ -61,7 +61,7 @@ class SegmentRead(BaseModel):
 
 
 class AdminVariantDetail(BaseModel):
-    """One colour of a product, with its full price matrix and stock quotas."""
+    """One colour of a product, with its full price matrix and its stock."""
 
     id: uuid.UUID
     sku: str

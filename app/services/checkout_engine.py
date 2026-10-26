@@ -94,13 +94,11 @@ def try_amount(value: Decimal) -> str:
     return f"{value:,.2f}".translate(str.maketrans(",.", ".,"))
 
 
-# One quota per segment, as the product sheet defines them (Bayi / Toptan / Kafe
-# / Perakende). B2B_STOCK is the Toptan quota, named before the split.
-WAREHOUSE_BY_SEGMENT = {
-    SegmentType.CAFE: WarehouseType.CAFE_STOCK,
-    SegmentType.WHOLESALE: WarehouseType.B2B_STOCK,
-    SegmentType.DEALER: WarehouseType.DEALER_STOCK,
-}
+#: The one stock pool every buyer draws from — a visitor, Perakende and the
+#: Bayi / Toptan / Kafe lists alike, first come, first served. Only the prices
+#: differ by list. The other WarehouseType values are the per-segment quotas
+#: this replaced: their rows are no longer read or written.
+CENTRAL_STOCK = WarehouseType.RETAIL_STOCK
 
 
 #: The product switch that gives each B2B list the havale discount, line by line
@@ -113,29 +111,18 @@ HAVALE_SWITCH: dict[SegmentType, str] = {
 }
 
 
-def warehouse_for_segment(code: SegmentType | None) -> WarehouseType:
-    """The stock quota a segment buys from; RETAIL_STOCK when it has no segment."""
-    return WAREHOUSE_BY_SEGMENT.get(code, WarehouseType.RETAIL_STOCK)
-
-
 def shows_stock_count(code: SegmentType | None) -> bool:
     """Whether a buyer is told how many there are: a firm's account (Bayi,
-    Toptan, Kafe) orders against a quota of its own and plans by it; a visitor
-    and a bireysel buyer are held to the stock without being told the number."""
+    Toptan, Kafe) plans its order by the count; a visitor and a bireysel buyer
+    are held to the same stock without being told the number."""
     return code is not None and code != SegmentType.RETAIL
 
 
-def stock_source(inventory: Iterable[Inventory], code: SegmentType | None) -> tuple[WarehouseType, int]:
-    """Where a segment's purchase of a variant comes out of, and how many it may buy.
-
-    Each list buys from its own quota and nothing else: Perakende from
-    RETAIL_STOCK, Bayi / Toptan / Kafe from theirs. A quota left at 0 (or never
-    set) is sold out for that list, as is one that has run down to 0 — never
-    topped up from another list's, the retail stock included.
-    """
-    own = warehouse_for_segment(code)
-    on_hand = next((i.quantity for i in inventory if WarehouseType(i.warehouse_type) is own), 0)
-    return own, max(on_hand, 0)
+def stock_on_hand(inventory: Iterable[Inventory]) -> int:
+    """How many of a variant anyone may buy: the central pool (CENTRAL_STOCK),
+    the same number for every buyer. No row, or 0, is sold out for everyone."""
+    on_hand = next((i.quantity for i in inventory if WarehouseType(i.warehouse_type) is CENTRAL_STOCK), 0)
+    return max(on_hand, 0)
 
 
 # What each kind of account may be shipped by. A bireysel parcel goes to a door
@@ -205,10 +192,10 @@ class ResolvedCartItem:
     havale_eligible: bool = False
     # That discount on this line (VAT-inclusive, like the line); 0 otherwise.
     havale_discount: Decimal = Decimal("0.00")
-    # How many of this variant the buyer's segment may have right now, and the
-    # quota they come out of (stock_source): the segment's own, always.
+    # How many of this variant there are right now (stock_on_hand), and the
+    # pool they come out of: the central one, for every buyer.
     available: int = 0
-    stock_warehouse: WarehouseType = WarehouseType.RETAIL_STOCK
+    stock_warehouse: WarehouseType = CENTRAL_STOCK
 
     @property
     def line_total_excl_tax(self) -> Decimal:
@@ -830,7 +817,7 @@ class CheckoutEngine:
                 raise ValueError(f"{variant.sku} için güncel döviz kuru alınamadı, lütfen sonra deneyin")
 
             sale_price = discounted_price(unit_price, sales.get(vid))
-            warehouse, available = stock_source(variant.inventory, segment_code)
+            available = stock_on_hand(variant.inventory)
             items.append(
                 ResolvedCartItem(
                     variant=variant,
@@ -842,7 +829,6 @@ class CheckoutEngine:
                     unit_weight_kg=variant.weight_kg,
                     vat_rate=price_row.vat_rate,
                     available=available,
-                    stock_warehouse=warehouse,
                 )
             )
 
@@ -853,23 +839,22 @@ class CheckoutEngine:
         items: list[ResolvedCartItem],
         segment_code: SegmentType | None,
     ) -> None:
-        """Validate stock and deduct it, line by line, from the buyer's own quota
-        (stock_source) — never from another list's.
+        """Validate stock and deduct it, line by line, from the central pool —
+        whoever is buying, at whichever list's price.
 
-        The row is read again under a lock, so two orders cannot both take the
-        last units; the quota is recorded on the line for a cancellation to put
-        back.
+        The row is read again under a lock (SELECT … FOR UPDATE), so two orders —
+        a shop's and a bireysel buyer's alike — cannot both take the last units;
+        the pool is recorded on the line for a cancellation to put back.
         """
-        own = warehouse_for_segment(segment_code)
         for item in items:
             rows = (
                 await self._db.execute(
                     select(Inventory)
-                    .where(Inventory.variant_id == item.variant.id, Inventory.warehouse_type == own)
+                    .where(Inventory.variant_id == item.variant.id, Inventory.warehouse_type == CENTRAL_STOCK)
                     .with_for_update()
                 )
             ).scalars().all()
-            warehouse, available = stock_source(rows, segment_code)
+            available = stock_on_hand(rows)
             if available < item.quantity:
                 name = item.product.name + (f" ({item.variant.color_name})" if item.variant.color_name else "")
                 raise ValueError(
@@ -881,6 +866,5 @@ class CheckoutEngine:
                     if available
                     else f"{name} tükendi; lütfen sepetinizden çıkarın"
                 )
-            inv = next(r for r in rows if WarehouseType(r.warehouse_type) is warehouse)
-            inv.quantity -= item.quantity
-            item.stock_warehouse = warehouse
+            rows[0].quantity -= item.quantity
+            item.stock_warehouse = CENTRAL_STOCK

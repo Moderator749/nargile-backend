@@ -35,11 +35,11 @@ from app.models.catalog import (
     ProductCrossSell,
     ProductVariant,
     VariantPrice,
-    WarehouseType,
 )
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType
 from app.services import slug_redirects
+from app.services.checkout_engine import CENTRAL_STOCK, stock_on_hand
 from app.services.pricing_engine import pick_price_row
 from app.models.order import OrderItem
 from app.schemas import i18n
@@ -56,13 +56,6 @@ from app.schemas.product_sheet import (
     fold,
 )
 
-# The sheet's stock boxes, in sheet order, and the quota each one fills.
-STOCK_FIELDS: tuple[tuple[str, SegmentType, WarehouseType], ...] = (
-    ("bayi", SegmentType.DEALER, WarehouseType.DEALER_STOCK),
-    ("toptan", SegmentType.WHOLESALE, WarehouseType.B2B_STOCK),
-    ("kafe", SegmentType.CAFE, WarehouseType.CAFE_STOCK),
-    ("perakende", SegmentType.RETAIL, WarehouseType.RETAIL_STOCK),
-)
 RULE_FIELDS = (
     "is_free_shipping",
     "free_shipping_min_quantity",
@@ -431,19 +424,17 @@ async def _retire_variant(db: AsyncSession, variant: ProductVariant) -> None:
 
 
 async def _sync_stock(db: AsyncSession, variant: ProductVariant, stock: SheetStock) -> None:
-    """One inventory row per quota, created on first use and never deleted (a zero
-    quota is meaningful: "sold out for this segment")."""
-    rows = {
-        i.warehouse_type: i
-        for i in (await db.execute(select(Inventory).where(Inventory.variant_id == variant.id))).scalars()
-    }
-    for field, _segment, warehouse in STOCK_FIELDS:
-        quantity = getattr(stock, field)
-        row = rows.get(warehouse)
-        if row is None:
-            db.add(Inventory(variant_id=variant.id, warehouse_type=warehouse, quantity=quantity))
-        else:
-            row.quantity = quantity
+    """The colour's central stock row, created on first use. The retired
+    per-segment quota rows are left as they are: nothing reads them."""
+    row = await db.scalar(
+        select(Inventory)
+        .where(Inventory.variant_id == variant.id, Inventory.warehouse_type == CENTRAL_STOCK)
+        .with_for_update()
+    )
+    if row is None:
+        db.add(Inventory(variant_id=variant.id, warehouse_type=CENTRAL_STOCK, quantity=stock.quantity))
+    else:
+        row.quantity = stock.quantity
 
 
 async def _sync_prices(
@@ -654,8 +645,7 @@ async def is_sold(db: AsyncSession, product: Product) -> bool:
 
 
 def _variant_stock(variant: ProductVariant) -> SheetStock:
-    rows = {i.warehouse_type: i.quantity for i in variant.inventory}
-    return SheetStock(**{field: rows.get(warehouse, 0) for field, _s, warehouse in STOCK_FIELDS})
+    return SheetStock(quantity=stock_on_hand(variant.inventory))
 
 
 def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead:
@@ -665,7 +655,7 @@ def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead
     sheet_colours = [
         SheetVariant(id=v.id, color=v.color_name, sku=v.sku, stock=_variant_stock(v)) for v in live
     ]
-    # The form's "Toplam Stok": every quota of every colour.
+    # The form's "Toplam Stok": every colour's stock.
     stock = SheetStock()
     for colour in sheet_colours:
         stock = stock + colour.stock
@@ -703,7 +693,7 @@ def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead
         weight_kg=variant.weight_kg if variant else None,
         stock=stock,
         variants=sheet_colours,
-        stock_total=stock.total,
+        stock_total=stock.quantity,
         prices=[SheetPriceRow(currency=c, cells=cells) for c, cells in by_currency.items()],
         rules=SheetRules(**{f: getattr(product, f) for f in RULE_FIELDS}),
         opportunity=SheetOpportunity(**{f: getattr(product, f) for f in OPPORTUNITY_FIELDS}),

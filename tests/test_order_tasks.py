@@ -2,8 +2,8 @@
 
 Covers:
 - Expired BANK_TRANSFER order gets cancelled
-- Inventory is restored to the correct warehouse (RETAIL_STOCK for retail user)
-- Inventory is restored to B2B_STOCK for wholesale user
+- Inventory is restored to the central stock (RETAIL_STOCK), whoever bought
+- a line taken from a retired segment quota goes back to the central stock too
 - Non-expired orders are untouched
 - CREDIT_CARD orders are never cancelled by the SLA worker
 """
@@ -166,37 +166,29 @@ async def test_expired_bank_transfer_is_cancelled_and_retail_stock_restored(
 
     # Verify RETAIL_STOCK restored: 97 + 3 = 100
     assert await _get_inventory(db_session, variant.id, WarehouseType.RETAIL_STOCK) == 100
-    # B2B_STOCK untouched
+    # The retired Toptan quota row is not stock: untouched
     assert await _get_inventory(db_session, variant.id, WarehouseType.B2B_STOCK) == 200
 
 
-async def test_expired_wholesale_order_restores_b2b_stock(
+@pytest.mark.parametrize("taken_from", [None, WarehouseType.RETAIL_STOCK, WarehouseType.B2B_STOCK])
+async def test_expired_wholesale_order_restores_the_central_stock(
     db_session: AsyncSession,
     segments: dict[SegmentType, CustomerSegment],
+    taken_from: WarehouseType | None,
 ):
-    """Wholesale user's expired order restores to B2B_STOCK, not RETAIL."""
-    wholesale_seg = segments[SegmentType.WHOLESALE]
-    user = await _create_user(db_session, wholesale_seg.id)
-    # Use retail segment for pricing (doesn't matter for this test)
-    retail_seg = segments[SegmentType.RETAIL]
-    variant = await _create_variant_with_inventory(db_session, 100, 200, retail_seg.id)
-
-    # Simulate B2B deduction
-    inv = (await db_session.execute(
-        select(Inventory).where(
-            Inventory.variant_id == variant.id,
-            Inventory.warehouse_type == WarehouseType.B2B_STOCK,
-        )
-    )).scalar_one()
-    inv.quantity -= 10
-    await db_session.commit()
-
-    assert await _get_inventory(db_session, variant.id, WarehouseType.B2B_STOCK) == 190
-
+    """A wholesale buyer's expired order goes back to the shop's one stock —
+    a line from before the source was recorded, and one taken from the retired
+    Toptan quota, included."""
+    user = await _create_user(db_session, segments[SegmentType.WHOLESALE].id)
+    variant = await _create_variant_with_inventory(db_session, 90, 200, segments[SegmentType.RETAIL].id)
     order = await _create_order(
         db_session, user, variant, qty=10,
         payment=PaymentMethod.BANK_TRANSFER, created_hours_ago=50,
     )
+    await db_session.execute(
+        update(OrderItem).where(OrderItem.order_id == order.id).values(stock_warehouse=taken_from)
+    )
+    await db_session.commit()
 
     cancelled = await cancel_expired_pending_orders(db_session)
     assert cancelled == 1
@@ -204,10 +196,9 @@ async def test_expired_wholesale_order_restores_b2b_stock(
     await db_session.refresh(order)
     assert order.status == OrderStatus.CANCELLED
 
-    # B2B restored: 190 + 10 = 200
-    assert await _get_inventory(db_session, variant.id, WarehouseType.B2B_STOCK) == 200
-    # RETAIL untouched
+    # Central restored: 90 + 10 = 100; the retired quota row is left alone
     assert await _get_inventory(db_session, variant.id, WarehouseType.RETAIL_STOCK) == 100
+    assert await _get_inventory(db_session, variant.id, WarehouseType.B2B_STOCK) == 200
 
 
 async def test_non_expired_order_is_not_cancelled(

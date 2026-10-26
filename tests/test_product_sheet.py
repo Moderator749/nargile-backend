@@ -1,11 +1,12 @@
 """The admin product sheet: one save across five tables, and foreign-currency prices.
 
 Covers:
-- a sheet create writes info, colour, four stock quotas, the price matrix, the
+- a sheet create writes info, colour, the stock, the price matrix, the
   rule flags and the Fırsat block, and reads back exactly as saved
 - an update clears a price cell and keeps a running sale's start time
 - an opportunity needs a price and a future deadline
-- each segment buys from its own stock quota
+- every segment buys from the one stock; a form sending the old four quotas
+  still saves its Perakende box as that stock
 - a price entered in USD is shown as both currencies and charged in TRY
 """
 
@@ -38,7 +39,7 @@ def _sheet(**overrides) -> dict:
         "name": "Elmas Kesim Nargile",
         "brand": "Nargile Co",
         "color_names": ["Antrasit", "Bakır", " antrasit "],
-        "stock": {"bayi": 4, "toptan": 3, "kafe": 2, "perakende": 1},
+        "stock": {"quantity": 10},
         "prices": [
             {
                 "currency": "TRY",
@@ -122,10 +123,10 @@ async def test_sheet_save_writes_every_section(client: AsyncClient, admin_user: 
     assert sheet["sku"] == body["base_code"]
     # `stock` reads back as the total across the colours; this sheet sent no
     # per-colour block, so all of it opened on the first colour.
-    assert sheet["stock"] == {"bayi": 4, "toptan": 3, "kafe": 2, "perakende": 1}
+    assert sheet["stock"] == {"quantity": 10}
     assert sheet["stock_total"] == 10
-    assert sheet["variants"][0]["stock"] == {"bayi": 4, "toptan": 3, "kafe": 2, "perakende": 1}
-    assert sheet["variants"][1]["stock"] == {"bayi": 0, "toptan": 0, "kafe": 0, "perakende": 0}
+    assert sheet["variants"][0]["stock"] == {"quantity": 10}
+    assert sheet["variants"][1]["stock"] == {"quantity": 0}
     assert sheet["rules"]["is_cart_rule_applied"] is True
     assert sheet["rules"]["has_havale_discount"] is False
     assert sheet["rules"]["has_dealer_havale_discount"] is True
@@ -137,18 +138,13 @@ async def test_sheet_save_writes_every_section(client: AsyncClient, admin_user: 
     assert Decimal(try_row["cells"]["RETAIL"]["price_incl_tax"]) == Decimal("1200.00")
     assert Decimal(try_row["cells"]["CAFE"]["price_excl_tax"]) == Decimal("916.67")  # 1100 at 20%
 
-    # One quota row per segment, with the sheet's numbers.
+    # One stock row, the central one: nothing per segment.
     variant_id = uuid.UUID(sheet["variant_id"])
-    quotas = {
+    rows = {
         i.warehouse_type: i.quantity
         for i in (await db_session.execute(select(Inventory).where(Inventory.variant_id == variant_id))).scalars()
     }
-    assert quotas == {
-        WarehouseType.DEALER_STOCK: 4,
-        WarehouseType.B2B_STOCK: 3,
-        WarehouseType.CAFE_STOCK: 2,
-        WarehouseType.RETAIL_STOCK: 1,
-    }
+    assert rows == {WarehouseType.RETAIL_STOCK: 10}
 
     # The Fırsat block drives a live flash sale.
     sale = await db_session.scalar(select(FlashSale).where(FlashSale.variant_id == variant_id))
@@ -270,13 +266,20 @@ async def test_sheet_rejects_a_code_another_product_owns(client: AsyncClient, ad
     assert resp.status_code == 422 and "başka bir ürüne ait" in resp.json()["detail"]
 
 
-# ── Each segment buys from its own quota ─────────────────────────────────────
+# ── One stock for every segment ──────────────────────────────────────────────
 
 
-async def test_cafe_buys_from_the_cafe_quota(
+async def test_a_form_sending_the_old_quotas_saves_its_perakende_box(client: AsyncClient, admin_user: User):
+    """A product page left open across the change posts four quotas; its
+    Perakende box was the stock everyone now shares."""
+    sheet = (await _post(client, admin_user, _sheet(stock={"bayi": 4, "toptan": 3, "kafe": 2, "perakende": 1}))).json()
+    assert sheet["stock"] == {"quantity": 1} and sheet["stock_total"] == 1
+
+
+async def test_a_cafe_buys_from_the_shops_one_stock(
     client: AsyncClient, admin_user: User, db_session: AsyncSession, segments: dict[SegmentType, CustomerSegment]
 ):
-    sheet = (await _post(client, admin_user, _sheet(stock={"bayi": 0, "toptan": 0, "kafe": 2, "perakende": 0}))).json()
+    sheet = (await _post(client, admin_user, _sheet(stock={"quantity": 2}))).json()
     cafe = User(
         email=f"cafe-{uuid.uuid4().hex[:8]}@test.com",
         hashed_password="x",
@@ -296,8 +299,8 @@ async def test_cafe_buys_from_the_cafe_quota(
         "shipping_consent": True,
     }
     assert (await client.post("/api/v1/orders/checkout", headers=auth_header(cafe), json=body)).status_code == 201
-    # Its own quota is spent; the other segments' quotas are untouched.
-    quotas = {
+    # The one stock is spent — and so sold out for a visitor as well.
+    rows = {
         i.warehouse_type: i.quantity
         for i in (
             await db_session.execute(
@@ -305,8 +308,9 @@ async def test_cafe_buys_from_the_cafe_quota(
             )
         ).scalars()
     }
-    assert quotas[WarehouseType.CAFE_STOCK] == 0
-    assert quotas[WarehouseType.RETAIL_STOCK] == 0
+    assert rows == {WarehouseType.RETAIL_STOCK: 0}
+    public = (await client.get(f"/api/v1/products/{sheet['id']}")).json()
+    assert public["variants"][0]["in_stock"] is False
 
 
 async def test_storefront_serves_the_gallery_video_and_badge_colour(client: AsyncClient, admin_user: User):
@@ -485,7 +489,7 @@ async def test_usd_price_is_shown_in_both_currencies_and_charged_in_try(
 ):
     """Retail priced in USD: the catalog shows both, the cart locks TRY."""
     body = _sheet(
-        stock={"bayi": 0, "toptan": 0, "kafe": 0, "perakende": 5},
+        stock={"quantity": 5},
         prices=[{"currency": "USD", "cells": {"RETAIL": {"price_excl_tax": "100.00", "price_incl_tax": "120.00"}}}],
     )
     sheet = (await _post(client, admin_user, body)).json()
