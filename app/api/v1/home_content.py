@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -81,6 +81,12 @@ async def home_content(request: Request, db: AsyncSession = Depends(get_db)):
 # ── Admin CRUD (same shape for all three) ────────────────────────────────────
 
 
+class RowOrderWrite(BaseModel):
+    """Every row of a list, in the order the homepage shows them."""
+
+    ids: list[int] = Field(min_length=1, max_length=200)
+
+
 def _register(
     path: str,
     model: Any,
@@ -98,6 +104,26 @@ def _register(
 
     @admin.get(path, response_model=list[read_model], name=f"list_{path}")
     async def list_rows(request: Request, _a: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)):
+        result = await db.execute(select(model).order_by(model.sort_order, model.id))
+        return [read(r, request) for r in result.scalars()]
+
+    # Before "/{row_id}", which would otherwise take "order" for an id.
+    @admin.put(f"{path}/order", response_model=list[read_model], name=f"reorder_{path}")
+    async def reorder_rows(
+        payload: RowOrderWrite,
+        request: Request,
+        _a: User = Depends(get_current_admin_user),
+        db: AsyncSession = Depends(get_db),
+    ):
+        """Every row, first to last, as dragged in the panel: each gets its place
+        (10, 20, 30…). The whole list or nothing — a row added or deleted since
+        the panel loaded it would otherwise land somewhere nobody chose."""
+        rows = {r.id: r for r in (await db.scalars(select(model))).all()}
+        if len(set(payload.ids)) != len(payload.ids) or set(payload.ids) != set(rows):
+            raise HTTPException(status_code=409, detail=f"The order must list every {name.lower()} once; reload and try again")
+        for place, row_id in enumerate(payload.ids, start=1):
+            rows[row_id].sort_order = place * 10
+        await db.commit()
         result = await db.execute(select(model).order_by(model.sort_order, model.id))
         return [read(r, request) for r in result.scalars()]
 

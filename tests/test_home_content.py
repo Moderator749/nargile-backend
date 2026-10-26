@@ -229,3 +229,47 @@ async def test_promo_box_shades_and_texts_are_held_to_their_rules(client: AsyncC
 async def test_the_promo_box_is_for_admins(client: AsyncClient, customer_user: User):
     assert (await client.get("/api/v1/admin/promo-box", headers=auth_header(customer_user))).status_code == 403
     assert (await client.put("/api/v1/admin/promo-box", headers=auth_header(customer_user), json=PROMO)).status_code == 403
+
+
+async def test_slides_are_put_in_order_by_dragging(client: AsyncClient, admin_user: User, cleanup):
+    """The panel sends every slide, first to last; the homepage shows them in
+    that order, so the first one is its <h1>. An edit afterwards keeps it."""
+    h = auth_header(admin_user)
+    made = [
+        (await client.post("/api/v1/admin/hero-slides", headers=h, json={**SLIDE, "title": f"{n} {TAG}", "sort_order": 10 * i})).json()
+        for i, n in enumerate(["Bir", "İki", "Üç"], start=1)
+    ]
+    every = [r["id"] for r in (await client.get("/api/v1/admin/hero-slides", headers=h)).json()]
+    mine = [r["id"] for r in made]
+    # The last of mine to the very front, the others after it as they were.
+    wanted = [mine[2], *[i for i in every if i != mine[2]]]
+    resp = await client.put("/api/v1/admin/hero-slides/order", headers=h, json={"ids": wanted})
+    assert resp.status_code == 200, resp.text
+    assert [r["id"] for r in resp.json()] == wanted
+    assert [r["sort_order"] for r in resp.json()] == [10 * (i + 1) for i in range(len(wanted))]
+
+    shown = [s["id"] for s in (await client.get("/api/v1/home/content")).json()["slides"]]
+    assert shown[0] == mine[2]
+    # Editing a slide with its new place keeps the order.
+    moved = next(r for r in resp.json() if r["id"] == mine[2])
+    edit = await client.put(f"/api/v1/admin/hero-slides/{mine[2]}", headers=h, json={**SLIDE, "title": f"Üç (yeni) {TAG}", "sort_order": moved["sort_order"]})
+    assert edit.status_code == 200
+    assert [s["id"] for s in (await client.get("/api/v1/home/content")).json()["slides"]][0] == mine[2]
+
+
+@pytest.mark.parametrize("trim", ["missing", "twice", "unknown"])
+async def test_a_slide_order_must_list_every_slide_once(client: AsyncClient, admin_user: User, cleanup, trim: str):
+    h = auth_header(admin_user)
+    await client.post("/api/v1/admin/hero-slides", headers=h, json=SLIDE)
+    every = [r["id"] for r in (await client.get("/api/v1/admin/hero-slides", headers=h)).json()]
+    before = [(r["id"], r["sort_order"]) for r in (await client.get("/api/v1/admin/hero-slides", headers=h)).json()]
+    ids = {"missing": every[1:] or [], "twice": [*every, every[0]], "unknown": [*every, 999_999]}[trim]
+    resp = await client.put("/api/v1/admin/hero-slides/order", headers=h, json={"ids": ids or [999_999]})
+    assert resp.status_code == 409
+    after = [(r["id"], r["sort_order"]) for r in (await client.get("/api/v1/admin/hero-slides", headers=h)).json()]
+    assert after == before
+
+
+async def test_reordering_slides_is_for_admins(client: AsyncClient, customer_user: User):
+    resp = await client.put("/api/v1/admin/hero-slides/order", headers=auth_header(customer_user), json={"ids": [1]})
+    assert resp.status_code == 403
