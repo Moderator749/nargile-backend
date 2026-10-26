@@ -15,6 +15,10 @@ TextAlign = Literal["left", "center", "right"]
 
 #: A hero slide's buttons: a size down, the shop's own, a size up.
 ButtonSize = Literal["sm", "md", "lg"]
+# Where a promo card's dark veil starts ("Gölge Yönü"): "left" is the darkest
+# at the left and clearing to the right (mirrored in Arabic, where the words
+# are at the right).
+Shade = Literal["left", "right", "top", "bottom"]
 
 
 def _photo(v: str | None, what: str) -> str | None:
@@ -283,6 +287,11 @@ class PromoBoxWrite(BaseModel):
     top_card_focus_x: int = Field(default=50, ge=0, le=100)
     bottom_card_image_url: str | None = Field(default=None, max_length=500)
     bottom_card_focus_x: int = Field(default=50, ge=0, le=100)
+    # Blank = the storefront's own copy, in each language.
+    top_title: str | None = Field(default=None, max_length=120)
+    bottom_text: str | None = Field(default=None, max_length=300)
+    top_shade: Shade = "left"
+    bottom_shade: Shade = "left"
     is_active: bool = True
     sort_order: int = Field(default=0, ge=0, le=100_000)
 
@@ -306,7 +315,7 @@ class PromoBoxWrite(BaseModel):
     def _link(cls, v: str) -> str | None:
         return _href(v)
 
-    @field_validator("text", mode="before")
+    @field_validator("text", "top_title", "bottom_text", mode="before")
     @classmethod
     def _opt(cls, v: str | None) -> str | None:
         return _blank_none(v)
@@ -330,6 +339,10 @@ class PromoBoxRead(BaseModel):
     top_card_focus_x: int = 50
     bottom_card_image_url: str | None = None
     bottom_card_focus_x: int = 50
+    top_title: str | None = None
+    bottom_text: str | None = None
+    top_shade: Shade = "left"
+    bottom_shade: Shade = "left"
     is_active: bool
     sort_order: int
 

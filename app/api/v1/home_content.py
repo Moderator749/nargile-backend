@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin_user
@@ -54,6 +54,8 @@ def promo_read(row: PromoBox, _request: Request) -> PromoBoxRead:
         requires=row.requires, widget=row.widget,
         top_card_image_url=row.top_card_image_url, top_card_focus_x=row.top_card_focus_x,
         bottom_card_image_url=row.bottom_card_image_url, bottom_card_focus_x=row.bottom_card_focus_x,
+        top_title=row.top_title, bottom_text=row.bottom_text,
+        top_shade=row.top_shade, bottom_shade=row.bottom_shade,
         is_active=row.is_active, sort_order=row.sort_order,
     )
 
@@ -169,3 +171,48 @@ def _register(
 
 _register("/hero-slides", HeroSlide, HeroSlideWrite, HeroSlideRead, slide_read, "Slide", with_image=True)
 _register("/promo-boxes", PromoBox, PromoBoxWrite, PromoBoxRead, promo_read, "Promo box")
+
+
+# ── The promo box: one, edited in place ──────────────────────────────────────
+
+
+async def _the_promo_box(db: AsyncSession) -> PromoBox | None:
+    """The box the homepage shows — the first active one in order — or, with
+    none active, the first there is."""
+    return await db.scalar(
+        select(PromoBox).order_by(PromoBox.is_active.desc(), PromoBox.sort_order, PromoBox.id).limit(1)
+    )
+
+
+@admin.get("/promo-box", response_model=PromoBoxRead | None)
+async def get_promo_box(
+    request: Request, _a: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
+):
+    """"Promo Kutusu": the two cards beside the hero, as one box; null before the first save."""
+    row = await _the_promo_box(db)
+    return promo_read(row, request) if row else None
+
+
+@admin.put("/promo-box", response_model=PromoBoxRead)
+async def save_promo_box(
+    payload: PromoBoxWrite,
+    request: Request,
+    _a: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save the box the homepage shows (creating it on the first save). It is
+    the only one shown: always on, with no condition, and any other row still
+    switched on is switched off — kept, not deleted — so what the admin saves
+    is what the homepage shows."""
+    row = await _the_promo_box(db)
+    if row is None:
+        row = PromoBox()
+        db.add(row)
+    for field, value in payload.model_dump(exclude={"is_active", "sort_order", "requires"}).items():
+        setattr(row, field, value)
+    row.is_active, row.requires = True, None
+    await db.flush()
+    await db.execute(update(PromoBox).where(PromoBox.id != row.id, PromoBox.is_active.is_(True)).values(is_active=False))
+    await db.commit()
+    await db.refresh(row)
+    return promo_read(row, request)

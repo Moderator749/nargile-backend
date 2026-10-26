@@ -171,3 +171,61 @@ async def test_each_slide_sizes_its_own_buttons(client: AsyncClient, admin_user:
     bad = await client.put(f"/api/v1/admin/hero-slides/{row['id']}", headers=h, json={**SLIDE, "button_size_mobile": "xl"})
     assert bad.status_code == 422
 
+
+
+async def test_the_promo_box_is_one_box_saved_where_the_homepage_shows_it(
+    client: AsyncClient, admin_user: User, cleanup
+):
+    """"Promo Kutusu" edits the box the homepage shows; once saved it is the only
+    one shown, every text and each card's shade included."""
+    h = auth_header(admin_user)
+    # Two boxes on, as the panel's old list left the shop with.
+    first = (await client.post("/api/v1/admin/promo-boxes", headers=h, json={**PROMO, "sort_order": 0})).json()
+    other = (await client.post("/api/v1/admin/promo-boxes", headers=h, json={**PROMO, "sort_order": 1})).json()
+    current = (await client.get("/api/v1/admin/promo-box", headers=h)).json()
+    assert current["is_active"] is True
+
+    body = {
+        **PROMO,
+        "title": f"Kazanan Siz Olun {TAG}",
+        "text": "Bizi takip edin",
+        "top_title": "Topluluğumuza katılın",
+        "bottom_text": "Sultan Nargile ile alışverişlerinizde toptan ve perakende ayrıcalıklar.",
+        "top_shade": "bottom",
+        "bottom_shade": "right",
+        "requires": "flash_sales",  # a single box has no condition: ignored
+        "is_active": False,  # nor can it be switched off from here
+    }
+    saved = await client.put("/api/v1/admin/promo-box", headers=h, json=body)
+    assert saved.status_code == 200, saved.text
+    box = saved.json()
+    assert box["id"] == current["id"]
+    assert (box["top_title"], box["bottom_text"], box["top_shade"], box["bottom_shade"]) == (
+        "Topluluğumuza katılın", body["bottom_text"], "bottom", "right",
+    )
+    assert (box["is_active"], box["requires"]) == (True, None)
+
+    # The homepage shows exactly what was saved, and nothing else.
+    promos = (await client.get("/api/v1/home/content")).json()["promos"]
+    assert [p["id"] for p in promos] == [box["id"]]
+    assert promos[0]["top_title"] == "Topluluğumuza katılın" and promos[0]["bottom_shade"] == "right"
+    # The other box is switched off, not deleted.
+    rows = {r["id"]: r for r in (await client.get("/api/v1/admin/promo-boxes", headers=h)).json()}
+    for row_id in {first["id"], other["id"]} - {box["id"]}:
+        assert rows[row_id]["is_active"] is False
+
+    # Blank texts go back to the storefront's own copy.
+    cleared = (await client.put("/api/v1/admin/promo-box", headers=h, json={**body, "top_title": " ", "bottom_text": ""})).json()
+    assert (cleared["top_title"], cleared["bottom_text"]) == (None, None)
+    assert (await client.get("/api/v1/admin/promo-box", headers=h)).json()["id"] == box["id"]
+
+
+@pytest.mark.parametrize("bad", [{"top_shade": "diagonal"}, {"bottom_shade": ""}, {"bottom_text": "x" * 301}])
+async def test_promo_box_shades_and_texts_are_held_to_their_rules(client: AsyncClient, admin_user: User, cleanup, bad: dict):
+    resp = await client.put("/api/v1/admin/promo-box", headers=auth_header(admin_user), json={**PROMO, **bad})
+    assert resp.status_code == 422
+
+
+async def test_the_promo_box_is_for_admins(client: AsyncClient, customer_user: User):
+    assert (await client.get("/api/v1/admin/promo-box", headers=auth_header(customer_user))).status_code == 403
+    assert (await client.put("/api/v1/admin/promo-box", headers=auth_header(customer_user), json=PROMO)).status_code == 403

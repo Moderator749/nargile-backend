@@ -61,9 +61,10 @@ class HeroSlide(Base):
 
 class PromoBox(Base):
     """The two cards beside the hero ("Promo Kutusu"): the community card on
-    top (`text` and the channels in `widget`), the advantages card under it
-    (`eyebrow`, `title`, `href` and the widget's link text). The first active
-    one whose requirement is met is shown."""
+    top (`text`, `top_title` and the channels in `widget`), the advantages card
+    under it (`eyebrow`, `title`, `bottom_text`, `href` and the widget's link
+    text). The panel edits one box (`/admin/promo-box`); older rows it has
+    switched off stay in the table."""
 
     __tablename__ = "promo_boxes"
 
@@ -81,6 +82,13 @@ class PromoBox(Base):
     top_card_focus_x: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=50, server_default="50")
     bottom_card_image_url: Mapped[str | None] = mapped_column(String(500))
     bottom_card_focus_x: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=50, server_default="50")
+    # The community card's title; none = the storefront's own, in each language.
+    top_title: Mapped[str | None] = mapped_column(String(120))
+    # The line under the advantages card's title; none = the storefront's own.
+    bottom_text: Mapped[str | None] = mapped_column(String(300))
+    # Where each card's dark veil starts ("Gölge Yönü"): left, right, top or bottom.
+    top_shade: Mapped[str] = mapped_column(String(6), nullable=False, default="left", server_default="left")
+    bottom_shade: Mapped[str] = mapped_column(String(6), nullable=False, default="left", server_default="left")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
