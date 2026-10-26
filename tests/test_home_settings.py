@@ -420,6 +420,30 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
     assert box["text_colors"]["eyebrow"] == "#F59E0B" and public["bento"]["boxes"][2]["overlay"] is False
 
 
+async def test_the_second_showcase_is_its_own_three_boxes(client: AsyncClient, admin_user: User, cleanup):
+    """ "Görsel Vitrin 2": a switch, a place between SultanPuan and Kumbara, a phone's switch and its own boxes."""
+    second = {"boxes": [{**box, "title": f"İkinci {i}"} for i, box in enumerate(SECTIONS_COPY["bento"]["boxes"])]}
+    order = ["sultanpuan", "bento2", "kumbara", "bento"]
+    saved = await client.put(
+        "/api/v1/admin/home/settings",
+        headers=auth_header(admin_user),
+        json={"bento": SECTIONS_COPY["bento"], "bento2": second, "order": order,
+              "sections": {"bento2": False}, "mobile": {"hero_images": [], "hidden": ["bento2"]}},
+    )
+    assert saved.status_code == 200, saved.text
+    public = (await client.get("/api/v1/home/settings")).json()["data"]
+    assert [b["title"] for b in public["bento2"]["boxes"]] == ["İkinci 0", "İkinci 1", "İkinci 2"]
+    assert public["bento"]["boxes"][0]["title"] == "Nargile\nKömürleri"  # the first keeps its own
+    assert public["order"] == order
+    assert public["sections"]["bento2"] is False and public["sections"]["bento"] is True
+    assert public["mobile"]["hidden"] == ["bento2"]
+
+    # Held to the first's rules: three boxes, each with a photo.
+    for bad in ({"boxes": second["boxes"][:2]}, {"boxes": [{**second["boxes"][0], "image": ""}, *second["boxes"][1:]]}):
+        response = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"bento2": bad})
+        assert response.status_code == 422
+
+
 @pytest.mark.parametrize(
     "bad",
     [

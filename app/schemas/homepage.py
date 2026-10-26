@@ -77,7 +77,8 @@ class Sections(_Strict):
     lules: bool = True  # "Lüle Alırken Kararsız Kalacaksınız"
     sultanpuan: bool = True  # the SultanPuan band
     kumbara: bool = True  # "Kumbara 20.000 TL"
-    bento: bool = True  # "Görsel Vitrin": two tabs of photo boxes, over the deals
+    bento: bool = True  # "Görsel Vitrin": three photo boxes, over the deals
+    bento2: bool = True  # "Görsel Vitrin 2": three more, between SultanPuan and Kumbara
     deals: bool = True  # "Fırsatları Kaçırma"
     campaigns: bool = True  # the campaign boxes (the big one and the mini bento)
     promos: bool = True  # "Sektörde Referans Noktası" (the key is older than the section)
@@ -105,7 +106,7 @@ class Sections(_Strict):
 #: the admin has dragged them into another ("Bölümler"). Each is also a
 #: switch in `Sections`.
 HomeBlock = Literal[
-    "perks", "brands_top", "picks", "lules", "sultanpuan", "kumbara", "bento", "deals",
+    "perks", "brands_top", "picks", "lules", "sultanpuan", "bento2", "kumbara", "bento", "deals",
     "campaigns", "promos", "brands", "brand_showcase", "kozlukler", "games", "showcase", "about",
 ]
 
@@ -282,6 +283,7 @@ MobileSection = Literal[
     "sultanpuan",  # the SultanPuan band
     "kumbara",  # the Kumbara band
     "bento",  # "Görsel Vitrin", the photo boxes
+    "bento2",  # "Görsel Vitrin 2", the second row of them
     "campaigns",  # the campaign boxes under the deals
     "brand_statement",  # "Sektörde Referans Noktası"
     "brand_showcase",  # "Markalarımız"
@@ -510,6 +512,7 @@ class HomepageDocument(_Strict):
     kumbara: KumbaraCopy | None = None
     campaigns: Campaigns | None = None
     bento: Bento | None = None
+    bento2: Bento | None = None  # "Görsel Vitrin 2": its own three boxes, edited as the first's
     statement: Statement | None = None  # the "promos" section
     brand_showcase: BrandShowcaseCopy | None = None
     kozlukler: ProductRowCopy | None = None
