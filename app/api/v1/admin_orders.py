@@ -16,12 +16,13 @@ from app.core.database import get_db
 from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
 from app.core.config import settings
 from app.models.order import PENDING_STATUSES, Carrier, Order, OrderItem, OrderStatus, ShippingMethod
+from app.models.payment import PaymentTransaction
 from app.models.user import AddressKind, User
 from app.core.countries import TURKEY, country_name
 from app.schemas.address import address_line, international_line
-from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse
+from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse, PaymentFailureRead
 from app.schemas.order import OrderItemRead, OrderRead
-from app.services import mailer, order_emails, order_lifecycle, order_sms, shipping, sms_settings
+from app.services import mailer, order_emails, order_lifecycle, order_sms, payment_failures, shipping, sms_settings
 
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 
@@ -59,8 +60,42 @@ async def list_orders(
 
     stmt = stmt.order_by(Order.created_at.desc()).offset(skip).limit(limit)
     rows = (await db.execute(stmt)).all()
-    catalog = await _line_catalog(db, [order for order, _ in rows])
-    return [_list_item(order, user, catalog) for order, user in rows]
+    orders = [order for order, _ in rows]
+    catalog = await _line_catalog(db, orders)
+    failures = await _payment_failures(db, orders)
+    return [_list_item(order, user, catalog, failures) for order, user in rows]
+
+
+@router.get("/orders/status-counts", response_model=dict[OrderStatus, int])
+async def order_status_counts(
+    shipping_method: ShippingMethod | None = Query(None),
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """How many orders each status tab holds (every status, zeros included),
+    under the same İstanbul filter as the list. Declared before
+    ``/orders/{order_id}``, which would otherwise take "status-counts" for an id."""
+    stmt = select(Order.status, func.count()).group_by(Order.status)
+    if shipping_method is not None:
+        stmt = stmt.where(Order.shipping_method == shipping_method)
+    counts = dict((await db.execute(stmt)).all())
+    return {status: counts.get(status, 0) for status in OrderStatus}
+
+
+async def _payment_failures(db: AsyncSession, orders: Sequence[Order]) -> dict[uuid.UUID, PaymentFailureRead]:
+    """"Ödeme Hata Kaydı" for each PAYMENT_FAILED order among these."""
+    failed = [o for o in orders if o.status == OrderStatus.PAYMENT_FAILED]
+    if not failed:
+        return {}
+    attempts: dict[uuid.UUID, list[PaymentTransaction]] = {o.id: [] for o in failed}
+    for tx in await db.scalars(select(PaymentTransaction).where(PaymentTransaction.order_id.in_(attempts))):
+        attempts[tx.order_id].append(tx)
+    out = {}
+    for order in failed:
+        failure = payment_failures.for_order(order, attempts[order.id])
+        if failure is not None:
+            out[order.id] = PaymentFailureRead(**{**failure.__dict__, "source": failure.source.value})
+    return out
 
 
 # Per ordered variant: (sku, product code, product name, colour, VAT rate).
@@ -171,7 +206,9 @@ def _billing_address(order: Order, user: User) -> dict | None:
     }
 
 
-def _list_item(order: Order, user: User, catalog: LineCatalog) -> AdminOrderListItem:
+def _list_item(
+    order: Order, user: User, catalog: LineCatalog, failures: dict[uuid.UUID, PaymentFailureRead] | None = None
+) -> AdminOrderListItem:
     return AdminOrderListItem(
         **OrderRead.model_validate(order).model_dump(exclude={"items"}),
         customer_email=user.email,
@@ -180,6 +217,7 @@ def _list_item(order: Order, user: User, catalog: LineCatalog) -> AdminOrderList
         company_title=user.profile.company_title if user.profile else None,
         billing_address=_billing_address(order, user),
         items=[_line(item, catalog) for item in order.items],
+        payment_failure=(failures or {}).get(order.id),
     )
 
 
@@ -197,7 +235,7 @@ async def get_order(
     before the customer's note was written, before an address was corrected.
     """
     order, user = await _order_with_user(db, order_id)
-    return _list_item(order, user, await _line_catalog(db, [order]))
+    return _list_item(order, user, await _line_catalog(db, [order]), await _payment_failures(db, [order]))
 
 
 # Pending orders, plus a paid one the shop decides not to ship after all.

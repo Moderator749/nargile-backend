@@ -31,6 +31,7 @@ from app.models.order import Order
 from app.models.payment import PaymentStatus, PaymentTransaction
 from app.models.user import User
 from app.services.order_tasks import cancel_expired_pending_orders
+from app.services.payment_failures import FailureSource, classify
 from app.services.paytr_service import (
     PaytrCredentials,
     PaytrError,
@@ -313,3 +314,80 @@ async def test_an_abandoned_payment_page_is_released_by_the_hourly_job(
     assert await cancel_expired_pending_orders(db_session) >= 1
     assert (await db_session.get(Order, order["id"], populate_existing=True)).status == "PAYMENT_FAILED"
     assert await _stock(db_session, normal_v) == before
+
+
+# ── Ödeme Hata Kaydı (admin) ─────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("code", "message", "source", "advice_hint"),
+    [
+        # The bank's own refusal ("0"): its words say why.
+        ("0", "Yetersiz bakiye", FailureSource.CUSTOMER_BANK, "limit"),
+        ("0", "KARTINIZ İNTERNET ALIŞVERİŞİNE KAPALI", FailureSource.CUSTOMER_BANK, "internet alışverişine"),
+        ("0", "3D Secure zaman aşımı", FailureSource.CUSTOMER_BANK, "3D Secure"),
+        ("0", "Bilinmeyen banka cevabı", FailureSource.CUSTOMER_BANK, "bankasıyla"),
+        # A specific code is PayTR's verdict, whatever the words.
+        ("2", "Kimlik Doğrulama başarısız", FailureSource.CUSTOMER_BANK, "SMS"),
+        ("6", "Müşteri ödeme yapmaktan vazgeçti", FailureSource.CUSTOMER_BANK, "tamamlamadan"),
+        ("10", "Bu işlemde 3D Secure kullanılmalıdır", FailureSource.SYSTEM_STORE, "PayTR hesap"),
+        ("11", "Güvenlik uyarısı", FailureSource.SYSTEM_STORE, "güvenlik"),
+        ("99", "İşlem başarısız: Teknik entegrasyon hatası", FailureSource.SYSTEM_STORE, "entegrasyon"),
+        # A code PayTR never documented, in words nobody knows: the shop looks.
+        ("42", "???", FailureSource.SYSTEM_STORE, "Teknik"),
+    ],
+)
+def test_a_failure_is_put_on_the_customers_or_the_shops_side(code, message, source, advice_hint):
+    verdict = classify(code, message)
+    assert verdict.source == source
+    assert advice_hint.casefold() in verdict.advice.casefold()
+
+
+async def test_a_failed_payment_shows_its_reason_to_the_admin(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, admin_user: User, catalog, fake_paytr
+):
+    normal_v, _ = catalog
+    counts_url = "/api/v1/admin/orders/status-counts"
+    before = (await client.get(counts_url, headers=auth_header(admin_user))).json()
+    paid, paid_page = await _opened(client, customer_user, normal_v)
+    failed, page = await _opened(client, customer_user, normal_v)
+    await client.post("/api/v1/payments/paytr/callback", data=_notification(paid_page["merchant_oid"], "success", 500000))
+    form = _notification(
+        page["merchant_oid"], "failed", 500000, failed_reason_code="0", failed_reason_msg="Yetersiz bakiye"
+    )
+    assert (await client.post("/api/v1/payments/paytr/callback", data=form)).text == "OK"
+
+    # The tab, with its count (other tests' orders share the database).
+    counts = (await client.get(counts_url, headers=auth_header(admin_user))).json()
+    assert set(counts) == set(before) and "PAYMENT_FAILED" in counts
+    assert {s: counts[s] - before[s] for s in counts if counts[s] != before[s]} == {"PAYMENT_FAILED": 1, "APPROVED": 1}
+    rows = (await client.get(
+        "/api/v1/admin/orders", params={"status": "PAYMENT_FAILED"}, headers=auth_header(admin_user)
+    )).json()
+    assert {r["status"] for r in rows} == {"PAYMENT_FAILED"}
+    assert next(r for r in rows if r["id"] == failed["id"])["payment_failure"]["source"] == "CUSTOMER_BANK"
+
+    # The sheet's record: whose side, PayTR's own words and code, when, what to say.
+    sheet = (await client.get(f"/api/v1/admin/orders/{failed['id']}", headers=auth_header(admin_user))).json()
+    record = sheet["payment_failure"]
+    assert (record["source"], record["code"], record["message"]) == ("CUSTOMER_BANK", "0", "Yetersiz bakiye")
+    assert record["at"] and record["merchant_oid"] == page["merchant_oid"] and "limit" in record["advice"]
+
+    # A paid order has no such record.
+    ok = (await client.get(f"/api/v1/admin/orders/{paid['id']}", headers=auth_header(admin_user))).json()
+    assert ok["status"] == "APPROVED" and ok["payment_failure"] is None
+
+
+async def test_a_refused_payment_page_is_the_shops_to_fix(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, admin_user: User, catalog, monkeypatch
+):
+    normal_v, _ = catalog
+    order = await _card_order(client, customer_user, normal_v)
+
+    async def refuse(creds, req):
+        raise PaytrError("paytr_token gonderilmedi veya gecersiz")
+
+    monkeypatch.setattr(payments, "request_token", refuse)
+    await client.post("/api/v1/payments/paytr/token", headers=auth_header(customer_user), json={"order_id": order["id"]})
+    record = (await client.get(f"/api/v1/admin/orders/{order['id']}", headers=auth_header(admin_user))).json()["payment_failure"]
+    assert record["source"] == "SYSTEM_STORE" and record["code"] is None and "açılamadı" in record["message"]

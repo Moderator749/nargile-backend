@@ -154,6 +154,20 @@ class AdminOrderItemDetail(OrderItemRead):
     vat_rate: Decimal | None = None
 
 
+class PaymentFailureRead(BaseModel):
+    """"Ödeme Hata Kaydı (PayTR)": why a PAYMENT_FAILED order's card was not
+    charged, whose side it is on, and what to tell the customer
+    (`services.payment_failures`)."""
+
+    source: str  # CUSTOMER_BANK | SYSTEM_STORE
+    advice: str
+    code: str | None = None
+    message: str | None = None
+    at: datetime | None = None
+    merchant_oid: str | None = None
+    test_mode: bool = False
+
+
 class AdminOrderListItem(BaseModel):
     """Order plus who placed it, for the admin order list and detail sheet."""
 
@@ -220,3 +234,5 @@ class AdminOrderListItem(BaseModel):
     cancel_reason: str | None = None
     created_at: datetime
     items: list[AdminOrderItemDetail] = []
+    # Only on a PAYMENT_FAILED order.
+    payment_failure: PaymentFailureRead | None = None
