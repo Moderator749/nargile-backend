@@ -68,6 +68,9 @@ class ProductRead(BaseModel):
     opportunity_color: str | None = None
     # Last edit of the product itself — the sitemap's <lastmod>.
     updated_at: datetime | None = None
+    # "Sepet Kuralı": it counts as coal for the cargo rule, so a cart of it
+    # may not ship free — what the storefront's shipping markup must not promise.
+    is_cart_rule_applied: bool = False
 
     @model_validator(mode="after")
     def _gallery_always_has_the_cover(self) -> "ProductRead":

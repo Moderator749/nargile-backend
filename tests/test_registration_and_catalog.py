@@ -186,3 +186,17 @@ async def test_product_detail_404s(client: AsyncClient):
     # Anything else is read as a slug: unknown → 404, too long → 422.
     assert (await client.get("/api/v1/products/not-a-known-slug")).status_code == 404
     assert (await client.get(f"/api/v1/products/{'x' * 256}")).status_code == 422
+
+
+async def test_the_catalog_says_which_products_count_as_coal(client, db_session, segments):
+    """The storefront's shipping markup promises free carriage only where the
+    cargo rule cannot take it away: it needs to know a coal product."""
+    from app.models.catalog import Product, ProductVariant
+
+    product = Product(base_code=f"KMR-{uuid.uuid4().hex[:6]}", name="Kömür Testi", tags=[], is_cart_rule_applied=True)
+    db_session.add(product)
+    await db_session.flush()
+    db_session.add(ProductVariant(product_id=product.id, sku=product.base_code))
+    await db_session.commit()
+    page = (await client.get(f"/api/v1/products/{product.id}")).json()
+    assert page["is_cart_rule_applied"] is True
