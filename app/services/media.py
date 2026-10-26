@@ -1,13 +1,19 @@
 """Uploaded image storage under MEDIA_ROOT, served at /media."""
 
+import secrets
 import uuid
 
 from starlette.requests import Request
 
 from app.core.config import settings
+from app.core.slugs import slugify
 
 MAX_IMAGE_BYTES = 1024 * 1024  # 1 MB: logos are small
 MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB: product photography is not
+
+# A named file's words, before its "-<hash>": enough for a product's code and
+# name, short of a path that wraps.
+MAX_NAME_CHARS = 80
 
 # Raster only, identified by magic bytes (never the client's filename or
 # Content-Type). SVG is refused: it can carry script when opened directly.
@@ -38,17 +44,36 @@ def media_url(request: Request, rel: str) -> str:
     return str(request.url_for("media", path=rel))
 
 
-def save_image(data: bytes, folder: str, max_bytes: int = MAX_IMAGE_BYTES) -> str:
-    """Store an image under MEDIA_ROOT/folder with a random name; returns its relative path."""
+def file_stem(name: str | None) -> str | None:
+    """The words a file is named by: "LH013 Legend Hookah Çantalı" → "lh013-legend-hookah-cantali";
+    None when nothing nameable is left."""
+    stem = slugify(name or "")[:MAX_NAME_CHARS].strip("-")
+    return stem or None
+
+
+def save_image(data: bytes, folder: str, max_bytes: int = MAX_IMAGE_BYTES, name: str | None = None) -> str:
+    """Store an image under MEDIA_ROOT/folder; returns its relative path.
+
+    Never under the client's filename (WhatsApp_Image.jpg, IMG_9912.png): with
+    a `name` (a product's slug) the file is "<name>-<8 hex>.<ext>", which image
+    search reads; without one, a random name. The extension is the content's.
+    """
     if not data:
         raise InvalidImage("Empty file")
     if len(data) > max_bytes:
         raise InvalidImage(f"Görsel en fazla {max_bytes // (1024 * 1024)} MB olabilir")
-    rel = f"{folder}/{uuid.uuid4().hex}{image_extension(data)}"
-    target = settings.MEDIA_ROOT / rel
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(data)
-    return rel
+    ext, stem = image_extension(data), file_stem(name)
+    folder_path = settings.MEDIA_ROOT / folder
+    folder_path.mkdir(parents=True, exist_ok=True)
+    while True:
+        filename = f"{stem}-{secrets.token_hex(4)}{ext}" if stem else f"{uuid.uuid4().hex}{ext}"
+        try:
+            # "x": a name already taken (a photo of the same product, 1 in 4 billion) draws another.
+            with open(folder_path / filename, "xb") as f:
+                f.write(data)
+        except FileExistsError:
+            continue
+        return f"{folder}/{filename}"
 
 
 def delete_media(rel: str | None) -> None:
