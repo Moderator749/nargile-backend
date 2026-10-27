@@ -52,6 +52,14 @@ Useful options (all optional):
                           (default: http://127.0.0.1:8000; on the live server,
                           its https address, e.g. https://api.example.com)
     --concurrency N       parallel page fetches (default: 4; be polite)
+    --allow-category SLUG [SLUG …]
+                          import these SKIP_CATEGORIES all the same (old
+                          category URL's last segment), when the shop has
+                          confirmed their products may be sold online — e.g.
+                          the herbal molasses, into "Bitkisel Ürünler":
+                            --from-category https://www.nargilemalzemesi.com/nargile-tutunu-markalari-ve-cesitleri
+                            --allow-category nargile-tutunu-markalari-ve-cesitleri
+                            --category bitkisel-urunler --publish
 
 ────────────────────────────────────────────────────────────────────────────
 WHAT IT DOES, AND WHAT IT LEAVES ALONE
@@ -104,9 +112,10 @@ ADAPTING IT TO ANOTHER OPENCART SITE
   application's category slug. Unmapped categories fall back to NAME_RULES
   (keywords in the product name), then to no category; the summary lists
   every unmapped category so the table can be completed.
-- SKIP_CATEGORIES: old categories whose products are never imported at all
-  (tobacco: selling it online is not permitted in Turkey). Their pages are
-  reported as "skipped" and their photos are not downloaded.
+- SKIP_CATEGORIES: old categories whose products are not imported unless
+  --allow-category names them (tobacco: selling it online is not permitted in
+  Turkey). Their pages are reported as "skipped" and their photos are not
+  downloaded.
 - VAT_RATE: the rate the old store's prices include.
 """
 
@@ -145,9 +154,9 @@ from app.models.catalog import (  # noqa: E402
     ProductCategory,
     ProductVariant,
     VariantPrice,
-    WarehouseType,
 )
 from app.models.user import CustomerSegment, SegmentType  # noqa: E402
+from app.services.checkout_engine import CENTRAL_STOCK  # noqa: E402
 from app.services.media import InvalidImage, image_extension  # noqa: E402
 
 # ── Configuration ────────────────────────────────────────────────────────────
@@ -202,7 +211,9 @@ CATEGORY_MAP: dict[str, str] = {
     "yedek-parca": "conta-ve-yedek-parca",
     "nargile-malzemeleri-ve-aksesuarlari": "sipsiler-ve-aksesuarlar",
     "diger": "sipsiler-ve-aksesuarlar",
-    "nargile-tutunu-markalari-ve-cesitleri": "tutun-bitkisel-ve-sarf",
+    # The old store's herbal molasses (Falcon, Cosmic), its "Bitkisel Ürünler"
+    # in the menu: imported only with --allow-category (SKIP_CATEGORIES).
+    "nargile-tutunu-markalari-ve-cesitleri": "bitkisel-urunler",
     "okey-tavla-ve-iskambil-kartlari": "oyun-ve-eglence",
     "kampanyalar": "kampanyalar",
     # "nargile-serleri": left to NAME_RULES / no category.
@@ -230,15 +241,8 @@ NAME_RULES: list[tuple[str, str]] = [
     ("takım", "nargile-takimlari"),
 ]
 
-# Never published by this tool, whatever --publish says.
+# Not imported unless --allow-category names them.
 SKIP_CATEGORIES = {"nargile-tutunu-markalari-ve-cesitleri"}
-
-WAREHOUSES = (
-    WarehouseType.RETAIL_STOCK,
-    WarehouseType.CAFE_STOCK,
-    WarehouseType.B2B_STOCK,
-    WarehouseType.DEALER_STOCK,
-)
 
 log = logging.getLogger("opencart-migration")
 
@@ -634,9 +638,8 @@ async def upsert(p: ScrapedProduct, image_urls: list[str], ctx: dict, opts) -> O
                         price_excl_tax=(p.price / vat_factor).quantize(Decimal("0.01"), ROUND_HALF_UP),
                         vat_rate=VAT_RATE,
                     ))
-                for wh in WAREHOUSES:
-                    qty = opts.stock if (wh is WarehouseType.RETAIL_STOCK and p.in_stock) else 0
-                    db.add(Inventory(variant_id=variant.id, warehouse_type=wh, quantity=qty))
+                # The one stock every buyer draws from (the per-list quotas are retired).
+                db.add(Inventory(variant_id=variant.id, warehouse_type=CENTRAL_STOCK, quantity=opts.stock if p.in_stock else 0))
             else:
                 ch = out.changes
                 # Photos: local copies wherever they are missing or still on the old store.
@@ -762,7 +765,8 @@ async def run(opts) -> dict:
                 outcomes.append(Outcome(url=url, code="", action="skipped", error="no product name/code on page"))
                 log.info("[read %d/%d] - %s — not a product page", i, len(urls), url)
                 return
-            if product.category_path and product.category_path.split("/")[-1] in SKIP_CATEGORIES:
+            old_category = product.category_path.split("/")[-1] if product.category_path else None
+            if old_category in SKIP_CATEGORIES and old_category not in opts.allow_category:
                 outcomes.append(Outcome(url=url, code=product.code, action="skipped", error=f"excluded category {product.category_path}"))
                 return
             images, n = ([], 0) if opts.skip_images else await store_images(fetcher, product.images, opts.media_base_url, opts.dry_run)
@@ -835,6 +839,7 @@ def main() -> None:
     parser.add_argument("--media-base-url", default="http://127.0.0.1:8000")
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--allow-category", nargs="+", default=[], metavar="SLUG")
     opts = parser.parse_args()
     opts.media_base_url = opts.media_base_url.rstrip("/")
 
