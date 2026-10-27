@@ -286,7 +286,15 @@ class Footer(_Strict):
     faq: FooterColumn
     copyright: _text(120)
     price_note: _text(200)
-    warning: _text(200)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_retired_warning(cls, data: object) -> object:
+        # The tobacco warning under the copyright went on 2026-10-27 (the shop sells
+        # hardware, accessories and coal); a footer saved with it still reads.
+        if isinstance(data, dict) and "warning" in data:
+            data = {k: v for k, v in data.items() if k != "warning"}
+        return data
 
 
 # ── Mobil Yönetim ────────────────────────────────────────────────────────────

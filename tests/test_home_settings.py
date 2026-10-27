@@ -554,3 +554,29 @@ async def test_a_document_saved_with_the_old_slider_setting_still_reads(client: 
     assert saved.status_code == 200, saved.text
     assert "slider" not in (await client.get("/api/v1/home/settings")).json()["data"]
 
+
+
+FOOTER = {
+    "brand_name": "SULTAN NARGİLE", "tagline": "", "phone": "0212 553 05 92", "email": "info@example.com",
+    "whatsapp_href": "https://wa.me/905000000000", "branches": [{"name": "Merkez", "address": "İstanbul"}], "hours": "",
+    "social": [], "copyright": "Tüm hakları saklıdır.", "price_note": "",
+    "blog": {"title": "Blog", "links": [{"label": "Lüle rehberi", "href": "/blog/nargile-lule-rehberi"}]},
+    "info": {"title": "Bilgi Sayfaları", "links": [{"label": "Kargo", "href": "/bilgi/kargo-ve-teslimat"}]},
+    "faq": {"title": "S.S.S", "links": []},
+}
+
+
+async def test_the_footer_no_longer_carries_a_tobacco_warning(
+    client: AsyncClient, admin_user: User, cleanup, db_session: AsyncSession
+):
+    """The shop sells hardware, accessories and coal: the warning under the copyright is gone."""
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"footer": FOOTER})
+    assert saved.status_code == 200, saved.text
+    assert "warning" not in saved.json()["data"]["footer"]
+
+    # A footer saved with it, before, still reads — without it.
+    await db_session.execute(delete(SiteContent).where(SiteContent.key == "homepage"))
+    db_session.add(SiteContent(key="homepage", data={"footer": {**FOOTER, "warning": "Tütün mamulleri sağlığa zararlıdır."}}))
+    await db_session.commit()
+    footer = (await client.get("/api/v1/home/settings")).json()["data"]["footer"]
+    assert footer["brand_name"] == "SULTAN NARGİLE" and "warning" not in footer
