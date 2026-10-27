@@ -129,6 +129,54 @@ class ShippingAddress(BaseModel):
         return self
 
 
+class AddressBookInput(BaseModel):
+    """An address kept in "Adreslerim": where, without who.
+
+    The place fields of :class:`ShippingAddress`, held to the same rules — a
+    Turkish address to the 81 provinces and an ilçe — so whatever is saved here
+    can be shipped to. The name and number are the order's, asked at checkout.
+    """
+
+    label: str | None = Field(default=None, max_length=60)
+    country: str = Field(default=TURKEY, min_length=2, max_length=2)
+    city: str = Field(min_length=2, max_length=80)
+    district: str | None = Field(default=None, max_length=80)
+    postal_code: str | None = Field(default=None, max_length=20)
+    line: str = Field(min_length=5, max_length=200)
+
+    @field_validator("line")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return " ".join(v.split())
+
+    @field_validator("label", "district", "postal_code", mode="before")
+    @classmethod
+    def _optional(cls, v: str | None) -> str | None:
+        return _trim(v)
+
+    @field_validator("country")
+    @classmethod
+    def _country(cls, v: str) -> str:
+        code = v.strip().upper()
+        if code not in COUNTRY_NAMES:
+            raise ValueError("Unknown country")
+        return code
+
+    @model_validator(mode="after")
+    def _by_country(self) -> "AddressBookInput":
+        if self.country != TURKEY:
+            self.district = None
+            return self
+        try:
+            self.city = _BY_KEY[_key(self.city)]
+        except KeyError:
+            raise ValueError("Unknown province") from None
+        if not self.district or len(self.district) < 2:
+            raise ValueError("İlçe girilmeli")
+        self.postal_code = None
+        return self
+
+
 class InvoiceAddress(BaseModel):
     """The official billing address of the firm an order is invoiced to.
 

@@ -12,7 +12,6 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
-    UniqueConstraint,
     text,
 )
 from sqlalchemy.dialects.postgresql import UUID
@@ -106,14 +105,23 @@ class InternationalKind(str, enum.Enum):
 
 
 class AddressKind(str, enum.Enum):
-    """Both kinds are invoice addresses: sign-up asks where to send an invoice,
-    never where to send a parcel. Delivery is settled at checkout, which keeps
-    its own address on the order."""
+    """Two invoice addresses, one of each at most — sign-up asks where to send
+    an invoice, never where to send a parcel — and the customer's own address
+    book of places to ship to, kept from "Hesabım". Delivery is still settled
+    at checkout, which freezes its own copy onto the order."""
 
     BILLING = "BILLING"  # Fatura adresi — the account holder's own
     # The address of the firm an individual asked to be invoiced instead. A
     # business account has no such row: its own billing address is its firm's.
     CORPORATE_BILLING = "CORPORATE_BILLING"
+    # A delivery address the customer saved ("Ev", "İş"); as many as they like,
+    # up to SHIPPING_ADDRESS_LIMIT.
+    SHIPPING = "SHIPPING"
+
+
+#: The invoice kinds, each at most once per account.
+INVOICE_ADDRESS_KINDS = ("BILLING", "CORPORATE_BILLING")
+SHIPPING_ADDRESS_LIMIT = 10
 
 
 class CustomerSegment(Base):
@@ -266,15 +274,22 @@ class CustomerAddress(Base):
     declaration. The check constraint keeps a row from being half of each.
     ``city`` is the one field both have.
 
-    Kept apart from the profile because an account has at most one of each kind
-    and because a free-text blob cannot be searched, corrected or printed on an
+    Kept apart from the profile because an account has one of each invoice kind
+    and any number of saved delivery addresses, and because a free-text blob cannot be searched, corrected or printed on an
     invoice reliably. Where an order goes is a separate question, asked at
     checkout and frozen onto the order itself.
     """
 
     __tablename__ = "customer_addresses"
     __table_args__ = (
-        UniqueConstraint("user_id", "kind", name="uq_customer_address_kind"),
+        # One invoice address of each kind; saved delivery addresses are many.
+        Index(
+            "uq_customer_address_kind",
+            "user_id",
+            "kind",
+            unique=True,
+            postgresql_where=text("kind IN ('BILLING', 'CORPORATE_BILLING')"),
+        ),
         CheckConstraint(
             "CASE WHEN country = 'TR'"
             " THEN district IS NOT NULL AND (neighbourhood IS NOT NULL OR street IS NOT NULL)"
@@ -288,6 +303,9 @@ class CustomerAddress(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     kind: Mapped[str] = mapped_column(Enum(AddressKind), nullable=False)
+    # A saved delivery address's name on its card ("Ev", "İş"); unused on an
+    # invoice address, whose kind names it.
+    label: Mapped[str | None] = mapped_column(String(60))
 
     # ISO 3166-1 alpha-2; "TR" for a domestic address, which is what every row
     # written before international accounts existed is.

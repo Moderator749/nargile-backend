@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -16,8 +17,11 @@ from app.api.v1.payments import CARD_OFF
 from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingBreakdown, VolumeTier
 from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
 from app.services import order_sms, sms_settings
+from app.services.contact_phone import fill_missing_phone
 from app.services.delivery import check_delivery_address
 from app.services.checkout_engine import CheckoutEngine, shows_stock_count
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -188,6 +192,17 @@ async def checkout(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # The number the order was placed with goes on an account that has none,
+    # so the next order, and an SMS reset, have it. In a session of its own:
+    # the order stands, and is answered, whatever happens to this.
+    try:
+        async with factory() as session:
+            account = await session.get(User, user.id)
+            if account and await fill_missing_phone(session, account, payload.shipping_address.phone):
+                await session.commit()
+    except Exception:
+        logger.exception("Order %s: the account's phone could not be filled in", order.id)
 
     # "Siparişiniz alınmıştır": now for a transfer or a quote; a card order is
     # placed once PayTR reports it paid (payments.paytr_callback).

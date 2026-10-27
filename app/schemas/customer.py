@@ -52,6 +52,8 @@ class CustomerAddressRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     kind: AddressKind
+    # A saved delivery address's own name ("Ev"); None on an invoice address.
+    label: str | None = None
     country: str
     city: str
     neighbourhood: str | None = None
@@ -114,6 +116,8 @@ class SavedAddress(BaseModel):
     it.
     """
 
+    #: The row's id; checkout does not need it, "Adreslerim" edits by it.
+    id: int | None = None
     kind: AddressKind
     label: str
     full_name: str | None = None
@@ -123,6 +127,19 @@ class SavedAddress(BaseModel):
     district: str | None = None
     postal_code: str | None = None
     line: str
+
+
+class AddressBookEntry(SavedAddress):
+    """One address in "Adreslerim", and what the customer may do with it.
+
+    A saved delivery address is theirs to edit and delete. Their own invoice
+    address can be corrected but not removed (an individual's; a firm's is the
+    one it registered). The firm an individual is invoiced to is edited with
+    the rest of its invoice details, at checkout.
+    """
+
+    editable: bool
+    deletable: bool
 
 
 class SegmentAssign(BaseModel):

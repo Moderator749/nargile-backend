@@ -1,16 +1,23 @@
-"""The signed-in customer's wallet, their saved addresses, their B2B
+"""The signed-in customer's wallet, profile, password, addresses and B2B
 application; public bank accounts."""
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Response
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_user
 from app.core.countries import TURKEY
 from app.core.database import get_db
+from app.core.security import (
+    ADMIN_PASSWORD_MIN,
+    CUSTOMER_PASSWORD_MIN,
+    create_session_token,
+    hash_password,
+    verify_password,
+)
 from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
 from app.models.loyalty import LoyaltyLedger, TransactionType
@@ -21,14 +28,18 @@ from app.models.user import (
     BillingEntity,
     CustomerAddress,
     CustomerProfile,
+    SHIPPING_ADDRESS_LIMIT,
     User,
+    UserRole,
 )
-from app.schemas.address import InvoiceAddress, address_line, international_line
+from app.schemas.address import AddressBookInput, InvoiceAddress, address_line, international_line
 from app.schemas.b2b import B2BApplicationCreate, B2BApplicationRead
 from app.schemas.communication import CommunicationPreferences
-from app.schemas.customer import SavedAddress
+from app.schemas.customer import AddressBookEntry, SavedAddress
 from app.schemas.invoice import CorporateInvoiceDetails
+from app.schemas.user import PasswordChange, ProfileUpdate, Token
 from app.schemas.wallet import BankAccountRead, MilestoneRead, WalletEntry, WalletLot, WalletRead
+from app.services.contact_phone import mobile_taken
 from app.services.store_parameters import load_parameters
 from app.services.wallet import get_wallet, milestone_progress
 
@@ -111,10 +122,11 @@ async def my_last_address(user: User = Depends(get_current_user), db: AsyncSessi
 LABELS = {
     AddressKind.BILLING: "Fatura Adresi",
     AddressKind.CORPORATE_BILLING: "Kurumsal Fatura Adresi",
+    AddressKind.SHIPPING: "Teslimat Adresi",
 }
 
 
-def _label(user: User, kind: AddressKind) -> str:
+def _label(user: User, kind: AddressKind, own: str | None = None) -> str:
     """What to call the address on the card.
 
     A firm's own invoice address *is* its corporate one, so it is named that way
@@ -123,6 +135,9 @@ def _label(user: User, kind: AddressKind) -> str:
     """
     if kind == AddressKind.BILLING and user.account_type != AccountType.INDIVIDUAL:
         return LABELS[AddressKind.CORPORATE_BILLING]
+    # A saved delivery address goes by the name the customer gave it.
+    if kind == AddressKind.SHIPPING and own:
+        return own
     return LABELS.get(kind, "Adres")
 
 
@@ -138,8 +153,9 @@ def _saved(user: User, row: CustomerAddress) -> SavedAddress:
     company = profile.company_title if profile else None
     domestic = row.country == TURKEY
     return SavedAddress(
+        id=row.id,
         kind=AddressKind(row.kind),
-        label=_label(user, AddressKind(row.kind)),
+        label=_label(user, AddressKind(row.kind), row.label),
         full_name=(company if row.kind == AddressKind.CORPORATE_BILLING else user.full_name)
         or company
         or user.full_name,
@@ -166,11 +182,12 @@ def _saved(user: User, row: CustomerAddress) -> SavedAddress:
 
 @router.get("/me/addresses", response_model=list[SavedAddress])
 async def my_addresses(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """The addresses the customer gave at sign-up, to pick from at checkout.
+    """The addresses on file, to pick from at checkout.
 
     The customer's own invoice address comes first, since that is the one
-    checkout opens on; a "Kurumsal Fatura Adresi" follows it. The rows have no
-    order of their own, so it is given here rather than left to the database.
+    checkout opens on; a "Kurumsal Fatura Adresi" follows it, then the delivery
+    addresses saved in "Adreslerim". The rows have no order of their own, so it
+    is given here rather than left to the database.
 
     Checkout never writes one back: an order keeps its own frozen copy, so
     shipping somewhere once does not quietly change what is on file.
@@ -180,8 +197,15 @@ async def my_addresses(user: User = Depends(get_current_user), db: AsyncSession 
         .where(User.id == user.id)
         .options(selectinload(User.profile), selectinload(User.addresses))
     )
-    rows = sorted(loaded.addresses, key=lambda row: row.kind != AddressKind.BILLING)
-    return [_saved(loaded, row) for row in rows]
+    return [_saved(loaded, row) for row in _in_order(loaded.addresses)]
+
+
+_KIND_ORDER = {AddressKind.BILLING: 0, AddressKind.CORPORATE_BILLING: 1, AddressKind.SHIPPING: 2}
+
+
+def _in_order(rows: list[CustomerAddress]) -> list[CustomerAddress]:
+    """Invoice address, the firm's, then the saved delivery addresses as added."""
+    return sorted(rows, key=lambda row: (_KIND_ORDER[AddressKind(row.kind)], row.id))
 
 
 # ── Fatura bilgileri ────────────────────────────────────────────────────────
@@ -411,3 +435,164 @@ async def set_communication_preferences(
         user.marketing_sms_consent_at = now if payload.sms else None
     await db.commit()
     return payload
+
+
+# ── Hesap bilgilerim ─────────────────────────────────────────────────────────
+
+
+@router.put("/me/profile", response_model=ProfileUpdate)
+async def update_my_profile(
+    payload: ProfileUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The name and number the account's orders go out under.
+
+    A Turkish mobile already on another account is refused: "Şifremi unuttum"
+    finds an account by its number, and two accounts with one number could
+    not be told apart.
+    """
+    if await mobile_taken(db, payload.phone, user.id):
+        raise HTTPException(status_code=409, detail="Bu telefon numarası başka bir hesapta kayıtlı.")
+    user.full_name = payload.full_name
+    user.phone = payload.phone
+    await db.commit()
+    return payload
+
+
+@router.post("/me/password", response_model=Token)
+async def change_my_password(
+    payload: PasswordChange,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A new password, given with the current one.
+
+    Every other session ends with the old password, as at a reset; this one
+    carries on with the fresh token returned.
+    """
+    if not verify_password(payload.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Mevcut şifreniz hatalı.")
+    minimum = ADMIN_PASSWORD_MIN if user.role in (UserRole.SUPER_ADMIN, UserRole.ADMIN) else CUSTOMER_PASSWORD_MIN
+    if len(payload.new_password) < minimum:
+        raise HTTPException(status_code=422, detail=f"Yeni şifre en az {minimum} karakter olmalı.")
+    user.hashed_password = hash_password(payload.new_password)
+    user.token_version = (user.token_version or 0) + 1
+    await db.commit()
+    return Token(access_token=create_session_token(user))
+
+
+# ── Adreslerim ───────────────────────────────────────────────────────────────
+#
+# The invoice addresses sign-up took, and the delivery addresses the customer
+# keeps beside them. Checkout offers them all as cards and freezes a copy onto
+# the order; nothing here changes an order already placed.
+
+
+def _entry(user: User, row: CustomerAddress) -> AddressBookEntry:
+    kind = AddressKind(row.kind)
+    shipping = kind == AddressKind.SHIPPING
+    own_invoice = kind == AddressKind.BILLING and user.account_type == AccountType.INDIVIDUAL
+    return AddressBookEntry(
+        **_saved(user, row).model_dump(),
+        editable=shipping or own_invoice,
+        deletable=shipping,
+    )
+
+
+def _write_place(row: CustomerAddress, payload: AddressBookInput) -> None:
+    """The form's one-line address into the row, in the shape its country has
+    (see CustomerAddress); the other shape's fields are cleared."""
+    domestic = payload.country == TURKEY
+    row.country = payload.country
+    row.city = payload.city
+    row.district = payload.district if domestic else None
+    row.street = payload.line if domestic else None
+    row.neighbourhood = row.building_no = row.building_name = row.door_no = None
+    row.address_line1 = None if domestic else payload.line
+    row.address_line2 = None
+    row.postal_code = None if domestic else payload.postal_code
+
+
+async def _book(db: AsyncSession, user: User) -> User:
+    return await db.scalar(
+        select(User)
+        .where(User.id == user.id)
+        .options(selectinload(User.profile), selectinload(User.addresses))
+        .execution_options(populate_existing=True)
+    )
+
+
+async def _own_row(db: AsyncSession, user: User, address_id: int) -> CustomerAddress:
+    row = await db.scalar(
+        select(CustomerAddress).where(CustomerAddress.id == address_id, CustomerAddress.user_id == user.id)
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Adres bulunamadı")
+    return row
+
+
+@router.get("/me/address-book", response_model=list[AddressBookEntry])
+async def my_address_book(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    loaded = await _book(db, user)
+    return [_entry(loaded, row) for row in _in_order(loaded.addresses)]
+
+
+@router.post("/me/address-book", response_model=AddressBookEntry, status_code=201)
+async def add_to_address_book(
+    payload: AddressBookInput,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A new delivery address. Only an individual keeps them: a firm's order
+    goes to the address it registered (or a branch it names at checkout)."""
+    if user.account_type != AccountType.INDIVIDUAL:
+        raise HTTPException(status_code=403, detail="Kurumsal hesaplar siparişlerini kayıtlı adreslerine alır.")
+    count = await db.scalar(
+        select(func.count())
+        .select_from(CustomerAddress)
+        .where(CustomerAddress.user_id == user.id, CustomerAddress.kind == AddressKind.SHIPPING)
+    )
+    if count >= SHIPPING_ADDRESS_LIMIT:
+        raise HTTPException(status_code=409, detail=f"En fazla {SHIPPING_ADDRESS_LIMIT} teslimat adresi kaydedilebilir.")
+    row = CustomerAddress(user_id=user.id, kind=AddressKind.SHIPPING, label=payload.label)
+    _write_place(row, payload)
+    db.add(row)
+    await db.commit()
+    return _entry(await _book(db, user), row)
+
+
+@router.put("/me/address-book/{address_id}", response_model=AddressBookEntry)
+async def edit_address_book_entry(
+    address_id: int,
+    payload: AddressBookInput,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A delivery address, or an individual's own invoice address. A firm's
+    registered address, and the firm an individual is invoiced to, are edited
+    with the invoice details they belong to."""
+    row = await _own_row(db, user, address_id)
+    entry = _entry(await _book(db, user), row)
+    if not entry.editable:
+        raise HTTPException(status_code=403, detail="Bu adres fatura bilgileriyle birlikte düzenlenir.")
+    _write_place(row, payload)
+    if row.kind == AddressKind.SHIPPING:
+        row.label = payload.label
+    await db.commit()
+    return _entry(await _book(db, user), row)
+
+
+@router.delete("/me/address-book/{address_id}", status_code=204)
+async def delete_address_book_entry(
+    address_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A delivery address only: an invoice address is what invoices are made out to."""
+    row = await _own_row(db, user, address_id)
+    if row.kind != AddressKind.SHIPPING:
+        raise HTTPException(status_code=403, detail="Fatura adresi silinemez.")
+    await db.delete(row)
+    await db.commit()
+    return Response(status_code=204)

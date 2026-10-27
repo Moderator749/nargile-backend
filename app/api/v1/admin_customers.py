@@ -72,7 +72,8 @@ async def list_customers(
     orders = select(Order.user_id, func.count().label("n")).group_by(Order.user_id).subquery()
     # One address per customer, their own invoice address for preference: the
     # grid shows where they are, and DISTINCT ON picks it in the same scan
-    # rather than a query per row.
+    # rather than a query per row. Only an invoice address says where a
+    # customer is; a saved delivery address may be anyone's.
     places = (
         select(
             CustomerAddress.user_id.label("user_id"),
@@ -80,6 +81,7 @@ async def list_customers(
             CustomerAddress.district.label("district"),
             CustomerAddress.country.label("country"),
         )
+        .where(CustomerAddress.kind != AddressKind.SHIPPING)
         .ext(distinct_on(CustomerAddress.user_id))
         .order_by(
             CustomerAddress.user_id,
@@ -182,7 +184,10 @@ async def customer_cities(
     is all reachable, and it includes Berlin.
     """
     rows = await db.execute(
-        select(CustomerAddress.city).distinct().order_by(CustomerAddress.city)
+        select(CustomerAddress.city)
+        .where(CustomerAddress.kind != AddressKind.SHIPPING)
+        .distinct()
+        .order_by(CustomerAddress.city)
     )
     return [city for city in rows.scalars() if city]
 

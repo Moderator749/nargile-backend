@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.countries import TURKEY
-from app.models.user import AccountType, CustomerAddress, User
+from app.models.user import AccountType, AddressKind, CustomerAddress, User
 from app.schemas.address import ISTANBUL, ShippingAddress, place_key
 
 #: Said when a B2B order names somewhere its account has never registered.
@@ -75,7 +75,7 @@ async def check_delivery_address(
     rows = (
         await db.execute(
             select(CustomerAddress.country, CustomerAddress.city, CustomerAddress.district).where(
-                CustomerAddress.user_id == user.id
+                CustomerAddress.user_id == user.id, CustomerAddress.kind != AddressKind.SHIPPING
             )
         )
     ).all()
@@ -95,7 +95,9 @@ async def delivers_in_istanbul(db: AsyncSession, user: User) -> bool:
     """
     rows = await db.execute(
         select(CustomerAddress.city).where(
-            CustomerAddress.user_id == user.id, CustomerAddress.country == TURKEY
+            CustomerAddress.user_id == user.id,
+            CustomerAddress.country == TURKEY,
+            CustomerAddress.kind != AddressKind.SHIPPING,
         )
     )
     return any(place_key(city) == place_key(ISTANBUL) for city in rows.scalars())

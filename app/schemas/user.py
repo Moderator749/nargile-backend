@@ -1,9 +1,10 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.user import AccountType, SegmentType, UserRole
+from app.schemas.address import valid_contact_phone
 
 
 class UserRead(BaseModel):
@@ -37,3 +38,30 @@ class LoginRequest(BaseModel):
 
     email: str
     password: str
+
+
+class ProfileUpdate(BaseModel):
+    """"Hesap Bilgilerim": the name and the number an order is sent under."""
+
+    full_name: str = Field(min_length=2, max_length=150)
+    phone: str = Field(max_length=30)
+
+    @field_validator("full_name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        name = " ".join(v.split())
+        if len(name) < 2:
+            raise ValueError("Ad soyad girilmeli")
+        return name
+
+    @field_validator("phone")
+    @classmethod
+    def _phone(cls, v: str) -> str:
+        return valid_contact_phone(v)
+
+
+class PasswordChange(BaseModel):
+    """A new password, given with the current one."""
+
+    current_password: str = Field(max_length=128)
+    new_password: str = Field(max_length=128)
