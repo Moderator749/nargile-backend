@@ -1,7 +1,7 @@
 """OpenCart → Sultan Nargile customer migration, from a SQL backup.
 
 Reads the old store's phpMyAdmin/cPanel SQL dump (``INSERT INTO `oc_customer`
-…`` one row per statement) and creates an account for every customer, with
+…`` with one row per statement, or extended inserts of many rows) and creates an account for every customer, with
 their default address, in this application's database. Nothing is fetched
 from the network: the dump is the only input.
 
@@ -44,10 +44,14 @@ Each customer becomes:
                      type INDIVIDUAL, created_at = OpenCart date_added
                      (Europe/Istanbul → UTC), newsletter=1 →
                      marketing_email_consent_at = date_added.
-                     The password is unusable: one random secret, hashed once,
-                     thrown away. Customers log in after "Şifremi unuttum"
-                     (e-mail link or SMS code), which is why the phone and
-                     e-mail are cleaned so carefully.
+                     The password is the OpenCart one: its hash and salt are
+                     stored as "opencart$<salt>$<sha1>" (app.core.security),
+                     so the customer signs in with the old password and that
+                     first login replaces it with bcrypt. A customer whose
+                     dump value is no OpenCart hash gets an unusable password
+                     (flagged "password_not_carried") and uses "Şifremi
+                     unuttum" (e-mail link or SMS code), which is why the
+                     phone and e-mail are cleaned so carefully.
   customer_profiles  one empty profile row, as self-registration creates.
   customer_addresses the customer's DEFAULT address (oc_customer.address_id)
                      as their BILLING address. The schema holds one own address
@@ -94,7 +98,7 @@ from sqlalchemy import func, select  # noqa: E402
 
 from app.core.countries import COUNTRY_NAMES, TURKEY  # noqa: E402
 from app.core.database import async_session, engine  # noqa: E402
-from app.core.security import hash_password  # noqa: E402
+from app.core.security import hash_password, opencart_hash  # noqa: E402
 from app.models.user import (  # noqa: E402
     AccountType,
     AddressKind,
@@ -122,38 +126,104 @@ BATCH = 500
 
 # ── SQL dump parsing ──────────────────────────────────────────────────────────
 
-_INSERT = re.compile(r"^INSERT INTO `(?P<table>[a-z0-9_]+)` \((?P<cols>[^)]*)\) VALUES \((?P<vals>.*)\);\s*$")
-_VALUE = re.compile(r"'((?:[^'\\]|\\.)*)'|(NULL)|(-?\d+(?:\.\d+)?)")
+#: The head of one INSERT statement, at the start of a line. Its VALUES list
+#: follows: one tuple (the old backup tool's "one row per statement") or many,
+#: "(…),\n(…),\n(…);" as phpMyAdmin and mysqldump write extended inserts.
+_INSERT = re.compile(
+    r"^INSERT(?: IGNORE)? INTO `(?P<table>[A-Za-z0-9_]+)` \((?P<cols>[^)]*)\) VALUES\s*", re.MULTILINE
+)
+#: One value, with the whitespace around it: a quoted string (which may hold
+#: newlines, commas, parentheses and semicolons), NULL, a number, or a hex /
+#: bit literal.
+_VALUE = re.compile(
+    r"\s*(?:'(?P<quoted>(?:[^'\\]+|\\.|'')*)'|(?P<null>NULL)|(?P<number>-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)"
+    r"|(?P<literal>0x[0-9A-Fa-f]*|[xXbB]'[0-9A-Fa-f]*'))\s*",
+    re.DOTALL,
+)
 _ESCAPES = {"\\'": "'", '\\"': '"', "\\\\": "\\", "\\n": "\n", "\\r": "\r", "\\t": "\t", "\\0": "\0", "\\Z": "\x1a"}
 
 
 def _unescape(raw: str) -> str:
-    return re.sub(r"\\.", lambda m: _ESCAPES.get(m.group(0), m.group(0)[1]), raw)
+    raw = re.sub(r"\\.", lambda m: _ESCAPES.get(m.group(0), m.group(0)[1]), raw, flags=re.DOTALL)
+    return raw.replace("''", "'")
+
+
+class DumpError(ValueError):
+    pass
+
+
+def _skip_space(text: str, pos: int) -> int:
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    return pos
+
+
+def _tuples(text: str, pos: int) -> tuple[list[list[str | None]], int]:
+    """The tuples of one VALUES list starting at `pos`, and where its ';' ends."""
+    tuples: list[list[str | None]] = []
+    while True:
+        pos = _skip_space(text, pos)
+        if text[pos : pos + 1] != "(":
+            raise DumpError(f"'(' expected at offset {pos}")
+        pos += 1
+        values: list[str | None] = []
+        while True:
+            m = _VALUE.match(text, pos)
+            if not m:
+                raise DumpError(f"unreadable value at offset {pos}")
+            if m.group("null"):
+                values.append(None)
+            elif m.group("number") is not None:
+                values.append(m.group("number"))
+            elif m.group("literal") is not None:
+                values.append(m.group("literal"))
+            else:
+                values.append(_unescape(m.group("quoted")))
+            pos = m.end()
+            sep = text[pos : pos + 1]
+            pos += 1
+            if sep == ")":
+                break
+            if sep != ",":
+                raise DumpError(f"',' or ')' expected at offset {pos - 1}")
+        tuples.append(values)
+        pos = _skip_space(text, pos)
+        sep = text[pos : pos + 1]
+        pos += 1
+        if sep == ";":
+            return tuples, pos
+        if sep != ",":
+            raise DumpError(f"',' or ';' expected at offset {pos - 1}")
 
 
 def parse_dump(path: Path, tables: set[str]) -> dict[str, list[dict[str, str | None]]]:
-    """Every row of the wanted tables, as {column: value}; NULL → None."""
+    """Every row of the wanted tables, as {column: value}; NULL → None.
+
+    Each INSERT is read value by value to its closing ';', so a statement may
+    carry one row or thousands, over one line or many. A wanted table's
+    statement that cannot be read stops the run; another table's is skipped.
+    """
+    text = path.read_text(encoding="utf-8", errors="replace")
     rows: dict[str, list[dict[str, str | None]]] = {t: [] for t in tables}
-    with path.open(encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            if not line.startswith("INSERT INTO `"):
+    pos = 0
+    while m := _INSERT.search(text, pos):
+        table = m.group("table")
+        cols = [c.strip().strip("`") for c in m.group("cols").split(",")]
+        try:
+            tuples, pos = _tuples(text, m.end())
+        except DumpError as exc:
+            if table in tables:
+                raise DumpError(f"{table}: {exc}") from None
+            log.warning("%s: %s; statement skipped", table, exc)
+            pos = m.end()
+            continue
+        if table not in tables:
+            continue
+        for values in tuples:
+            if len(values) != len(cols):
+                log.warning("%s: %d columns but %d values, row skipped", table, len(cols), len(values))
                 continue
-            m = _INSERT.match(line)
-            if not m or m.group("table") not in tables:
-                continue
-            cols = [c.strip().strip("`") for c in m.group("cols").split(",")]
-            vals: list[str | None] = []
-            for quoted, null, number in _VALUE.findall(m.group("vals")):
-                if null:
-                    vals.append(None)
-                elif number:
-                    vals.append(number)
-                else:
-                    vals.append(_unescape(quoted))
-            if len(vals) != len(cols):
-                log.warning("%s: %d columns but %d values, row skipped", m.group("table"), len(cols), len(vals))
-                continue
-            rows[m.group("table")].append(dict(zip(cols, vals)))
+            rows[table].append(dict(zip(cols, values)))
     return rows
 
 
@@ -323,6 +393,8 @@ class Prepared:
     address_id: str
     extra_address_ids: list[str] = field(default_factory=list)
     company: str | None = None
+    #: The OpenCart hash in its stored form (opencart_hash), or None.
+    legacy_password: str | None = None
 
 
 @dataclass
@@ -402,8 +474,11 @@ def prepare(rows: dict[str, list[dict]], report: Report, limit: int | None) -> l
             address_id=raw_address["address_id"] if raw_address else "",
             extra_address_ids=[i for i in own if raw_address is None or i != raw_address["address_id"]],
             company=_trim(raw_address.get("company") if raw_address else None, 255),
+            legacy_password=opencart_hash(c.get("password"), c.get("salt")),
         )
         prepared.append(p)
+        if p.legacy_password is None:
+            report.flagged["password_not_carried"].append({"customer_id": p.customer_id, "email": email})
         group_counts[p.group_id] += 1
         if phone.problem:
             report.flagged[f"phone_{phone.problem}"].append({"customer_id": p.customer_id, "email": email, "telephone": c["telephone"]})
@@ -455,9 +530,10 @@ async def write(prepared: list[Prepared], report: Report) -> None:
         existing = {
             e for (e,) in (await db.execute(select(func.lower(User.email)).where(func.lower(User.email).in_([p.email for p in prepared])))).all()
         }
-        # One unusable password for every imported account: a random secret
-        # hashed once (bcrypt is too slow to do 8,000 times) and never kept.
-        # Customers set their own through "Şifremi unuttum".
+        # A customer keeps the OpenCart password (its hash, replaced by bcrypt
+        # at the first login). One whose dump value is no OpenCart hash gets an
+        # unusable password instead: a random secret hashed once (bcrypt is too
+        # slow to do thousands of times) and never kept; they use "Şifremi unuttum".
         unusable = hash_password(secrets.token_urlsafe(32))
 
         pending = 0
@@ -468,7 +544,7 @@ async def write(prepared: list[Prepared], report: Report) -> None:
             user = User(
                 email=p.email,
                 full_name=p.full_name,
-                hashed_password=unusable,
+                hashed_password=p.legacy_password or unusable,
                 phone=p.phone.mobile or p.phone.foreign,
                 landline_phone=p.phone.landline,
                 account_type=AccountType.INDIVIDUAL,

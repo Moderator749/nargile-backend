@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.security import create_session_token, hash_password, verify_password
+from app.core.security import create_session_token, hash_password, needs_rehash, verify_password
 from app.models.user import (
     AddressKind,
     CustomerAddress,
@@ -147,6 +147,11 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     _failures.pop(given, None)
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
+    # An account from the old store signs in with its OpenCart password once;
+    # from then on it has a bcrypt hash like everyone else.
+    if needs_rehash(user.hashed_password):
+        user.hashed_password = hash_password(payload.password)
+        await db.commit()
 
     return Token(access_token=create_session_token(user))
 
