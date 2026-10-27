@@ -42,7 +42,7 @@ from app.schemas.cart import CartLineInfo, StockCheckLine, StockCheckRequest
 from app.schemas.i18n import Locale
 from app.services import localize, slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
-from app.services.checkout_engine import CENTRAL_STOCK, shows_stock_count, stock_on_hand
+from app.services.checkout_engine import CENTRAL_STOCK, HAVALE_SWITCH, shows_stock_count, stock_on_hand
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
@@ -255,7 +255,13 @@ async def _catalog_view(
         # even if a colour was retired after the product's own list was written.
         view["color_names"] = [v.color_name for v in variants if v.color_name]
         # In the caller's language, saying which languages it has.
-        views.append(CatalogProductRead(**localize.product_view(view, product.translations, lang), variants=variants))
+        views.append(
+            CatalogProductRead(
+                **localize.product_view(view, product.translations, lang),
+                variants=variants,
+                segment_havale=segment in HAVALE_SWITCH and bool(getattr(product, HAVALE_SWITCH[segment])),
+            )
+        )
     return views
 
 

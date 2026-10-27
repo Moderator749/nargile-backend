@@ -138,6 +138,11 @@ class CatalogVariantRead(BaseModel):
 
 class CatalogProductRead(ProductRead):
     variants: list[CatalogVariantRead] = []
+    # The caller's B2B price list takes the havale discount on this product (its
+    # "Bayide / Toptanda / Kafede Havale / EFT İndirimi" switch), as checkout
+    # gives it line by line. Always false for a guest and a retail account,
+    # whose havale discount is the cart-wide one.
+    segment_havale: bool = False
     # The languages it is translated into, Turkish first: the storefront links
     # and indexes an English or Arabic page only where one exists. With ?lang=
     # the text fields above are already in that language (app.services.localize).

@@ -204,3 +204,28 @@ async def test_the_sheet_saves_all_three_switches(client: AsyncClient, admin_use
     assert (rules["has_dealer_havale_discount"], rules["has_toptan_havale_discount"], rules["has_cafe_havale_discount"]) == (
         False, True, True,
     )
+
+
+@pytest.mark.parametrize("segment", B2B, ids=lambda s: s.value)
+async def test_the_product_page_says_whether_this_list_gets_it(
+    client: AsyncClient, db_session, segments, segment, customer_user: User
+):
+    """`segment_havale`: what the product page's "%5 Havale & EFT İndirimi" block for a
+    firm reads — true only where checkout will take it off for this list."""
+    cart = await _cart_for(db_session, segments, segment)
+    firm = await _firm(client, db_session, segments, segment)
+
+    async def says(variant: ProductVariant, headers: dict | None = None) -> bool:
+        resp = await client.get(f"/api/v1/products/{variant.product_id}", headers=headers or {})
+        assert resp.status_code == 200, resp.text
+        return resp.json()["segment_havale"]
+
+    assert await says(cart["mine"], firm) is True
+    assert await says(cart["others"], firm) is False  # another list's switch
+    assert await says(cart["plain"], firm) is False
+    # A guest and a retail account: their havale discount is the cart-wide one, never this.
+    assert await says(cart["mine"]) is False
+    assert await says(cart["mine"], auth_header(customer_user)) is False
+    # The catalog's cards carry it too.
+    listed = await client.get("/api/v1/products", params={"ids": [str(cart["mine"].product_id)]}, headers=firm)
+    assert [p["segment_havale"] for p in listed.json()] == [True]
