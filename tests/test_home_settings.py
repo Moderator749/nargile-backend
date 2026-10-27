@@ -65,6 +65,49 @@ async def test_a_bento_saved_with_tabs_reads_as_its_three_boxes(client: AsyncCli
     assert boxes[0]["focus_x"] == 30 and boxes[0]["overlay"] is True and boxes[0]["title"] == ""
 
 
+async def test_the_campaign_boxes_hand_their_place_to_the_third_showcase(
+    client: AsyncClient, admin_user: User, cleanup, db_session: AsyncSession
+):
+    """A document saved with the retired campaign boxes: their place in the order, their
+    switch and a phone's choice go to "Görsel Vitrin 3"; their words (no photos) are dropped."""
+    order = ["perks", "bento", "deals", "campaigns", "promos", "showcase", "about"]
+    db_session.add(SiteContent(key="homepage", data={
+        "order": order,
+        "sections": {"campaigns": False, "promos": False},
+        "mobile": {"hero_images": [], "hidden": ["campaigns", "kozlukler"]},
+        "campaigns": {"lead": {"title": "Elektrikli Ocaklar", "href": "/firsat-urunleri", "cta": "İncele"}, "minis": []},
+        "slider": {"size": "lg"},  # retired with no successor: still reads
+        "deals": {"title": "Fırsatlar", "subtitle": ""},
+    }))
+    await db_session.commit()
+
+    for path, headers in (("/api/v1/home/settings", {}), ("/api/v1/admin/home/settings", auth_header(admin_user))):
+        response = await client.get(path, headers=headers)
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["order"] == ["perks", "bento", "deals", "bento3", "promos", "showcase", "about"]
+        assert data["sections"]["bento3"] is False and data["sections"]["promos"] is False
+        assert "campaigns" not in data["sections"] and "campaigns" not in data and "bento3" not in data
+        assert data["mobile"]["hidden"] == ["bento3", "kozlukler"]
+        assert data["deals"]["title"] == "Fırsatlar"  # the rest as saved
+
+    # An admin tab opened before the change still saves: its names are read in today's terms.
+    saved = await client.put(
+        "/api/v1/admin/home/settings", headers=auth_header(admin_user),
+        json={"order": order, "sections": {"campaigns": True}, "mobile": {"hero_images": [], "hidden": ["campaigns"]}},
+    )
+    assert saved.status_code == 200, saved.text
+    data = saved.json()["data"]
+    assert "bento3" in data["order"] and "campaigns" not in data["order"]
+    assert data["sections"]["bento3"] is True and data["mobile"]["hidden"] == ["bento3"]
+
+    # And its own boxes, held to the showcase's rules.
+    third = {"boxes": [{**box, "title": f"Üçüncü {i}"} for i, box in enumerate(SECTIONS_COPY["bento"]["boxes"])]}
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"bento3": third})
+    assert saved.status_code == 200, saved.text
+    assert [b["title"] for b in saved.json()["data"]["bento3"]["boxes"]] == ["Üçüncü 0", "Üçüncü 1", "Üçüncü 2"]
+
+
 @pytest.mark.parametrize(
     "bad",
     [
@@ -377,11 +420,6 @@ SECTIONS_COPY = {
     },
     "sultanpuan": {"subtitle": "{bant} alışverişlerde", "note": "Puan indirim olur.", "call": "Kazanın!"},
     "kumbara": {"subtitle": "Her alışverişe puan", "note": "{tutar} barajı, {oran} ekstra.", "call": "Biriktirin!"},
-    "campaigns": {
-        "lead": {"eyebrow": "Sınırlı", "title": "Büyük Fırsat", "subtitle": "", "cta": "İncele", "href": "/firsat-urunleri",
-                 "image": "/images/kampanya.jpg"},
-        "minis": [{"title": f"Kutu {i}", "subtitle": "", "href": "/catalog"} for i in range(3)],
-    },
     "bento": {
         "boxes": [
             {
@@ -411,7 +449,6 @@ async def test_every_sections_copy_is_saved_and_read_back(client: AsyncClient, a
     public = (await client.get("/api/v1/home/settings")).json()["data"]
     assert set(public) == set(SECTIONS_COPY)
     assert public["perks"]["installments"]["value"] == "6 taksit"
-    assert public["campaigns"]["lead"]["image"] == "/images/kampanya.jpg" and public["campaigns"]["minis"][2].get("image") is None
     assert public["brand_showcase"]["legend"]["logo"] == "https://cdn.example.com/legend.png"
     assert public["kumbara"]["note"] == "{tutar} barajı, {oran} ekstra."
     box = public["bento"]["boxes"][1]
@@ -490,8 +527,7 @@ async def test_a_showcase_that_breaks_its_rows_is_refused(client: AsyncClient, a
 @pytest.mark.parametrize(
     "bad",
     [
-        {"campaigns": {**SECTIONS_COPY["campaigns"], "minis": SECTIONS_COPY["campaigns"]["minis"][:2]}},
-        {"campaigns": {**SECTIONS_COPY["campaigns"], "lead": {**SECTIONS_COPY["campaigns"]["lead"], "href": "javascript:x"}}},
+        {"bento3": {"boxes": SECTIONS_COPY["bento"]["boxes"][:2]}},  # three boxes, as the others
         {"lules": {**SECTIONS_COPY["lules"], "title": ""}},
         # Three boxes, each with a photo and a safe link, its crop and words held to their bounds.
         {"bento": {"boxes": SECTIONS_COPY["bento"]["boxes"][:2]}},

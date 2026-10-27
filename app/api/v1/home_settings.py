@@ -13,7 +13,7 @@ from app.api.deps import get_current_admin_user
 from app.core.database import get_db
 from app.models.content import SiteContent
 from app.models.user import User
-from app.schemas.homepage import HomepageDocument, HomepageSettingsRead
+from app.schemas.homepage import HomepageDocument, HomepageSettingsRead, upgrade_document
 
 router = APIRouter(tags=["home-settings"])
 
@@ -28,7 +28,9 @@ async def _read(db: AsyncSession) -> HomepageSettingsRead:
     # A document saved under an older shape must not take the homepage down:
     # whatever no longer validates is dropped and falls back to the default.
     data: dict = {}
-    for key, value in (row.data or {}).items():
+    for key, value in upgrade_document(row.data or {}).items():
+        if key not in HomepageDocument.model_fields:  # retired with no successor ("slider")
+            continue
         try:
             data[key] = HomepageDocument.model_validate({key: value}).model_dump()[key]
         except ValueError:

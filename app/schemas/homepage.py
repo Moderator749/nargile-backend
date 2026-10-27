@@ -80,7 +80,7 @@ class Sections(_Strict):
     bento: bool = True  # "Görsel Vitrin": three photo boxes, over the deals
     bento2: bool = True  # "Görsel Vitrin 2": three more, between SultanPuan and Kumbara
     deals: bool = True  # "Fırsatları Kaçırma"
-    campaigns: bool = True  # the campaign boxes (the big one and the mini bento)
+    bento3: bool = True  # "Görsel Vitrin 3": three more, under the deals (where the campaign boxes were)
     promos: bool = True  # "Sektörde Referans Noktası" (the key is older than the section)
     brands: bool = True  # the brand ticker under the statement
     brand_showcase: bool = True  # "Markalarımız"
@@ -107,7 +107,7 @@ class Sections(_Strict):
 #: switch in `Sections`.
 HomeBlock = Literal[
     "perks", "brands_top", "picks", "lules", "sultanpuan", "bento2", "kumbara", "bento", "deals",
-    "campaigns", "promos", "brands", "brand_showcase", "kozlukler", "games", "showcase", "about",
+    "bento3", "promos", "brands", "brand_showcase", "kozlukler", "games", "showcase", "about",
 ]
 
 
@@ -312,7 +312,7 @@ MobileSection = Literal[
     "kumbara",  # the Kumbara band
     "bento",  # "Görsel Vitrin", the photo boxes
     "bento2",  # "Görsel Vitrin 2", the second row of them
-    "campaigns",  # the campaign boxes under the deals
+    "bento3",  # "Görsel Vitrin 3", the photo boxes under the deals
     "brand_statement",  # "Sektörde Referans Noktası"
     "brand_showcase",  # "Markalarımız"
     "kozlukler",  # the "Közlükler" row
@@ -402,26 +402,6 @@ class KumbaraCopy(_Strict):
     call: _text(40)
 
 
-class CampaignBox(_Strict):
-    title: _text(80, required=True)
-    subtitle: _text(160)
-    href: Link
-    # A photo behind the words; without one, the box keeps its gradient.
-    image: Image = None
-
-
-class CampaignLead(CampaignBox):
-    eyebrow: _text(40)
-    cta: _text(40, required=True)
-
-
-class Campaigns(_Strict):
-    """The big box and the mini bento: always three small boxes."""
-
-    lead: CampaignLead
-    minis: list[CampaignBox] = Field(min_length=3, max_length=3)
-
-
 class BentoLayout(_Strict):
     """Where each text of a box sits: its centre, in % of the box; all three or none."""
 
@@ -509,6 +489,43 @@ class ProductRowCopy(_Strict):
 # ── The document ─────────────────────────────────────────────────────────────
 
 
+#: The campaign boxes (a big box and three small: "campaigns") gave way to
+#: "Görsel Vitrin 3" in their place on 2026-10-27.
+RETIRED_BLOCKS = {"campaigns": "bento3"}
+
+
+def upgrade_document(data: dict) -> dict:
+    """A document saved before a section was replaced, in today's terms: the
+    retired section's place in the order, its switch and a phone's choice
+    carry over to the one that replaced it (unless that has its own), and its
+    content is dropped — the campaign boxes' words never had the photo a
+    showcase box needs."""
+    data = {k: v for k, v in data.items() if k not in RETIRED_BLOCKS}
+    order = data.get("order")
+    if isinstance(order, list):
+        data["order"] = [
+            RETIRED_BLOCKS.get(b, b) for b in order if not (b in RETIRED_BLOCKS and RETIRED_BLOCKS[b] in order)
+        ]
+    sections = data.get("sections")
+    if isinstance(sections, dict):
+        sections = dict(sections)
+        for old, new in RETIRED_BLOCKS.items():
+            if old in sections:
+                value = sections.pop(old)
+                sections.setdefault(new, value)
+        data["sections"] = sections
+    mobile = data.get("mobile")
+    if isinstance(mobile, dict) and isinstance(mobile.get("hidden"), list):
+        hidden = mobile["hidden"]
+        data["mobile"] = {
+            **mobile,
+            "hidden": [
+                RETIRED_BLOCKS.get(h, h) for h in hidden if not (h in RETIRED_BLOCKS and RETIRED_BLOCKS[h] in hidden)
+            ],
+        }
+    return data
+
+
 class HomepageDocument(_Strict):
     """What is stored: only the sections the admin has saved."""
 
@@ -519,7 +536,8 @@ class HomepageDocument(_Strict):
         # a document saved with it still reads.
         if isinstance(data, dict) and "slider" in data:
             data = {k: v for k, v in data.items() if k != "slider"}
-        return data
+        # A section since replaced (an admin tab opened before the change saves it too).
+        return upgrade_document(data) if isinstance(data, dict) else data
 
     sections: Sections | None = None
     # The sections' order; one left out (added since it was saved) takes its
@@ -538,9 +556,9 @@ class HomepageDocument(_Strict):
     lules: Lules | None = None
     sultanpuan: SultanPuanCopy | None = None
     kumbara: KumbaraCopy | None = None
-    campaigns: Campaigns | None = None
     bento: Bento | None = None
     bento2: Bento | None = None  # "Görsel Vitrin 2": its own three boxes, edited as the first's
+    bento3: Bento | None = None  # "Görsel Vitrin 3": the same, in the campaign boxes' place
     statement: Statement | None = None  # the "promos" section
     brand_showcase: BrandShowcaseCopy | None = None
     kozlukler: ProductRowCopy | None = None
