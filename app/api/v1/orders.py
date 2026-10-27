@@ -16,7 +16,7 @@ from app.models.user import User
 from app.api.v1.payments import CARD_OFF
 from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingBreakdown, VolumeTier
 from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
-from app.services import order_sms, sms_settings
+from app.services import marketing_consent, order_sms, sms_settings
 from app.services.contact_phone import fill_missing_phone
 from app.services.delivery import check_delivery_address
 from app.services.checkout_engine import CheckoutEngine, shows_stock_count
@@ -194,12 +194,16 @@ async def checkout(
         raise HTTPException(status_code=422, detail=str(exc))
 
     # The number the order was placed with goes on an account that has none,
-    # so the next order, and an SMS reset, have it. In a session of its own:
-    # the order stands, and is answered, whatever happens to this.
+    # so the next order, and an SMS reset, have it; a ticked campaign box is
+    # recorded. In a session of its own: the order stands, and is answered,
+    # whatever happens to this.
     try:
         async with factory() as session:
             account = await session.get(User, user.id)
-            if account and await fill_missing_phone(session, account, payload.shipping_address.phone):
+            if account is not None:
+                await fill_missing_phone(session, account, payload.shipping_address.phone)
+                if payload.marketing_consent:
+                    marketing_consent.grant(account, email=True, sms=True)
                 await session.commit()
     except Exception:
         logger.exception("Order %s: the account's phone could not be filled in", order.id)

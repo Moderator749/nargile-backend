@@ -17,12 +17,14 @@ from app.models.user import (
     CustomerSegment,
     SegmentType,
     User,
+    UserRole,
 )
 from app.schemas.address import InternationalAddress, StructuredAddress
 from app.schemas.registration import RegistrationCreate
 from app.schemas.user import LoginRequest, Token, UserMe, UserRead
 from app.services.b2b_intake import application_for
 from app.services.loyalty_service import get_user_loyalty_balance
+from app.services.marketing_consent import prompt_due
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -86,6 +88,8 @@ async def register(payload: RegistrationCreate, db: AsyncSession = Depends(get_d
         segment_id=retail_id,
         marketing_email_consent_at=consented_at,
         marketing_sms_consent_at=consented_at,
+        # The sign-up form asks, so the one-time card never has to.
+        consent_prompted_at=datetime.now(timezone.utc),
     )
     db.add(user)
     await db.flush()  # user.id for everything hanging off it
@@ -180,5 +184,8 @@ async def read_me(
         update={
             "segment_code": segment_code,
             "loyalty_balance": await get_user_loyalty_balance(db, user.id),
+            "marketing_email_consent": user.marketing_email_consent_at is not None,
+            "marketing_sms_consent": user.marketing_sms_consent_at is not None,
+            "consent_prompt_due": user.role == UserRole.CUSTOMER and prompt_due(user),
         }
     )

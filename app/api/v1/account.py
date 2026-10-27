@@ -39,6 +39,7 @@ from app.schemas.customer import AddressBookEntry, SavedAddress
 from app.schemas.invoice import CorporateInvoiceDetails
 from app.schemas.user import PasswordChange, ProfileUpdate, Token
 from app.schemas.wallet import BankAccountRead, MilestoneRead, WalletEntry, WalletLot, WalletRead
+from app.services import marketing_consent
 from app.services.contact_phone import mobile_taken
 from app.services.store_parameters import load_parameters
 from app.services.wallet import get_wallet, milestone_progress
@@ -429,12 +430,30 @@ async def set_communication_preferences(
 ):
     """Consent is dated when given; withdrawing clears it at once."""
     now = datetime.now(timezone.utc)
+    # Choosing here is an answer too: the one-time card does not ask after it.
+    user.consent_prompted_at = user.consent_prompted_at or now
     if payload.email != (user.marketing_email_consent_at is not None):
         user.marketing_email_consent_at = now if payload.email else None
     if payload.sms != (user.marketing_sms_consent_at is not None):
         user.marketing_sms_consent_at = now if payload.sms else None
     await db.commit()
     return payload
+
+
+@router.post("/me/consent-prompt", response_model=CommunicationPreferences)
+async def answer_consent_prompt(
+    payload: CommunicationPreferences,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The one-time "Kampanyalardan haberdar olun" card: the channels ticked
+    are consented to, and the card is not shown again — "Şimdi değil" sends
+    neither. Nothing already given is withdrawn here."""
+    marketing_consent.grant(user, email=payload.email, sms=payload.sms)
+    await db.commit()
+    return CommunicationPreferences(
+        email=user.marketing_email_consent_at is not None, sms=user.marketing_sms_consent_at is not None
+    )
 
 
 # ── Hesap bilgilerim ─────────────────────────────────────────────────────────

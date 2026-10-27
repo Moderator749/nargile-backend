@@ -42,6 +42,10 @@ class CheckoutRequest(BaseModel):
     # onayladım." Required to check out whenever the shop does not cover carriage;
     # ignored on price previews.
     shipping_consent: bool = False
+    # "Kampanya ve fırsatlardan e-posta ve SMS ile haberdar olmak istiyorum":
+    # unticked unless the customer ticks it. Ticked, both consents are recorded
+    # on the account once the order is placed; unticked withdraws nothing.
+    marketing_consent: bool = False
     # "Başka biri teslim alacak": both or neither. Who signs for the parcel is
     # not who ordered it, so the carrier needs a name and a number of their own.
     receiver_name: str | None = Field(default=None, max_length=150)

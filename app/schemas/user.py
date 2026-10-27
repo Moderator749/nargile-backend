@@ -26,6 +26,10 @@ class UserMe(UserRead):
 
     segment_code: SegmentType | None = None
     loyalty_balance: int = 0  # usable Sultan Puan (worth `conversion_rate` TRY each)
+    # Campaign consent on file, and whether the one-time card should ask for it.
+    marketing_email_consent: bool = False
+    marketing_sms_consent: bool = False
+    consent_prompt_due: bool = False
 
 
 class Token(BaseModel):

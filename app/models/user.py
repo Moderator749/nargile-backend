@@ -179,6 +179,11 @@ class User(Base):
     # Transactional messages (password reset, order notices) need none.
     marketing_email_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     marketing_sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When the customer was last asked for that consent (sign-up, the one-time
+    # "Kampanyalardan haberdar olun" card, checkout's box, the preferences
+    # switches): null = never asked, which is every account the old store
+    # brought over. The card is shown once, and never again after an answer.
+    consent_prompted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     # Carried in every session token ("ver"); raising it ends every session
