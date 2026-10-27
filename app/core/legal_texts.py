@@ -126,7 +126,7 @@ DEFAULT_LEGAL: dict[str, tuple[str, str]] = {
     key: (title, text_to_html(body))
     for key, (title, body) in {
         "PRIVACY_NOTICE": ("Sepet Gizlilik Bilgilendirmesi", PRIVACY_NOTICE_BODY),
-        "PRIVACY": ("Gizlilik Kuralları", PRIVACY_BODY),
+        "PRIVACY": ("KVKK Aydınlatma Metni", PRIVACY_BODY),
         "DISTANCE_SALES": ("Mesafeli Satış Sözleşmesi", DISTANCE_SALES_BODY),
         "TERMS": ("Şartlar ve Kurallar Sözleşmesi", TERMS_BODY),
         "COOKIES": ("Çerez Politikası", COOKIES_BODY),
