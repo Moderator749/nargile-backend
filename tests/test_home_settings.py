@@ -444,6 +444,49 @@ async def test_the_second_showcase_is_its_own_three_boxes(client: AsyncClient, a
         assert response.status_code == 422
 
 
+def _tiles(*kinds: str) -> list[dict]:
+    """Showcase tiles: "S" a square, "W" a wide one, "-" one switched off."""
+    return [
+        {"label": f"Kutu {i + 1}", "slug": "marpuclar", "eyebrow": "", "wide": k == "W", "enabled": k != "-"}
+        for i, k in enumerate(kinds)
+    ]
+
+
+@pytest.mark.parametrize(
+    "kinds",
+    [
+        "SSSSSSSS",  # two full rows of squares
+        "WSSSSW",  # a wide tile in each row, its flag kept
+        "SWSWS",  # 1 + 2 + 1, then 2 + 1
+        "SSSSS",  # a short last row
+        "SS-WSSS",  # a tile switched off takes no slot: the wide one still fits row 1
+    ],
+)
+async def test_the_premium_showcase_takes_up_to_two_rows_of_four(client: AsyncClient, admin_user: User, cleanup, kinds):
+    showcase = {"title": "Premium Ürün Yelpazesi", "subtitle": "", "tiles": _tiles(*kinds)}
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"showcase": showcase})
+    assert saved.status_code == 200, saved.text
+    public = (await client.get("/api/v1/home/settings")).json()["data"]["showcase"]
+    assert [t["wide"] for t in public["tiles"]] == [k == "W" for k in kinds]
+
+
+@pytest.mark.parametrize(
+    ("kinds", "says"),
+    [
+        ("SSSSSSSSS", "at most 8 items"),  # eight tiles at most, drawn or not
+        ("WSSSSWS", "9 slots"),  # a third row
+        ("WW", "Tile 2 is wide"),  # two wide tiles in one row
+        ("SSSW", "Tile 4 is wide"),  # one slot left: it would leave a hole
+        ("SSSSSSSW", "Tile 8 is wide"),
+    ],
+)
+async def test_a_showcase_that_breaks_its_rows_is_refused(client: AsyncClient, admin_user: User, cleanup, kinds, says):
+    showcase = {"title": "Premium Ürün Yelpazesi", "subtitle": "", "tiles": _tiles(*kinds)}
+    response = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"showcase": showcase})
+    assert response.status_code == 422
+    assert says in response.text
+
+
 @pytest.mark.parametrize(
     "bad",
     [

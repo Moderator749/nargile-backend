@@ -178,10 +178,38 @@ class ShowcaseTile(NavItem):
     image: Image = None
 
 
+# "Premium Ürün Yelpazesi" on a desktop: rows of four slots, two rows at most.
+SHOWCASE_COLUMNS = 4
+SHOWCASE_SLOTS = 2 * SHOWCASE_COLUMNS
+
+
 class Showcase(_Strict):
+    """The tiles fill the rows in order: one slot each, two for a wide one —
+    one wide tile to a row, and only where its row has two slots left, so a row
+    never has a hole. The same rules as the editor's (`lib/showcaseGrid.ts`)."""
+
     title: _text(80, required=True)
     subtitle: _text(240)
-    tiles: list[ShowcaseTile] = Field(max_length=24)
+    tiles: list[ShowcaseTile] = Field(max_length=SHOWCASE_SLOTS)
+
+    @model_validator(mode="after")
+    def _fits_the_grid(self) -> "Showcase":
+        row_used = slots = 0
+        row_has_wide = False
+        for number, tile in enumerate(self.tiles, start=1):
+            if not tile.enabled:  # kept in the list, not drawn: no slot
+                continue
+            if tile.wide and (row_has_wide or row_used + 2 > SHOWCASE_COLUMNS):
+                raise ValueError(f"Tile {number} is wide, but its row has no two slots left for it (one wide tile to a row)")
+            span = 2 if tile.wide else 1
+            slots += span
+            row_used += span
+            row_has_wide = row_has_wide or tile.wide
+            if row_used == SHOWCASE_COLUMNS:
+                row_used, row_has_wide = 0, False
+        if slots > SHOWCASE_SLOTS:
+            raise ValueError(f"The tiles take {slots} slots; two rows hold {SHOWCASE_SLOTS} (a wide tile takes two)")
+        return self
 
 
 class AdvantageCard(_Strict):
