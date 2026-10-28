@@ -10,7 +10,18 @@ from app.models.content import HeroSlide, PromoBox
 from app.models.user import User
 from tests.conftest import auth_header
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+def _real_png() -> bytes:
+    """A real, tiny PNG: an upload is decoded and stored as a WebP now, so magic bytes alone no longer do."""
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (4, 4), (10, 20, 30)).save(out, "PNG")
+    return out.getvalue()
+
+
+PNG = _real_png()
 TAG = "⟪test⟫"  # marks rows created here, so cleanup never touches real content
 
 
@@ -273,3 +284,22 @@ async def test_a_slide_order_must_list_every_slide_once(client: AsyncClient, adm
 async def test_reordering_slides_is_for_admins(client: AsyncClient, customer_user: User):
     resp = await client.put("/api/v1/admin/hero-slides/order", headers=auth_header(customer_user), json={"ids": [1]})
     assert resp.status_code == 403
+
+
+async def test_a_wide_slide_keeps_2560px_and_is_stored_as_webp(client: AsyncClient, admin_user: User, cleanup, tmp_path, monkeypatch):
+    """A hero slide is drawn edge to edge on a wide screen: it keeps up to 2560px (a product photo, 1800)."""
+    import io
+
+    from PIL import Image
+
+    monkeypatch.setattr(settings, "MEDIA_ROOT", tmp_path)
+    h = auth_header(admin_user)
+    row = (await client.post("/api/v1/admin/hero-slides", headers=h, json=SLIDE)).json()
+    photo = io.BytesIO()
+    Image.new("RGB", (3200, 1600), (30, 30, 30)).save(photo, "JPEG", quality=95)
+    up = await client.post(f"/api/v1/admin/hero-slides/{row['id']}/image", headers=h, files={"file": ("hero.jpg", photo.getvalue(), "image/jpeg")})
+    assert up.status_code == 200, up.text
+    [stored] = list((tmp_path / "hero-slides").iterdir())
+    assert stored.suffix == ".webp"
+    with Image.open(stored) as image:
+        assert image.size == (2560, 1280)

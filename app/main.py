@@ -4,11 +4,11 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
 from app.core.config import settings
 from app.core.database import async_session
+from app.core.media_files import MediaFiles
 from app.core.media_rewrite import LocalMediaRewriteMiddleware
 from app.core.trailing_slash import StripTrailingSlashMiddleware
 from app.services import auto_translate
@@ -100,9 +100,10 @@ app.add_middleware(
 
 app.include_router(api_router)
 
-# Uploaded media (brand logos). Only validated raster images are ever written here.
+# Uploaded media. Only validated raster images are ever written here; an
+# address to a JPEG/PNG since converted to WebP is sent on to it (MediaFiles).
 settings.MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
-app.mount("/media", StaticFiles(directory=settings.MEDIA_ROOT), name="media")
+app.mount("/media", MediaFiles(directory=settings.MEDIA_ROOT), name="media")
 
 
 @app.get("/health")

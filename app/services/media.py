@@ -36,6 +36,9 @@ class InvalidImage(ValueError):
 # bytes. A picture with transparency (a logo, a cut-out) is kept lossless: a
 # lossy encoder softens exactly the hard edges it is made of.
 MAX_SIDE = 1800
+# A hero slide, a promo box or a logo is drawn edge to edge on a wide desktop:
+# it keeps up to this before it is shrunk.
+WIDE_SIDE = 2560
 WEBP_QUALITY = 82
 
 # A file claiming more pixels than this is refused before it is decoded (a
@@ -43,13 +46,13 @@ WEBP_QUALITY = 82
 Image.MAX_IMAGE_PIXELS = 50_000_000
 
 
-def optimise_photo(data: bytes) -> bytes:
+def optimise_photo(data: bytes, max_side: int = MAX_SIDE) -> bytes:
     """Any PNG, JPEG or WebP as a WebP for the storefront.
 
     Turned upright as the camera meant it (EXIF orientation) before the EXIF
     is dropped — the GPS position, the camera, the date go with it; the colour
     profile stays, so the colours do not shift. Shrunk (never enlarged) to
-    MAX_SIDE on its longest side, keeping its proportions (Lanczos).
+    `max_side` on its longest side, keeping its proportions (Lanczos).
     """
     try:
         with warnings.catch_warnings():
@@ -63,7 +66,7 @@ def optimise_photo(data: bytes) -> bytes:
             icc = source.info.get("icc_profile")
             alpha = image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info)
             image = image.convert("RGBA" if alpha else "RGB")
-            image.thumbnail((MAX_SIDE, MAX_SIDE), Image.Resampling.LANCZOS)
+            image.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
             out = io.BytesIO()
             options: dict = {"lossless": True, "quality": 80} if alpha else {"quality": WEBP_QUALITY}
             image.save(out, "WEBP", method=6, **options, **({"icc_profile": icc} if icc else {}))
@@ -104,6 +107,7 @@ def save_image(
     max_bytes: int = MAX_IMAGE_BYTES,
     name: str | None = None,
     optimise: bool = False,
+    max_side: int = MAX_SIDE,
 ) -> str:
     """Store an image under MEDIA_ROOT/folder; returns its relative path.
 
@@ -119,7 +123,7 @@ def save_image(
         raise InvalidImage(f"Görsel en fazla {max_bytes // (1024 * 1024)} MB olabilir")
     image_extension(data)  # a PNG, JPEG or WebP, by its bytes, before anything decodes it
     if optimise:
-        data = optimise_photo(data)
+        data = optimise_photo(data, max_side)
     ext, stem = image_extension(data), file_stem(name)
     folder_path = settings.MEDIA_ROOT / folder
     folder_path.mkdir(parents=True, exist_ok=True)

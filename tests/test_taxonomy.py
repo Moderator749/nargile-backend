@@ -14,7 +14,18 @@ from app.models.user import User
 from app.schemas.taxonomy import slugify
 from tests.conftest import auth_header
 
-PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+def _real_png() -> bytes:
+    """A real, tiny PNG: an upload is decoded and stored as a WebP now, so magic bytes alone no longer do."""
+    import io
+
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (4, 4), (10, 20, 30)).save(out, "PNG")
+    return out.getvalue()
+
+
+PNG = _real_png()
 
 
 @pytest.fixture
@@ -181,7 +192,7 @@ async def test_brand_logo_upload(client: AsyncClient, admin_user: User, tag: str
     ok = await client.post(url, headers=h, files={"file": ("logo.svg", PNG, "image/svg+xml")})
     assert ok.status_code == 200, ok.text  # judged by content, not the claimed type/name
     first = ok.json()["logo_url"]
-    assert first.endswith(".png") and "/media/brands/" in first
+    assert first.endswith(".webp") and "/media/brands/" in first  # stored as a WebP, whatever was sent
     stored = list((tmp_path / "brands").iterdir())
     assert len(stored) == 1
 

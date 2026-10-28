@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile, status
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,7 @@ from app.schemas.content import (
     PromoBoxRead,
     PromoBoxWrite,
 )
-from app.services.media import MAX_IMAGE_BYTES, InvalidImage, delete_media, media_url, save_image
+from app.services.media import MAX_PRODUCT_IMAGE_BYTES, WIDE_SIDE, InvalidImage, delete_media, media_url, save_image
 
 router = APIRouter(tags=["home-content"])
 admin = APIRouter(prefix="/admin", tags=["admin-home-content"])
@@ -173,10 +174,16 @@ def _register(
         _a: User = Depends(get_current_admin_user),
         db: AsyncSession = Depends(get_db),
     ):
-        """PNG, JPEG or WebP up to 1 MB; replaces the previous upload (wins over image_url)."""
+        """PNG, JPEG or WebP up to 5 MB, stored as a WebP up to 2560px wide (it
+        is re-encoded, so a camera's file is fine); replaces the previous upload
+        (wins over image_url)."""
         row = await get_row(db, row_id)
         try:
-            stored = save_image(await file.read(MAX_IMAGE_BYTES + 1), path.strip("/"))
+            data = await file.read(MAX_PRODUCT_IMAGE_BYTES + 1)
+            # Off the event loop: re-encoding a wide photo takes the CPU for a moment.
+            stored = await run_in_threadpool(
+                save_image, data, path.strip("/"), MAX_PRODUCT_IMAGE_BYTES, optimise=True, max_side=WIDE_SIDE
+            )
         except InvalidImage as exc:
             raise HTTPException(status_code=422, detail=str(exc))
         old, row.image_path = row.image_path, stored

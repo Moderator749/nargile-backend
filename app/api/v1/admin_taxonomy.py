@@ -2,6 +2,7 @@
 mapping, and brands (with logos) for the menu and the homepage marquee."""
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, Response, UploadFile, status
+from starlette.concurrency import run_in_threadpool
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -26,7 +27,7 @@ from app.schemas.taxonomy import (
 )
 from app.services import slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
-from app.services.media import MAX_IMAGE_BYTES, InvalidImage, delete_media, save_image
+from app.services.media import MAX_IMAGE_BYTES, WIDE_SIDE, InvalidImage, delete_media, save_image
 from app.services import auto_translate
 
 router = APIRouter(prefix="/admin", tags=["admin-taxonomy"])
@@ -291,11 +292,12 @@ async def upload_brand_logo(
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """PNG, JPEG or WebP up to 1 MB; replaces any previous logo."""
+    """PNG, JPEG or WebP up to 1 MB, stored as a WebP (lossless when it has
+    transparency, as a logo usually does); replaces any previous logo."""
     brand = await _brand(db, brand_id)
     data = await file.read(MAX_IMAGE_BYTES + 1)
     try:
-        path = save_image(data, "brands")
+        path = await run_in_threadpool(save_image, data, "brands", optimise=True, max_side=WIDE_SIDE)
     except InvalidImage as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     old, brand.logo_path = brand.logo_path, path
