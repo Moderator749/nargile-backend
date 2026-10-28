@@ -12,6 +12,10 @@ from tests.conftest import auth_header
 
 @pytest.fixture
 async def cleanup(db_session: AsyncSession):
+    # From no memory at all: the migrations seed a few defaults' translations
+    # (d6a3f9b2e417), which these tests are not about.
+    await db_session.execute(delete(SiteContent).where(SiteContent.key == "homepage_i18n"))
+    await db_session.commit()
     yield
     await db_session.rollback()
     await db_session.execute(delete(SiteContent).where(SiteContent.key == "homepage_i18n"))

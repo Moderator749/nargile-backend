@@ -37,6 +37,8 @@ class AdminCustomerRead(BaseModel):
     segment: SegmentType | None
     order_count: int
     created_at: datetime
+    # A guest checkout's buyer ("Misafir"), not an account.
+    is_guest: bool = False
     # Where they are, from their invoice address: a Turkish row carries its
     # şehir and ilçe, a foreign one its country. Structured rather than
     # pre-formatted, so the grid decides how to say it.

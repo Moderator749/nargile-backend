@@ -54,6 +54,17 @@ async def get_current_user(
     return await _user_from_token(creds.credentials, db)
 
 
+async def get_account_user(user: User = Depends(get_current_user)) -> User:
+    """A signed-in account, not a guest checkout: what only an account keeps —
+    its name and number, its password, its address book, a firm's application."""
+    if user.is_guest:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Bu işlem için hesap gerekli. Siparişinizin onay sayfasından şifre belirleyerek hesabınızı oluşturabilirsiniz.",
+        )
+    return user
+
+
 async def get_optional_user(
     creds: HTTPAuthorizationCredentials | None = Depends(_optional_bearer),
     db: AsyncSession = Depends(get_db),

@@ -147,7 +147,10 @@ class User(Base):
 
     __tablename__ = "users"
     __table_args__ = (
-        Index("ix_users_email", "email", unique=True),
+        # One account per e-mail address; a guest checkout is not an account,
+        # so any number of guest rows may carry the same address (each its own
+        # order's buyer, none able to see another's).
+        Index("ix_users_email", "email", unique=True, postgresql_where=text("NOT is_guest")),
         # Optional, so most rows are NULL; a functional index keeps "Ali" and
         # "ali" from being two accounts while allowing any number of NULLs.
         Index("uq_users_username_lower", text("lower(username)"), unique=True),
@@ -184,6 +187,11 @@ class User(Base):
     # switches): null = never asked, which is every account the old store
     # brought over. The card is shown once, and never again after an answer.
     consent_prompted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Misafir: the buyer of one guest checkout ("Üye olmadan devam et"), not an
+    # account. It cannot sign in (no usable password), is left out of every
+    # lookup by e-mail or phone, and its session is short. Setting a password
+    # on the order's confirmation turns it into an account (POST /auth/guest/claim).
+    is_guest: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     # Carried in every session token ("ver"); raising it ends every session

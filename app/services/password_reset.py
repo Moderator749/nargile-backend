@@ -42,7 +42,7 @@ async def find_by_email(db: AsyncSession, identifier: str) -> User | None:
     given = identifier.strip().lower()
     return await db.scalar(
         select(User)
-        .where((func.lower(User.email) == given) | (func.lower(User.username) == given))
+        .where((func.lower(User.email) == given) | (func.lower(User.username) == given), User.is_guest.is_(False))
         .order_by(User.created_at)
         .limit(1)
     )
@@ -55,7 +55,8 @@ async def find_by_phone(db: AsyncSession, raw: str) -> User | None:
     if number is None:
         return None
     last10 = func.right(func.regexp_replace(User.phone, r"\D", "", "g"), 10)
-    found = (await db.execute(select(User).where(last10 == number[2:]).limit(2))).scalars().all()
+    # A guest checkout is not an account to reset, nor one to tell apart from.
+    found = (await db.execute(select(User).where(last10 == number[2:], User.is_guest.is_(False)).limit(2))).scalars().all()
     return found[0] if len(found) == 1 else None
 
 

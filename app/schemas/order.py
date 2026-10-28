@@ -182,6 +182,23 @@ class OrderItemRead(BaseModel):
     line_total: Decimal
 
 
+class OrderLookup(BaseModel):
+    """What "Kargo Takip" tells someone who gives an order's number and e-mail
+    address: where the order stands and where the parcel is — nothing about
+    who ordered it or where it goes."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    order_number: str
+    status: OrderStatus
+    created_at: datetime
+    carrier_name: str | None = None
+    tracking_code: str | None = None
+    tracking_url: str | None = None
+    shipped_at: datetime | None = None
+    carrier_status_text: str | None = None
+
+
 class OrderRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

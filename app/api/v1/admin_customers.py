@@ -158,6 +158,7 @@ async def list_customers(
             segment=u.segment.code if u.segment else None,
             order_count=n,
             created_at=u.created_at,
+            is_guest=u.is_guest,
             city=city,
             district=district,
             country=country,

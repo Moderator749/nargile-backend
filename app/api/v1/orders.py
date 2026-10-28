@@ -1,10 +1,12 @@
 import logging
+import time
 import uuid
+from collections import defaultdict, deque
 from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
@@ -15,7 +17,7 @@ from app.models.order import Order, PaymentMethod
 from app.models.user import User
 from app.api.v1.payments import CARD_OFF
 from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingBreakdown, VolumeTier
-from app.schemas.order import CartItemInput, CheckoutRequest, OrderRead
+from app.schemas.order import CartItemInput, CheckoutRequest, OrderLookup, OrderRead
 from app.services import marketing_consent, order_sms, sms_settings
 from app.services.contact_phone import fill_missing_phone
 from app.services.delivery import check_delivery_address
@@ -184,7 +186,8 @@ async def checkout(
             invoice_address=(
                 payload.invoice_address.model_dump() if payload.invoice_address else None
             ),
-            save_card=payload.save_card,
+            # A guest has no account to keep a card in.
+            save_card=payload.save_card and not current_user.is_guest,
             order_note=payload.order_note,
             transport_mode=payload.transport_mode,
             distance_sales_accepted=payload.distance_sales_accepted,
@@ -232,6 +235,38 @@ async def list_orders(
         .limit(limit)
     )
     return result.scalars().all()
+
+
+# Lookups per order number per window: a number and an address are needed
+# together, and guessing either stays slow. In-process, as the login's.
+LOOKUPS, LOOKUP_WINDOW = 10, 15 * 60
+_lookups: dict[str, deque[float]] = defaultdict(deque)
+
+
+@router.get("/lookup", response_model=OrderLookup)
+async def lookup_order(
+    order_number: str = Query(min_length=6, max_length=30),
+    email: str = Query(min_length=3, max_length=255),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Kargo Takip" without signing in — what a guest has once its session is
+    over: the order with this number, if it was placed under this address."""
+    number = order_number.strip().upper()
+    now = time.monotonic()
+    tries = _lookups[number]
+    while tries and now - tries[0] > LOOKUP_WINDOW:
+        tries.popleft()
+    if len(tries) >= LOOKUPS:
+        raise HTTPException(status_code=429, detail="Çok fazla deneme. Lütfen 15 dakika sonra tekrar deneyin.")
+    tries.append(now)
+    order = await db.scalar(
+        select(Order)
+        .join(User, User.id == Order.user_id)
+        .where(func.upper(Order.order_number) == number, func.lower(User.email) == email.strip().lower())
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="Bu sipariş numarası ve e-posta ile eşleşen bir sipariş bulunamadı.")
+    return order
 
 
 @router.get("/{order_id}", response_model=OrderRead)

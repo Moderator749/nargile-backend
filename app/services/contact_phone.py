@@ -22,7 +22,11 @@ async def mobile_taken(db: AsyncSession, phone: str, user_id: uuid.UUID) -> bool
     if number is None:
         return False
     last10 = func.right(func.regexp_replace(User.phone, r"\D", "", "g"), 10)
-    return await db.scalar(select(User.id).where(last10 == number[2:], User.id != user_id).limit(1)) is not None
+    # Guests do not count: a guest checkout is not an account SMS can reset.
+    return (
+        await db.scalar(select(User.id).where(last10 == number[2:], User.id != user_id, User.is_guest.is_(False)).limit(1))
+        is not None
+    )
 
 
 async def fill_missing_phone(db: AsyncSession, user: User, phone: str | None) -> bool:

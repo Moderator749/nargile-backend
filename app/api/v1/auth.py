@@ -5,12 +5,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.security import create_session_token, hash_password, needs_rehash, verify_password
+from app.core.security import NO_PASSWORD, create_session_token, hash_password, needs_rehash, verify_password
 from app.models.user import (
+    AccountType,
     AddressKind,
     CustomerAddress,
     CustomerProfile,
@@ -21,7 +23,7 @@ from app.models.user import (
 )
 from app.schemas.address import InternationalAddress, StructuredAddress
 from app.schemas.registration import RegistrationCreate
-from app.schemas.user import LoginRequest, Token, UserMe, UserRead
+from app.schemas.user import GuestClaim, GuestStart, LoginRequest, Token, UserMe, UserRead
 from app.services.b2b_intake import application_for
 from app.services.loyalty_service import get_user_loyalty_balance
 from app.services.marketing_consent import prompt_due
@@ -58,7 +60,7 @@ def _profile(user_id: uuid.UUID, payload: RegistrationCreate) -> CustomerProfile
 async def register(payload: RegistrationCreate, db: AsyncSession = Depends(get_db)):
     """Create an account of one of the three kinds. See
     :class:`~app.schemas.registration.RegistrationCreate` for what each needs."""
-    if await db.scalar(select(User.id).where(func.lower(User.email) == payload.email)):
+    if await db.scalar(select(User.id).where(func.lower(User.email) == payload.email, User.is_guest.is_(False))):
         raise HTTPException(status_code=409, detail="Email already registered")
     if payload.username and await db.scalar(
         select(User.id).where(func.lower(User.username) == payload.username.lower())
@@ -140,7 +142,7 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
         )
     result = await db.execute(
         select(User)
-        .where(or_(func.lower(User.email) == given, func.lower(User.username) == given))
+        .where(or_(func.lower(User.email) == given, func.lower(User.username) == given), User.is_guest.is_(False))
         .order_by(User.created_at)
         .limit(1)
     )
@@ -157,6 +159,74 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
         user.hashed_password = hash_password(payload.password)
         await db.commit()
 
+    return Token(access_token=create_session_token(user))
+
+
+ACCOUNT_EXISTS = "Bu e-posta adresiyle kayıtlı bir hesabınız var. Lütfen giriş yapın."
+
+
+async def _account_with(db: AsyncSession, email: str) -> uuid.UUID | None:
+    """The account (not a guest) that already has this e-mail address."""
+    return await db.scalar(select(User.id).where(func.lower(User.email) == email.lower(), User.is_guest.is_(False)))
+
+
+@router.post("/guest", response_model=Token, status_code=status.HTTP_201_CREATED)
+async def start_guest(payload: GuestStart, db: AsyncSession = Depends(get_db)):
+    """"Üye olmadan devam et": a session for one guest checkout.
+
+    Each call is a buyer of its own — a new guest row, even for an address a
+    guest has used before — so nobody who knows an e-mail address can see
+    another guest's orders, addresses or points. An address that belongs to an
+    account is sent to sign in instead: its orders belong in that account.
+    The checkout's own box asks for campaign consent, so the one-time card
+    never does.
+    """
+    if await _account_with(db, payload.email):
+        raise HTTPException(status_code=409, detail=ACCOUNT_EXISTS)
+    retail_id = await db.scalar(select(CustomerSegment.id).where(CustomerSegment.code == SegmentType.RETAIL))
+    if retail_id is None:
+        raise HTTPException(status_code=500, detail="Default segment not configured")
+    user = User(
+        email=payload.email,
+        full_name=payload.full_name,
+        phone=payload.phone,
+        hashed_password=NO_PASSWORD,
+        is_guest=True,
+        account_type=AccountType.INDIVIDUAL,
+        segment_id=retail_id,
+        role=UserRole.CUSTOMER,
+        consent_prompted_at=datetime.now(timezone.utc),
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+    return Token(access_token=create_session_token(user))
+
+
+@router.post("/guest/claim", response_model=Token)
+async def claim_guest(
+    payload: GuestClaim,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """A guest sets a password on its order's confirmation: the guest becomes an
+    account, keeping its orders and points. Not when the address already has
+    an account — those orders are followed from the order page or by
+    "Kargo Takip". Every earlier session of the guest ends."""
+    user = await db.get(User, current_user.id)
+    if user is None or not user.is_guest:
+        raise HTTPException(status_code=409, detail="Bu oturum zaten bir hesaba ait.")
+    if await _account_with(db, user.email):
+        raise HTTPException(status_code=409, detail=ACCOUNT_EXISTS)
+    user.hashed_password = hash_password(payload.password)
+    user.is_guest = False
+    user.token_version = (user.token_version or 0) + 1
+    try:
+        await db.commit()
+    except IntegrityError:  # an account took the address a moment ago
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=ACCOUNT_EXISTS)
+    await db.refresh(user)
     return Token(access_token=create_session_token(user))
 
 
@@ -186,6 +256,6 @@ async def read_me(
             "loyalty_balance": await get_user_loyalty_balance(db, user.id),
             "marketing_email_consent": user.marketing_email_consent_at is not None,
             "marketing_sms_consent": user.marketing_sms_consent_at is not None,
-            "consent_prompt_due": user.role == UserRole.CUSTOMER and prompt_due(user),
+            "consent_prompt_due": user.role == UserRole.CUSTOMER and not user.is_guest and prompt_due(user),
         }
     )

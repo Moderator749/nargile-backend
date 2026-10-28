@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_user
+from app.api.deps import get_account_user, get_current_user
 from app.core.countries import TURKEY
 from app.core.database import get_db
 from app.core.security import (
@@ -373,7 +373,7 @@ async def my_b2b_application(user: User = Depends(get_current_user), db: AsyncSe
 
 @router.post("/me/b2b-application", response_model=B2BApplicationRead, status_code=201)
 async def apply_for_b2b(
-    payload: B2BApplicationCreate, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    payload: B2BApplicationCreate, user: User = Depends(get_account_user), db: AsyncSession = Depends(get_db)
 ):
     """Apply for B2B pricing after sign-up. One open application at a time."""
     pending = await db.scalar(
@@ -462,7 +462,7 @@ async def answer_consent_prompt(
 @router.put("/me/profile", response_model=ProfileUpdate)
 async def update_my_profile(
     payload: ProfileUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_account_user),
     db: AsyncSession = Depends(get_db),
 ):
     """The name and number the account's orders go out under.
@@ -482,7 +482,7 @@ async def update_my_profile(
 @router.post("/me/password", response_model=Token)
 async def change_my_password(
     payload: PasswordChange,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_account_user),
     db: AsyncSession = Depends(get_db),
 ):
     """A new password, given with the current one.
@@ -560,7 +560,7 @@ async def my_address_book(user: User = Depends(get_current_user), db: AsyncSessi
 @router.post("/me/address-book", response_model=AddressBookEntry, status_code=201)
 async def add_to_address_book(
     payload: AddressBookInput,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_account_user),
     db: AsyncSession = Depends(get_db),
 ):
     """A new delivery address. Only an individual keeps them: a firm's order
@@ -585,7 +585,7 @@ async def add_to_address_book(
 async def edit_address_book_entry(
     address_id: int,
     payload: AddressBookInput,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_account_user),
     db: AsyncSession = Depends(get_db),
 ):
     """A delivery address, or an individual's own invoice address. A firm's
@@ -605,7 +605,7 @@ async def edit_address_book_entry(
 @router.delete("/me/address-book/{address_id}", status_code=204)
 async def delete_address_book_entry(
     address_id: int,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_account_user),
     db: AsyncSession = Depends(get_db),
 ):
     """A delivery address only: an invoice address is what invoices are made out to."""

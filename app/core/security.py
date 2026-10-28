@@ -63,7 +63,17 @@ def _verify_opencart(plain: str, stored: str) -> bool:
     return False
 
 
+# A guest's "password": no hash at all, so nothing ever verifies against it.
+NO_PASSWORD = "!guest"
+
+# A guest's session: long enough to pay on PayTR's page, come back and follow
+# the order for a while; it is not an account to return to.
+GUEST_SESSION_DAYS = 7
+
+
 def verify_password(plain: str, hashed: str) -> bool:
+    if hashed.startswith("!"):
+        return False
     if hashed.startswith(OPENCART_PREFIX):
         return _verify_opencart(plain, hashed)
     return pwd_context.verify(plain, hashed)
@@ -71,6 +81,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def needs_rehash(hashed: str) -> bool:
     """Whether a hash that just verified should be replaced by a fresh bcrypt one."""
+    if hashed.startswith("!"):
+        return False
     return hashed.startswith(OPENCART_PREFIX) or pwd_context.needs_update(hashed)
 
 
@@ -96,9 +108,10 @@ def session_lifetime(role: str) -> timedelta:
 
 def create_session_token(user) -> str:
     """A signed-in session for `user`, stamped with its token version (see User.token_version)."""
+    guest = bool(getattr(user, "is_guest", False))
     return create_access_token(
         {"sub": str(user.id), "role": str(getattr(user.role, "value", user.role)), "ver": user.token_version or 0},
-        expires_delta=session_lifetime(user.role),
+        expires_delta=timedelta(days=GUEST_SESSION_DAYS) if guest else session_lifetime(user.role),
     )
 
 
