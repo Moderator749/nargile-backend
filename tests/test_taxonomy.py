@@ -235,7 +235,14 @@ async def test_uploads_are_addressed_through_public_media_url(
     logo = await client.post(f"/api/v1/admin/brands/{brand['id']}/logo", headers=h, files={"file": ("l.png", PNG, "image/png")})
     assert logo.json()["logo_url"].startswith("https://shop.example/api/backend/media/brands/")
 
-    [upload] = (await client.post("/api/v1/admin/uploads", headers=h, files={"files": ("p.png", PNG, "image/png")})).json()
+    # /admin/uploads decodes what it stores (a WebP made of it): a real image, not magic bytes.
+    import io
+
+    from PIL import Image
+
+    photo = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(photo, "PNG")
+    [upload] = (await client.post("/api/v1/admin/uploads", headers=h, files={"files": ("p.png", photo.getvalue(), "image/png")})).json()
     assert upload["url"] == f"https://shop.example/api/backend/media/{upload['path']}"
 
 

@@ -4,9 +4,11 @@
 "<slug>-<8 hex>.<ext>" — the words image search reads, a hash so two photos of
 one product never meet — and the URL a form saves points at that file. The
 client's filename ("WhatsApp Image….jpeg", "IMG_9912.png") is never used, and
-the extension is the content's, not the filename's.
+the extension is the content's, not the filename's — and an upload is always
+stored as a WebP (tests/test_image_optimise.py).
 """
 
+import io
 import re
 
 import pytest
@@ -20,6 +22,15 @@ from tests.conftest import auth_header
 PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
 JPEG = b"\xff\xd8\xff" + b"\x00" * 64
 WEBP = b"RIFF\x00\x00\x00\x00WEBP" + b"\x00" * 64
+
+
+def _photo(fmt: str) -> bytes:
+    """A real, tiny image in `fmt`: an upload is decoded now, so magic bytes alone no longer do."""
+    from PIL import Image
+
+    out = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 30, 30)).save(out, fmt)
+    return out.getvalue()
 
 
 async def _upload(client: AsyncClient, admin: User, files, name: str | None = None) -> list[dict]:
@@ -48,11 +59,11 @@ async def test_a_product_photo_is_named_for_the_product(
     client: AsyncClient, admin_user: User, tmp_path, monkeypatch, name, stem
 ):
     monkeypatch.setattr(settings, "MEDIA_ROOT", tmp_path)
-    [saved] = await _upload(client, admin_user, [("WhatsApp Image 2026-10-26 at 14.02.11.jpeg", PNG, "image/jpeg")], name)
+    [saved] = await _upload(client, admin_user, [("WhatsApp Image 2026-10-26 at 14.02.11.jpeg", _photo("PNG"), "image/jpeg")], name)
 
-    assert re.fullmatch(rf"products/{re.escape(stem)}-[0-9a-f]{{8}}\.png", saved["path"]), saved["path"]
+    assert re.fullmatch(rf"products/{re.escape(stem)}-[0-9a-f]{{8}}\.webp", saved["path"]), saved["path"]
     assert saved["url"].endswith(f"/{saved['path']}")
-    assert (tmp_path / saved["path"]).read_bytes() == PNG
+    assert media.image_extension((tmp_path / saved["path"]).read_bytes()) == ".webp"
     assert [p.name for p in (tmp_path / "products").iterdir()] == [saved["path"].removeprefix("products/")]
 
 
@@ -60,13 +71,13 @@ async def test_photos_of_one_product_each_get_their_own_file(client: AsyncClient
     monkeypatch.setattr(settings, "MEDIA_ROOT", tmp_path)
     saved = await _upload(
         client, admin_user,
-        [("IMG_9912.png", PNG, "image/png"), ("IMG_9912.png", JPEG, "image/png"), ("x.gif", WEBP, "image/gif")],
+        [("IMG_9912.png", _photo("PNG"), "image/png"), ("IMG_9912.png", _photo("JPEG"), "image/png"), ("x.gif", _photo("WEBP"), "image/gif")],
         "sultan-nargile",
     )
     paths = [s["path"] for s in saved]
     assert len(set(paths)) == 3
-    # In the order given, each with its content's extension.
-    assert [p.rsplit(".", 1)[1] for p in paths] == ["png", "jpg", "webp"]
+    # In the order given, each stored as a WebP whatever it came as.
+    assert [p.rsplit(".", 1)[1] for p in paths] == ["webp", "webp", "webp"]
     assert all(p.startswith("products/sultan-nargile-") and "IMG" not in p for p in paths)
 
 
@@ -85,12 +96,12 @@ async def test_without_a_name_the_file_is_random_not_the_clients(
     client: AsyncClient, admin_user: User, tmp_path, monkeypatch, name
 ):
     monkeypatch.setattr(settings, "MEDIA_ROOT", tmp_path)
-    [saved] = await _upload(client, admin_user, [("WhatsApp_Image.jpg", PNG, "image/jpeg")], name)
-    assert re.fullmatch(r"products/[0-9a-f]{32}\.png", saved["path"]), saved["path"]
+    [saved] = await _upload(client, admin_user, [("WhatsApp_Image.jpg", _photo("JPEG"), "image/jpeg")], name)
+    assert re.fullmatch(r"products/[0-9a-f]{32}\.webp", saved["path"]), saved["path"]
 
 
 async def test_a_long_name_is_cut_short(client: AsyncClient, admin_user: User, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "MEDIA_ROOT", tmp_path)
-    [saved] = await _upload(client, admin_user, [("p.png", PNG, "image/png")], "nargile-" * 30)
+    [saved] = await _upload(client, admin_user, [("p.png", _photo("PNG"), "image/png")], "nargile-" * 30)
     stem = saved["path"].removeprefix("products/").rsplit("-", 1)[0]
     assert len(stem) <= media.MAX_NAME_CHARS and not stem.endswith("-")

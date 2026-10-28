@@ -1,8 +1,11 @@
 """Uploaded image storage under MEDIA_ROOT, served at /media."""
 
+import io
 import secrets
 import uuid
+import warnings
 
+from PIL import Image, ImageOps
 from starlette.requests import Request
 
 from app.core.config import settings
@@ -25,6 +28,50 @@ _SIGNATURES = (
 
 class InvalidImage(ValueError):
     pass
+
+
+# Photos as the storefront shows them: the longest side at most this (a
+# product page's gallery is at most ~900px wide, so this is its retina size),
+# and WebP at this quality — a photograph's detail kept, a third of a JPEG's
+# bytes. A picture with transparency (a logo, a cut-out) is kept lossless: a
+# lossy encoder softens exactly the hard edges it is made of.
+MAX_SIDE = 1800
+WEBP_QUALITY = 82
+
+# A file claiming more pixels than this is refused before it is decoded (a
+# "decompression bomb": a few kilobytes that unpack to gigabytes).
+Image.MAX_IMAGE_PIXELS = 50_000_000
+
+
+def optimise_photo(data: bytes) -> bytes:
+    """Any PNG, JPEG or WebP as a WebP for the storefront.
+
+    Turned upright as the camera meant it (EXIF orientation) before the EXIF
+    is dropped — the GPS position, the camera, the date go with it; the colour
+    profile stays, so the colours do not shift. Shrunk (never enlarged) to
+    MAX_SIDE on its longest side, keeping its proportions (Lanczos).
+    """
+    try:
+        with warnings.catch_warnings():
+            # Past MAX_IMAGE_PIXELS Pillow only warns (it refuses at twice that): refuse there.
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            source = Image.open(io.BytesIO(data))
+            source.load()
+        with source:
+            source.seek(0)  # an animated file: its first frame
+            image = ImageOps.exif_transpose(source)
+            icc = source.info.get("icc_profile")
+            alpha = image.mode in ("RGBA", "LA", "PA") or (image.mode == "P" and "transparency" in image.info)
+            image = image.convert("RGBA" if alpha else "RGB")
+            image.thumbnail((MAX_SIDE, MAX_SIDE), Image.Resampling.LANCZOS)
+            out = io.BytesIO()
+            options: dict = {"lossless": True, "quality": 80} if alpha else {"quality": WEBP_QUALITY}
+            image.save(out, "WEBP", method=6, **options, **({"icc_profile": icc} if icc else {}))
+            return out.getvalue()
+    except (Image.DecompressionBombError, Image.DecompressionBombWarning):
+        raise InvalidImage("Görselin çözünürlüğü çok yüksek") from None
+    except (OSError, ValueError, SyntaxError):
+        raise InvalidImage("Görsel okunamadı") from None
 
 
 def image_extension(data: bytes) -> str:
@@ -51,17 +98,28 @@ def file_stem(name: str | None) -> str | None:
     return stem or None
 
 
-def save_image(data: bytes, folder: str, max_bytes: int = MAX_IMAGE_BYTES, name: str | None = None) -> str:
+def save_image(
+    data: bytes,
+    folder: str,
+    max_bytes: int = MAX_IMAGE_BYTES,
+    name: str | None = None,
+    optimise: bool = False,
+) -> str:
     """Store an image under MEDIA_ROOT/folder; returns its relative path.
 
     Never under the client's filename (WhatsApp_Image.jpg, IMG_9912.png): with
     a `name` (a product's slug) the file is "<name>-<8 hex>.<ext>", which image
     search reads; without one, a random name. The extension is the content's.
+    With `optimise`, the file stored is the photo as a WebP (optimise_photo),
+    whatever was sent; `max_bytes` holds for what was sent.
     """
     if not data:
         raise InvalidImage("Empty file")
     if len(data) > max_bytes:
         raise InvalidImage(f"Görsel en fazla {max_bytes // (1024 * 1024)} MB olabilir")
+    image_extension(data)  # a PNG, JPEG or WebP, by its bytes, before anything decodes it
+    if optimise:
+        data = optimise_photo(data)
     ext, stem = image_extension(data), file_stem(name)
     folder_path = settings.MEDIA_ROOT / folder
     folder_path.mkdir(parents=True, exist_ok=True)

@@ -9,6 +9,7 @@ absolute URL a form can save straight into its record.
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_current_admin_user
 from app.models.user import User
@@ -35,7 +36,8 @@ async def upload_images(
     _admin: User = Depends(get_current_admin_user),
 ):
     """PNG, JPEG or WebP up to 5 MB each; several at once, order preserved,
-    each named "<name>-<hash>" (a random name without `name`)."""
+    each named "<name>-<hash>" (a random name without `name`). Each is stored
+    as a WebP, at most 1800px on its longest side, without its EXIF."""
     if len(files) > MAX_FILES_PER_REQUEST:
         raise HTTPException(status_code=422, detail=f"En fazla {MAX_FILES_PER_REQUEST} görsel yükleyebilirsiniz")
 
@@ -43,7 +45,10 @@ async def upload_images(
     for file in files:
         data = await file.read(MAX_PRODUCT_IMAGE_BYTES + 1)
         try:
-            path = save_image(data, "products", MAX_PRODUCT_IMAGE_BYTES, name=name)
+            # Decoding and encoding a photo takes the CPU for a moment (up to a
+            # second for a large one): off the event loop, so the shop keeps
+            # answering its visitors while the admin uploads a dozen.
+            path = await run_in_threadpool(save_image, data, "products", MAX_PRODUCT_IMAGE_BYTES, name=name, optimise=True)
         except InvalidImage as exc:
             name = (file.filename or "görsel").rsplit("/", 1)[-1][:60]
             raise HTTPException(status_code=422, detail=f"{name}: {exc}") from None
