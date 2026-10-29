@@ -115,7 +115,7 @@ def low(text: str) -> str:
 
 
 # Sets sold under their line's name, not "takımı" (Mr.Wood Artemis: confirmed a set).
-SET_LINES = ("meduse experience", "alpha hookah model", "mattpear mini slim", "mr.wood classic artemis")
+SET_LINES = ("meduse experience", "alpha hookah model", "mattpear mini slim", "mr.wood classic artemis", "wd hookah ")
 
 
 def is_set(name: str, shelves: set[str]) -> bool:
@@ -135,7 +135,7 @@ RULES = [
     (r"kullan at", "kullan-at-marpuclar"),
     (r"bez bant", "bez-bantlar"),
     (r"sipsi", None),
-    (r"^nargile çantası", "nargile-cantalari"),
+    (r"nargile çantası", "nargile-cantalari"),
     (r"ızgara", "izgaralar"),
     (r"brülör", "brulorler"),
     (r"köz tavası|holder|^baca", "koz-tavalari-ve-bacalari"),
@@ -166,16 +166,18 @@ RULES = [
     (r"lüle|bowl|phunnel", "luleler"),
     (r"şişe", "siseler"),
 ]
-# Parts with no shelf of their own in the tree: on the Aksesuarlar group itself.
-TO_GROUP = {"quasar led base": "aksesuarlar", "quasar tripod ayak": "aksesuarlar"}
+# Kinds with no shelf of their own in the tree (a set's stand or base, mats,
+# molasses catchers): on the Aksesuarlar group itself.
+TO_GROUP = [(r"^quasar (led base|tripod ayak)$|nargile matı|şerbetlik", "aksesuarlar")]
 
 
 def shelf_for(name: str, shelves: set[str], leaves: set[str]) -> str | None:
     n = low(name)
     if "bitkisel-urunler" in shelves:
         return "bitkisel-urunler"
-    if n.strip() in TO_GROUP:
-        return TO_GROUP[n.strip()]
+    for pattern, slug in TO_GROUP:
+        if re.search(pattern, n.strip()):
+            return slug
     for pattern, slug in RULES:
         if re.search(pattern, n):
             if slug is None:
@@ -243,6 +245,9 @@ async def run(dry_run: bool) -> None:
             else:
                 shelf = shelf_for(product.name, shelves, leaves)
                 if shelf is None:
+                    # Left where it is, unless that is a set shelf: those hold sets only.
+                    if shelves & SET_SHELVES:
+                        raise SystemExit(f"Refusing: {product.name} is not a set and has no shelf to go to")
                     report["unplaced"].append({"id": str(product.id), "name": product.name, "shelves": before})
                     continue
                 after = [shelf, *[s for s in kept if s != shelf]]
