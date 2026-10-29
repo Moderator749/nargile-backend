@@ -14,7 +14,8 @@ product on the one shelf its kind belongs on.
 - "Nargile Malzemeleri" (malzemeler) stays outside the tree, as the top
   menu's page: its products keep it as a second listing. Fırsat Ürünler
   (kampanyalar) is the shop's hand-picked list and is kept as listed.
-- The test shelves "ayakkabı" and "çorap" (empty) are deleted.
+- The test shelves "ayakkabı" and "çorap" (empty) are deleted; a new shelf
+  nothing goes on is created switched off.
 
     .venv/bin/python scripts/apply_category_taxonomy.py --dry-run   # show, write nothing
     .venv/bin/python scripts/apply_category_taxonomy.py             # write (pg_dump first)
@@ -275,7 +276,19 @@ async def run(dry_run: bool) -> None:
             if set(row["after"]) & SET_SHELVES and not is_set(row["name"], set(row["before"])):
                 raise SystemExit(f"Refusing: {row['name']} would stay on a set shelf")
 
-        # 4. The empty test shelves.
+        # 4. A new shelf nothing went on (Çakmaklar, for now) waits switched
+        # off: no empty page, and it is there for the panel to turn on.
+        report["hidden"] = []
+        for slug in report["created"]:
+            category = cats[slug]
+            if category.parent_id is None:
+                continue
+            listed_here = await db.scalar(select(ProductCategory.product_id).where(ProductCategory.category_id == category.id).limit(1))
+            if listed_here is None:
+                category.is_active = False
+                report["hidden"].append(slug)
+
+        # 5. The empty test shelves.
         for slug in DELETED:
             category = cats.get(slug)
             if category is None:
@@ -289,7 +302,7 @@ async def run(dry_run: bool) -> None:
             report["deleted"].append(slug)
 
         moves = Counter((tuple(r["before"]), tuple(r["after"])) for r in report["products"])
-        print(f"categories created: {len(report['created'])}, moved/reordered: {len(report['moved'])}, deleted: {report['deleted']}")
+        print(f"categories created: {len(report['created'])}, moved/reordered: {len(report['moved'])}, deleted: {report['deleted']}, hidden (empty): {report['hidden']}")
         print(f"products changed: {len(report['products'])} of {len(products)}; unplaced (left as they were): {len(report['unplaced'])}")
         for (before, after), n in moves.most_common():
             print(f"  {n:4d}  {', '.join(before) or '-'}  ->  {', '.join(after)}")
