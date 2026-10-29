@@ -7,7 +7,7 @@ from httpx import AsyncClient
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.slugs import PRODUCT_SLUG, product_slug_base
+from app.core.slugs import PRODUCT_SLUG, RESERVED_ROOT_PATHS, product_slug_base
 from app.models.catalog import Product
 
 
@@ -61,6 +61,19 @@ async def test_a_clash_still_gets_a_failsafe_suffix(db_session: AsyncSession):
         assert [r.slug for r in rows] == [f"dup-{suffix}-ayni-urun", f"dup-{suffix}-ayni-urun-2"]
     finally:
         await db_session.execute(delete(Product).where(Product.id.in_([r.id for r in rows])))
+        await db_session.commit()
+
+
+async def test_a_product_never_gets_one_of_the_storefronts_root_addresses(db_session: AsyncSession):
+    """A product's page is /<slug>, beside /blog, /cart and the old store's redirects."""
+    assert {"blog", "cart", "catalog", "product", "oduman", "siseler"} <= RESERVED_ROOT_PATHS
+    product = Product(base_code="", name="Blog", tags=[])
+    db_session.add(product)
+    await db_session.commit()
+    try:
+        assert product.slug == "blog-2"
+    finally:
+        await db_session.execute(delete(Product).where(Product.id == product.id))
         await db_session.commit()
 
 
@@ -142,6 +155,11 @@ async def test_product_sheet_edits_the_slug(client: AsyncClient, db_session: Asy
             json={**other, "slug": f"yeni-adres-{suffix}"},
         )
         assert clash.status_code == 422 and "kullanılıyor" in clash.json()["detail"]
+        # Nor one of the shop's own pages at the root: the product would be /cart.
+        page = await client.put(
+            f"/api/v1/admin/products/{other['id']}/sheet", headers=auth_header(admin_user), json={**other, "slug": "cart"}
+        )
+        assert page.status_code == 422 and "sitenin kendi sayfalarından" in page.text
     finally:
         from app.services.product_blueprint import delete_product
 

@@ -24,7 +24,7 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, object_session, relationship
 
 from app.core.database import Base
-from app.core.slugs import PRODUCT_SLUG_MAX, product_slug_base
+from app.core.slugs import PRODUCT_SLUG_MAX, RESERVED_ROOT_PATHS, product_slug_base
 
 
 class CurrencyType(str, enum.Enum):
@@ -429,7 +429,8 @@ def _give_product_a_slug(mapper, connection, target: Product) -> None:
         ).scalars()
     ) | pending
     slug, n = base, 2
-    while slug in taken:
+    # One of the storefront's own root addresses counts as taken (/blog → "blog-2").
+    while slug in taken or slug in RESERVED_ROOT_PATHS:
         slug, n = f"{base}-{n}", n + 1
     pending.add(slug)
     target.slug = slug

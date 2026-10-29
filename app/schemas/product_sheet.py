@@ -22,7 +22,7 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.rich_text import RICH_TEXT_MAX, to_rich_html
-from app.core.slugs import PRODUCT_SLUG, PRODUCT_SLUG_MAX
+from app.core.slugs import PRODUCT_SLUG, PRODUCT_SLUG_MAX, RESERVED_ROOT_PATHS
 from app.models.catalog import CurrencyType
 from app.models.user import SegmentType
 from app.schemas.catalog import IMAGE_URL_PATTERN
@@ -308,6 +308,9 @@ class ProductSheetWrite(BaseModel):
             return None
         if not PRODUCT_SLUG.match(slug):
             raise ValueError("Adres yalnızca küçük harf, rakam, tire ve nokta içerebilir (ör. sultan-nargile-takimi)")
+        if slug in RESERVED_ROOT_PATHS:
+            # The page is /<slug>, beside the shop's own pages.
+            raise ValueError("Bu adres sitenin kendi sayfalarından birine ait; başka bir adres yazın")
         return slug
 
     @field_validator("description")
