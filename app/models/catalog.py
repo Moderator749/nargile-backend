@@ -1,4 +1,5 @@
 import enum
+from typing import TYPE_CHECKING
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -18,12 +19,15 @@ from sqlalchemy import (
 )
 from sqlalchemy import false as sa_false
 from sqlalchemy import func
-from sqlalchemy import event, select
+from sqlalchemy import event, inspect, or_, select
 from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, object_session, relationship
 
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.brand import Brand
 from app.core.slugs import PRODUCT_SLUG_MAX, RESERVED_ROOT_PATHS, product_slug_base
 
 
@@ -98,7 +102,11 @@ class Product(Base):
     # own address for an imported product — and never changed by a rename, so a
     # link once shared or indexed keeps working.
     slug: Mapped[str] = mapped_column(String(PRODUCT_SLUG_MAX), nullable=False)
+    # The maker's name as words (search, the product page), kept as its Brand
+    # row's name; `brand_id` is the product's brand (written from the name by
+    # _link_product_brand, so every writer that sets the name links it).
     brand: Mapped[str | None] = mapped_column(String(100))
+    brand_id: Mapped[int | None] = mapped_column(ForeignKey("brands.id", ondelete="SET NULL"), index=True)
     # "Açıklama ve SEO" on the product sheet. `description` is the storefront's
     # own copy; the two meta fields override the page's <title>/<meta
     # description>, which otherwise fall back to the name and the description.
@@ -187,6 +195,12 @@ class Product(Base):
     # page's breadcrumb shows. Membership is this *and* `category_links` (see
     # services/categories.products_in) — a product can sit in several.
     category: Mapped[Category | None] = relationship(back_populates="products")
+    # Loaded with the product, for its slug in every read (CatalogProductRead.brand_slug).
+    brand_row: Mapped["Brand | None"] = relationship(lazy="selectin")
+
+    @property
+    def brand_slug(self) -> str | None:
+        return self.brand_row.slug if self.brand_row is not None else None
     category_links: Mapped[list["ProductCategory"]] = relationship(
         order_by="ProductCategory.position",
         cascade="all, delete-orphan",
@@ -428,10 +442,10 @@ def _give_product_a_slug(mapper, connection, target: Product) -> None:
             select(Product.slug).where((Product.slug == base) | Product.slug.like(f"{base}-%"))
         ).scalars()
     ) | pending
-    # Categories share the storefront's root (/<slug>) with products: theirs are taken too.
-    from app.services.root_slugs import category_slugs_like
+    # Categories and brands share the storefront's root (/<slug>) with products: theirs are taken too.
+    from app.services.root_slugs import others_like
 
-    taken |= set(connection.execute(category_slugs_like(base)).scalars())
+    taken |= set(connection.execute(others_like(base)).scalars())
     slug, n = base, 2
     # One of the storefront's own root addresses counts as taken (/blog → "blog-2").
     while slug in taken or slug in RESERVED_ROOT_PATHS:
@@ -443,3 +457,38 @@ def _give_product_a_slug(mapper, connection, target: Product) -> None:
 @event.listens_for(Session, "after_flush")
 def _forget_pending_slugs(session, flush_context) -> None:
     session.info.pop(_PENDING_SLUGS, None)
+
+
+# ── Product brands ────────────────────────────────────────────────────────────
+
+
+@event.listens_for(Product, "before_insert")
+@event.listens_for(Product, "before_update")
+def _link_product_brand(mapper, connection, target: Product) -> None:
+    """The brand row the product's brand name names (its name, search term or
+    slug, case aside; "Sultan" being Sultan Nargile's), and the name written as
+    the brand's own. A name no brand has leaves the product without one."""
+    state = inspect(target)
+    if state.persistent and not state.attrs.brand.history.has_changes():
+        return
+    name = (target.brand or "").strip()
+    if not name:
+        target.brand, target.brand_id = None, None
+        return
+    from app.models.brand import Brand
+
+    folded = name.lower()
+    row = connection.execute(
+        select(Brand.id, Brand.name).where(
+            or_(
+                func.lower(Brand.name) == folded,
+                func.lower(Brand.search_term) == folded,
+                Brand.slug == folded,
+                (Brand.slug == "sultan") if folded == "sultan" else sa_false(),
+            )
+        ).limit(1)
+    ).first()
+    if row is None:
+        target.brand_id = None
+        return
+    target.brand_id, target.brand = row.id, row.name

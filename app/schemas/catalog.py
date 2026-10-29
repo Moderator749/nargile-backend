@@ -42,11 +42,13 @@ class ProductRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    # The page's address, /product/<slug> (GET /products/<slug> reads it too).
+    # The page's address, /<slug> at the storefront's root (GET /products/<slug> reads it too).
     slug: str
     base_code: str
     name: str
     brand: str | None
+    # The brand's own page, /<brand_slug>; null for a product without a brand.
+    brand_slug: str | None = None
     description: str | None
     # "Açıklama ve SEO": overrides for the product page's title and description;
     # null falls back to the name and the description.

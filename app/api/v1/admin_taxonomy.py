@@ -208,6 +208,11 @@ async def _apply_brand(db: AsyncSession, brand: Brand, payload: BrandWrite) -> N
     clash = await db.scalar(select(Brand.id).where(Brand.slug == slug, Brand.id != brand.id))
     if clash is not None:
         raise HTTPException(status_code=409, detail=f"Slug '{slug}' is already used")
+    if slug != brand.slug:
+        # Its page is /<slug>, beside products and categories.
+        shared = await root_slugs.taken_by(db, "brand", slug)
+        if shared:
+            raise HTTPException(status_code=409, detail=shared)
     brand.name = payload.name
     brand.slug = slug
     brand.search_term = (payload.search_term or "").strip() or payload.name

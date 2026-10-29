@@ -55,3 +55,38 @@ def test_content_links_move_to_the_root():
                  "https://example.com/catalog/x"):
         assert rewrite(kept) == kept
     assert rewrite_value({"top": [{"href": "/catalog/oduman"}]}) == {"top": [{"href": "/oduman"}]}
+
+
+async def test_a_brand_is_one_more_kind_in_the_root(client: AsyncClient, admin_user, db_session: AsyncSession):
+    from app.models.brand import Brand
+
+    suffix = uuid.uuid4().hex[:6]
+    category = Category(name=f"Kat {suffix}", slug=f"kat-{suffix}")
+    db_session.add(category)
+    await db_session.commit()
+    brand = None
+    try:
+        resp = await client.post(
+            "/api/v1/admin/brands", headers=auth_header(admin_user), json={"name": "Deneme", "slug": f"kat-{suffix}"}
+        )
+        assert resp.status_code == 409 and "bir kategorinin" in resp.json()["detail"]
+        resp = await client.post(
+            "/api/v1/admin/brands", headers=auth_header(admin_user), json={"name": f"Mk {suffix}", "slug": f"mk-{suffix}"}
+        )
+        assert resp.status_code in (200, 201), resp.text
+        brand = await db_session.get(Brand, resp.json()["id"])
+        # A product named after it gets past its slug, and is linked to it by its brand name.
+        product = Product(base_code="", name=f"Mk {suffix}", brand=f"MK {suffix}".lower(), tags=[])
+        db_session.add(product)
+        await db_session.commit()
+        assert product.slug == f"mk-{suffix}-2"
+        assert product.brand_id == brand.id and product.brand == f"Mk {suffix}"
+        listed = await client.get(f"/api/v1/products?brand=mk-{suffix}")
+        assert [p["id"] for p in listed.json()] == [] or all(p["brand_slug"] == f"mk-{suffix}" for p in listed.json())
+        await db_session.execute(delete(Product).where(Product.id == product.id))
+        await db_session.commit()
+    finally:
+        if brand is not None:
+            await db_session.delete(brand)
+        await db_session.execute(delete(Category).where(Category.id == category.id))
+        await db_session.commit()

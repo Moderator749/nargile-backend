@@ -103,12 +103,21 @@ def brand_in_name(name: str, terms: list[tuple[re.Pattern[str], str]]) -> str | 
 SUGGESTED_PRODUCTS = 6
 SUGGESTED_CATEGORIES = 4
 
+#: The group of complete sets, listed first on a brand's page.
+SETS_CATEGORY = "nargile-takimlari"
+
 #: `lang` on the storefront's reads: the answer in English or Arabic (app.services.localize).
 LANG = Query(None, description="en | ar — the product text in that language; Turkish when absent")
 
 
 def apply_catalog_filters(
-    stmt, *, category: str | None, q: str | None, published_only: bool = False, lang: str | None = None
+    stmt,
+    *,
+    category: str | None,
+    q: str | None,
+    published_only: bool = False,
+    lang: str | None = None,
+    brand: str | None = None,
 ):
     """Filter by category slug (a parent includes its subcategories) and
     Turkish-aware free-text search — in English or Arabic too, with `lang`, so
@@ -121,6 +130,9 @@ def apply_catalog_filters(
         stmt = stmt.where(Product.is_published.is_(True))
     if category:
         stmt = stmt.where(Product.id.in_(products_in(category_subtree(category))))
+    if brand:
+        # A brand's page (/<brand-slug>): its products, by the brand they belong to.
+        stmt = stmt.where(Product.brand_id == select(Brand.id).where(Brand.slug == brand).scalar_subquery())
     if q and q.strip():
         pattern = f"%{_escape_like(_fold_tr(q.strip()))}%"
         # A category's name finds what is filed under it: "lule" lists the Lüleler.
@@ -276,6 +288,7 @@ async def list_products(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=100),
     category: str | None = Query(None, max_length=180, description="Category slug"),
+    brand: str | None = Query(None, max_length=100, description="Brand slug: that brand's products"),
     q: str | None = Query(None, max_length=100, description="Search name, brand or code"),
     ids: list[uuid.UUID] | None = Query(None, max_length=100, description="Only these products"),
     sort: Literal["name", "newest"] = Query("name", description="By name, or the newest first"),
@@ -289,7 +302,7 @@ async def list_products(
     "Benzer Ürünler", re-priced for a signed-in viewer). `sort=newest` is the
     homepage's "Yeni Gelenler": the latest added first — the imported catalog
     shares one creation time, so among those it falls back on the name."""
-    stmt = apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang)
+    stmt = apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang, brand=brand)
     if ids:
         stmt = stmt.where(Product.id.in_(ids))
     order = (Product.name, Product.id)
@@ -299,6 +312,10 @@ async def list_products(
     if sort == "newest":
         order = (Product.created_at.desc(), *order)
         buyable = None
+    elif brand and not category:
+        # A brand's page: its nargile sets first, then the rest of what it makes.
+        sets = Product.id.in_(products_in(category_subtree(SETS_CATEGORY)))
+        order = (sets.desc(), *order)
     elif category:
         # A category page in its own order ("Önerilen"): the products the
         # admin ranked for this very category first, the rest by name.
@@ -352,6 +369,7 @@ async def _live_variants(db: AsyncSession, ids) -> list[ProductVariant]:
 @router.get("/summary", response_model=CatalogSummary)
 async def catalog_summary(
     category: str | None = Query(None, max_length=180, description="Category slug"),
+    brand: str | None = Query(None, max_length=100, description="Brand slug: that brand's products"),
     q: str | None = Query(None, max_length=100, description="Search name, brand or code"),
     lang: Locale | None = LANG,
     user: User | None = Depends(get_optional_user),
@@ -364,7 +382,7 @@ async def catalog_summary(
     caller's own, else the retail one; in TRY."""
     products = (
         await db.execute(
-            apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang).options(
+            apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang, brand=brand).options(
                 *_VARIANT_LOADS
             )
         )
