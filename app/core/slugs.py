@@ -18,8 +18,8 @@ PRODUCT_SLUG_MAX = 255
 # pages are ROOT_ROUTES in its src/lib/rootRoutes.ts; the old addresses are
 # the root redirects of its next.config.ts (LEGACY_PAGES, RETIRED_CATEGORIES)
 # and src/lib/legacy/categories.ts. A page or redirect added there is added
-# here. An old address that is a live category's slug now (/siseler, /oduman)
-# is that category's page, not a redirect, and is not listed.
+# here. An old address that is a live category's or brand's slug now
+# (/siseler, /oduman, /wd-hookah) is that page, not a redirect, and is not listed.
 STOREFRONT_PAGES = frozenset({
     "en", "ar", "tr", "api", "_next", "_", "account", "admin", "bilgi", "blog", "cart", "catalog", "checkout",
     "firsat-urunleri", "fiyat-katalogu", "images", "kargo-takip", "login", "magazalar", "marka", "onizleme", "orders",
@@ -34,7 +34,7 @@ OLD_ROOT_ADDRESSES = frozenset({
     "nargile-siseleri", "nargile-komuru", "nargile-lule-cesitleri", "nargile-marpuclari", "plastik-ve-ozel-sipsiler",
     "nargile-malzemeleri-ve-aksesuarlari", "okey-tavla-ve-iskambil-kartlari", "nargile-tutunu-markalari-ve-cesitleri",
     "wd-hookah-nargile-takimlari", "diger", "nargile-serleri", "nargile-malzemeleri", "rus-nargile-takimlari",
-    "celik-nargile-takimlari", "lule-ve-lule-basliklari", "mr.wood", "legend-hookah", "oyun-aletleri", "wd-hookah",
+    "celik-nargile-takimlari", "lule-ve-lule-basliklari", "mr.wood", "legend-hookah", "oyun-aletleri",
     "sultan-nargile-takimlari", "masaustu-nargile-takimi", "teslimat-ve-kargolama-bilgileri", "sartlar-ve-kosullar",
     "sikca-sorulan-sorular", "hakkimizda", "gizlilik-sozlesmesi", "ithal-nargile", "legend-hookah-nargile",
     "sultan-nargile",
