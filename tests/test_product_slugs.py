@@ -66,7 +66,9 @@ async def test_a_clash_still_gets_a_failsafe_suffix(db_session: AsyncSession):
 
 async def test_a_product_never_gets_one_of_the_storefronts_root_addresses(db_session: AsyncSession):
     """A product's page is /<slug>, beside /blog, /cart and the old store's redirects."""
-    assert {"blog", "cart", "catalog", "product", "oduman", "siseler"} <= RESERVED_ROOT_PATHS
+    assert {"blog", "cart", "catalog", "product", "diger", "nargile-siseleri"} <= RESERVED_ROOT_PATHS
+    # A live category's slug is its page, guarded by root_slugs, not a reserved word.
+    assert not {"siseler", "oduman"} & RESERVED_ROOT_PATHS
     product = Product(base_code="", name="Blog", tags=[])
     db_session.add(product)
     await db_session.commit()

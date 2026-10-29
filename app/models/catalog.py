@@ -428,6 +428,10 @@ def _give_product_a_slug(mapper, connection, target: Product) -> None:
             select(Product.slug).where((Product.slug == base) | Product.slug.like(f"{base}-%"))
         ).scalars()
     ) | pending
+    # Categories share the storefront's root (/<slug>) with products: theirs are taken too.
+    from app.services.root_slugs import category_slugs_like
+
+    taken |= set(connection.execute(category_slugs_like(base)).scalars())
     slug, n = base, 2
     # One of the storefront's own root addresses counts as taken (/blog → "blog-2").
     while slug in taken or slug in RESERVED_ROOT_PATHS:

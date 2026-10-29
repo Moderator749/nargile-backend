@@ -38,7 +38,7 @@ from app.models.catalog import (
 )
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType
-from app.services import slug_redirects
+from app.services import root_slugs, slug_redirects
 from app.services.checkout_engine import CENTRAL_STOCK, stock_on_hand
 from app.services.pricing_engine import pick_price_row
 from app.models.order import OrderItem
@@ -186,6 +186,9 @@ async def save(
         )
         if clash is not None:
             raise SheetError(f"“{payload.slug}” adresi başka bir üründe kullanılıyor")
+        shared = await root_slugs.taken_by(db, "product", payload.slug)
+        if shared:
+            raise SheetError(shared)
 
     if product is None:
         product = Product(tags=[], slug=payload.slug)

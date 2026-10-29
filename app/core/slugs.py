@@ -11,31 +11,40 @@ _TR = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
 PRODUCT_SLUG = re.compile(r"^[a-z0-9]+(?:[.-][a-z0-9]+)*$")
 PRODUCT_SLUG_MAX = 255
 
-# A product's page is at the storefront's root, /<slug>, beside the shop's own
-# pages and the old store's addresses the storefront redirects: a product
-# given one of these would never be reached. The storefront's pages are
-# ROOT_ROUTES in its src/lib/rootRoutes.ts; the old addresses are the root
-# redirects of its next.config.ts and src/lib/legacy/categories.ts. A page or
-# redirect added there is added here.
-RESERVED_ROOT_PATHS = frozenset({
-    # The storefront's pages, languages and files.
+# Products' and categories' pages are both at the storefront's root, /<slug>,
+# beside the shop's own pages and the old addresses the storefront redirects:
+# a product or category given one of these would never be reached (and one
+# may never take another's: app/services/root_slugs.py). The storefront's
+# pages are ROOT_ROUTES in its src/lib/rootRoutes.ts; the old addresses are
+# the root redirects of its next.config.ts (LEGACY_PAGES, RETIRED_CATEGORIES)
+# and src/lib/legacy/categories.ts. A page or redirect added there is added
+# here. An old address that is a live category's slug now (/siseler, /oduman)
+# is that category's page, not a redirect, and is not listed.
+STOREFRONT_PAGES = frozenset({
     "en", "ar", "tr", "api", "_next", "_", "account", "admin", "bilgi", "blog", "cart", "catalog", "checkout",
     "firsat-urunleri", "fiyat-katalogu", "images", "kargo-takip", "login", "magazalar", "marka", "onizleme", "orders",
     "product", "register", "sifre-yenile", "sifremi-unuttum", "sozlesmeler", "sss", "opengraph-image",
-    "robots.txt", "sitemap.xml", "llms.txt", "favicon.ico", "icon.png", "apple-icon.png", "index.php", "malzemeler",
-    # The old store's shelves and pages, redirected at the root.
+    "robots.txt", "sitemap.xml", "llms.txt", "favicon.ico", "icon.png", "apple-icon.png", "index.php",
+})
+OLD_ROOT_ADDRESSES = frozenset({
+    # The old store's shelves and pages.
     "paslanmaz-celik-nargile-takimlari", "legend-hookah-nargile-takimlari", "oduman-nargile-takimlari",
     "meduse-experience-hookah-nargile-takimi", "mr-wood-nargile-takimlari", "sultan-nargile-takimlari-ve-malzemeleri",
     "dokum-nargile-takimlari", "rus-nargile-takimlari-ve-modelleri", "masaustu-ve-led-isikli-nargile-takimlari",
-    "nargile-siseleri", "nargile-komuru", "nargile-lule-cesitleri", "kozlukler", "nargile-marpuclari",
-    "plastik-ve-ozel-sipsiler", "nargile-malzemeleri-ve-aksesuarlari", "yedek-parca", "okey-tavla-ve-iskambil-kartlari",
-    "nargile-tutunu-markalari-ve-cesitleri", "kampanyalar", "wd-hookah-nargile-takimlari", "diger", "nargile-serleri",
-    "nargile-malzemeleri", "rus-nargile-takimlari", "celik-nargile-takimlari", "lule-ve-lule-basliklari", "siseler",
-    "oduman", "mr.wood", "legend-hookah", "ozel-sipsiler", "oyun-aletleri", "marpuclar", "wd-hookah",
+    "nargile-siseleri", "nargile-komuru", "nargile-lule-cesitleri", "nargile-marpuclari", "plastik-ve-ozel-sipsiler",
+    "nargile-malzemeleri-ve-aksesuarlari", "okey-tavla-ve-iskambil-kartlari", "nargile-tutunu-markalari-ve-cesitleri",
+    "wd-hookah-nargile-takimlari", "diger", "nargile-serleri", "nargile-malzemeleri", "rus-nargile-takimlari",
+    "celik-nargile-takimlari", "lule-ve-lule-basliklari", "mr.wood", "legend-hookah", "oyun-aletleri", "wd-hookah",
     "sultan-nargile-takimlari", "masaustu-nargile-takimi", "teslimat-ve-kargolama-bilgileri", "sartlar-ve-kosullar",
     "sikca-sorulan-sorular", "hakkimizda", "gizlilik-sozlesmesi", "ithal-nargile", "legend-hookah-nargile",
     "sultan-nargile",
+    # Category slugs retired by this storefront's taxonomy changes.
+    "nargile-komurleri", "hindistan-cevizi-komurleri", "bitkisel-karisimlar", "marpuc-ve-hortumlar",
+    "kozlukler-isi-yonetimi", "yedek-siseler", "yedek-sise-ve-govde", "masaustu-nargile-takimlari",
+    "mini-masaustu-takimlar", "rus-takimlari", "panada-hookah", "oduman-nargile", "mr-wood-nargile",
+    "steamulation-nargile-takimlari", "quasar-arguile", "meduse-nargile-takimlari",
 })
+RESERVED_ROOT_PATHS = STOREFRONT_PAGES | OLD_ROOT_ADDRESSES
 
 
 def slugify(text: str) -> str:

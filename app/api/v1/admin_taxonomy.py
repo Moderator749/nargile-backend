@@ -25,7 +25,7 @@ from app.schemas.taxonomy import (
     ProductCategoryAssignResult,
     slugify,
 )
-from app.services import slug_redirects
+from app.services import root_slugs, slug_redirects
 from app.services.categories import category_subtree, memberships, products_in
 from app.services.media import MAX_IMAGE_BYTES, WIDE_SIDE, InvalidImage, delete_media, save_image
 from app.services import auto_translate
@@ -67,6 +67,11 @@ async def _apply_category(db: AsyncSession, category: Category, payload: Categor
     clash = await db.scalar(select(Category.id).where(Category.slug == slug, Category.id != category.id))
     if clash is not None:
         raise HTTPException(status_code=409, detail=f"Slug '{slug}' is already used")
+    if slug != category.slug:
+        # Products share the storefront's root (/<slug>) with categories.
+        shared = await root_slugs.taken_by(db, "category", slug)
+        if shared:
+            raise HTTPException(status_code=409, detail=shared)
 
     if payload.parent_id is not None:
         if payload.parent_id == category.id:
@@ -81,7 +86,7 @@ async def _apply_category(db: AsyncSession, category: Category, payload: Categor
             raise HTTPException(status_code=422, detail="A category with subcategories must stay top-level")
 
     if category.id is not None and category.slug and category.slug != slug:
-        # Renamed: /catalog/<old> keeps leading here.
+        # Renamed: /<old> keeps leading here.
         await slug_redirects.moved(db, "category", category.slug, slug, category_id=category.id)
     else:
         await slug_redirects.release(db, "category", slug)
