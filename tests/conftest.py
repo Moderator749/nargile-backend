@@ -136,6 +136,20 @@ def fresh_login_limit():
     auth_api._failures.clear()
 
 
+@pytest.fixture(autouse=True)
+def no_rates_snapshot(monkeypatch):
+    """The stored TCMB bulletin belongs to the exchange-rate tests, which point
+    it at their own database. Anywhere else a rate lookup would open the app's
+    global engine inside the test's event loop and leave a broken connection
+    behind for a later test; here it simply finds no store."""
+    from app.services import exchange_rates
+
+    def no_store():
+        raise RuntimeError("no rates snapshot store in this test")
+
+    monkeypatch.setattr(exchange_rates, "_sessions", no_store)
+
+
 @pytest.fixture
 async def db_session():
     engine = create_async_engine(settings.DATABASE_URL, echo=False)

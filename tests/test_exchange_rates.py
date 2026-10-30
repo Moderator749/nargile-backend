@@ -1,13 +1,21 @@
-"""TCMB exchange-rate parsing and the display-only /exchange-rates endpoint (no network)."""
+"""TCMB exchange-rate parsing, the display-only /exchange-rates endpoint, and the
+last bulletin kept across a restart (no network)."""
 
-from datetime import date
+import json
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
+import httpx
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.v1 import exchange_rates as api
+from app.models.settings import ShopSetting
+from app.services import exchange_rates as service
 from app.services.exchange_rates import Rates, RatesUnavailable, parse_tcmb
+from app.services.shop_settings import read_setting
 
 SAMPLE = """<?xml version="1.0" encoding="UTF-8"?>
 <Tarih_Date Tarih="05.10.2026" Date="10/05/2026" Bulten_No="2026/187">
@@ -54,3 +62,70 @@ async def test_endpoint_503_when_unavailable(client: AsyncClient, monkeypatch):
 
     monkeypatch.setattr(api, "get_rates", down)
     assert (await client.get("/api/v1/exchange-rates")).status_code == 503
+
+
+# ── The last bulletin, kept across a restart ─────────────────────────────────
+
+TODAY = Rates(bulletin_date=date(2026, 10, 30), try_per_unit={"USD": Decimal("49.5000"), "EUR": Decimal("57.4000")})
+
+
+@pytest.fixture
+async def snapshots(db_session: AsyncSession, monkeypatch):
+    """The service's cache empty (a fresh process) and its snapshot on the test database."""
+    monkeypatch.setattr(service, "_sessions", async_sessionmaker(db_session.bind, expire_on_commit=False))
+    monkeypatch.setattr(service, "_cache", None)
+    await db_session.execute(delete(ShopSetting).where(ShopSetting.key == service.SNAPSHOT_KEY))
+    await db_session.commit()
+    yield db_session
+    await db_session.execute(delete(ShopSetting).where(ShopSetting.key == service.SNAPSHOT_KEY))
+    await db_session.commit()
+
+
+def _tcmb(rates: Rates | None):
+    async def fetch():
+        if rates is None:
+            raise httpx.ConnectError("TCMB unreachable")
+        return rates
+
+    return fetch
+
+
+async def test_a_bulletin_read_is_kept_in_the_database(snapshots: AsyncSession, monkeypatch):
+    monkeypatch.setattr(service, "_fetch", _tcmb(TODAY))
+    assert await service.get_rates() == TODAY
+    stored = json.loads(await read_setting(snapshots, service.SNAPSHOT_KEY))
+    assert stored["bulletin_date"] == "2026-10-30"
+    assert stored["try_per_unit"] == {"USD": "49.5000", "EUR": "57.4000"}
+
+
+async def test_after_a_restart_with_tcmb_down_the_kept_bulletin_is_served(snapshots: AsyncSession, monkeypatch):
+    monkeypatch.setattr(service, "_fetch", _tcmb(TODAY))
+    await service.get_rates()
+    # The restart: the process forgets, TCMB does not answer.
+    monkeypatch.setattr(service, "_cache", None)
+    monkeypatch.setattr(service, "_fetch", _tcmb(None))
+    assert await service.get_rates() == TODAY
+
+
+async def test_a_kept_bulletin_too_old_is_not_served(snapshots: AsyncSession, monkeypatch):
+    old = datetime.now(timezone.utc) - timedelta(seconds=service.STALE_OK_FOR_S + 60)
+    snapshots.add(ShopSetting(key=service.SNAPSHOT_KEY, value=service._dump(TODAY, old)))
+    await snapshots.commit()
+    monkeypatch.setattr(service, "_fetch", _tcmb(None))
+    with pytest.raises(RatesUnavailable):
+        await service.get_rates()
+
+
+async def test_no_kept_bulletin_and_tcmb_down_is_unavailable(snapshots: AsyncSession, monkeypatch):
+    monkeypatch.setattr(service, "_fetch", _tcmb(None))
+    with pytest.raises(RatesUnavailable):
+        await service.get_rates()
+
+
+async def test_a_database_failure_never_costs_the_rates(snapshots: AsyncSession, monkeypatch):
+    def broken():
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(service, "_sessions", broken)
+    monkeypatch.setattr(service, "_fetch", _tcmb(TODAY))
+    assert await service.get_rates() == TODAY
