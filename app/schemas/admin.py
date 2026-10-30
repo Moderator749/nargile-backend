@@ -239,6 +239,9 @@ class AdminOrderListItem(BaseModel):
     # "Gizli Mağaza Notu": the shop's own note. Only here — OrderRead, which
     # every customer-facing answer is built from, never carries it.
     internal_note: str | None = None
+    # "Mağaza Onayı": stock checked and packing released, by whom and when.
+    store_approved_at: datetime | None = None
+    store_approved_by_name: str | None = None
     created_at: datetime
     items: list[AdminOrderItemDetail] = []
     # Only on a PAYMENT_FAILED order.

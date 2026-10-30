@@ -297,3 +297,81 @@ async def test_status_tabs_count_the_new_statuses(client: AsyncClient, admin_use
     resp = await client.get("/api/v1/admin/orders/status-counts", headers=auth_header(admin_user))
     assert resp.status_code == 200
     assert {"DELIVERED", "RETURNED"} <= set(resp.json())
+
+
+# ── Mağaza Onayı ─────────────────────────────────────────────────────────────
+
+
+async def test_the_store_approves_an_order_apart_from_its_payment(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _order(db_session, customer_user, variant, OrderStatus.AWAITING_TRANSFER)
+    resp = await client.post(
+        f"/api/v1/admin/orders/{order.id}/store-approval", json={"approved": True}, headers=auth_header(admin_user)
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["store_approved_at"] is not None
+    assert data["store_approved_by_name"] == (admin_user.username or admin_user.full_name or admin_user.email)
+    # The payment status is its own business.
+    assert data["status"] == "AWAITING_TRANSFER"
+    # Approving again keeps the first approval.
+    again = await client.post(
+        f"/api/v1/admin/orders/{order.id}/store-approval", json={"approved": True}, headers=auth_header(admin_user)
+    )
+    assert again.json()["store_approved_at"] == data["store_approved_at"]
+    # Taken back.
+    back = await client.post(
+        f"/api/v1/admin/orders/{order.id}/store-approval", json={"approved": False}, headers=auth_header(admin_user)
+    )
+    assert back.json()["store_approved_at"] is None and back.json()["store_approved_by_name"] is None
+    # The customer never sees it.
+    mine = await client.get(f"/api/v1/orders/{order.id}", headers=auth_header(customer_user))
+    assert "store_approved_at" not in mine.json()
+
+
+async def test_a_closed_order_takes_no_store_approval(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _order(db_session, customer_user, variant, OrderStatus.CANCELLED)
+    resp = await client.post(
+        f"/api/v1/admin/orders/{order.id}/store-approval", json={"approved": True}, headers=auth_header(admin_user)
+    )
+    assert resp.status_code == 409
+
+
+async def test_a_shipped_orders_store_approval_stays(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _order(db_session, customer_user, variant, OrderStatus.APPROVED)
+    await client.post(f"/api/v1/admin/orders/{order.id}/store-approval", json={"approved": True}, headers=auth_header(admin_user))
+    await client.post(f"/api/v1/admin/orders/{order.id}/deliver-in-store", headers=auth_header(admin_user))
+    back = await client.post(
+        f"/api/v1/admin/orders/{order.id}/store-approval", json={"approved": False}, headers=auth_header(admin_user)
+    )
+    assert back.status_code == 409
+
+
+async def test_only_an_admin_gives_store_approval(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _order(db_session, customer_user, variant, OrderStatus.APPROVED)
+    resp = await client.post(
+        f"/api/v1/admin/orders/{order.id}/store-approval", json={"approved": True}, headers=auth_header(customer_user)
+    )
+    assert resp.status_code == 403
+
+
+async def test_an_order_that_left_unapproved_takes_no_store_approval(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _order(db_session, customer_user, variant, OrderStatus.SHIPPED)
+    resp = await client.post(
+        f"/api/v1/admin/orders/{order.id}/store-approval", json={"approved": True}, headers=auth_header(admin_user)
+    )
+    assert resp.status_code == 409

@@ -244,6 +244,15 @@ class Order(Base):
     # "Gizli Mağaza Notu": the shop's own note on the order. Admin-only: no
     # customer-facing schema carries it.
     internal_note: Mapped[str | None] = mapped_column(Text)
+    # "Mağaza Onayı": the shop has checked the stock and released the order for
+    # packing. Separate from its payment status (`status`), and from each other:
+    # a paid order may wait for it, an approved one may still await payment.
+    store_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    store_approved_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    # Who it was, as named then: the panel shows it without another lookup.
+    store_approved_by_name: Mapped[str | None] = mapped_column(String(150))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

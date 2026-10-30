@@ -15,7 +15,7 @@ from app.api.deps import get_current_admin_user, get_session_factory
 from app.core.database import get_db
 from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
 from app.core.config import settings
-from app.models.order import PENDING_STATUSES, Carrier, Order, OrderItem, OrderStatus, ShippingMethod
+from app.models.order import PENDING_STATUSES, VOID_STATUSES, Carrier, Order, OrderItem, OrderStatus, ShippingMethod
 from app.models.payment import PaymentTransaction
 from app.models.user import AddressKind, User
 from app.core.countries import TURKEY, country_name
@@ -217,6 +217,8 @@ def _list_item(
         company_title=user.profile.company_title if user.profile else None,
         billing_address=_billing_address(order, user),
         internal_note=order.internal_note,
+        store_approved_at=order.store_approved_at,
+        store_approved_by_name=order.store_approved_by_name,
         items=[_line(item, catalog) for item in order.items],
         payment_failure=(failures or {}).get(order.id),
     )
@@ -262,6 +264,12 @@ class RecoverOrderRequest(BaseModel):
     approved at once), else it waits for payment again."""
 
     paid: bool = False
+
+
+class StoreApprovalRequest(BaseModel):
+    """"Mağaza Onayı": true gives it, false takes it back."""
+
+    approved: bool
 
 
 class InternalNoteRequest(BaseModel):
@@ -579,6 +587,37 @@ async def set_internal_note(
     the customer. Empty clears it."""
     order, user = await _order_with_user(db, order_id)
     order.internal_note = (payload.internal_note or "").strip() or None
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    return _list_item(order, user, await _line_catalog(db, [order]))
+
+
+@router.post("/orders/{order_id}/store-approval", response_model=AdminOrderListItem)
+async def set_store_approval(
+    order_id: uuid.UUID,
+    payload: StoreApprovalRequest,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Mağaza Onayı": the shop has checked the stock and released the order for
+    packing — its own decision, apart from the payment status, which it never
+    changes. Not for an order that came to nothing (cancelled, failed, returned);
+    given and taken back only until the order has left."""
+    order, user = await _order_with_user(db, order_id)
+    if order.status in VOID_STATUSES:
+        raise HTTPException(status_code=409, detail="Kapanmış bir sipariş mağaza onayı almaz")
+    left = order.status in (OrderStatus.SHIPPED, OrderStatus.DELIVERED)
+    if payload.approved:
+        if order.store_approved_at is None:
+            if left:
+                raise HTTPException(status_code=409, detail="Sipariş yola çıktı; mağaza onayı artık verilemez")
+            order.store_approved_at = datetime.now(timezone.utc)
+            order.store_approved_by = admin.id
+            order.store_approved_by_name = (admin.username or admin.full_name or admin.email)[:150]
+    else:
+        if left:
+            raise HTTPException(status_code=409, detail="Sipariş yola çıktı; mağaza onayı artık geri alınamaz")
+        order.store_approved_at = order.store_approved_by = order.store_approved_by_name = None
     await db.commit()
     await db.refresh(order, attribute_names=["items"])
     return _list_item(order, user, await _line_catalog(db, [order]))
