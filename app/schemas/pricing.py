@@ -126,6 +126,46 @@ class SaveDraftRequest(BaseModel):
     sheet: PricingSheetIn
 
 
+class RecordIds(BaseModel):
+    """Rows picked in a list ("Seçilenleri Sil")."""
+
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+class MoveRecordsRequest(SaveTarget):
+    """"Taşı": the picked rows into an existing file, or a new one by that name."""
+
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+
+
+def _file_name(value: str) -> str:
+    name = " ".join(value.split())
+    if not name:
+        raise ValueError("Dosya adı boş olamaz")
+    return name
+
+
+class RenameFileRequest(BaseModel):
+    name: str = Field(max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def _clean(cls, value: str) -> str:
+        return _file_name(value)
+
+
+class DuplicateFileRequest(BaseModel):
+    """"Çoğalt": the copy's name; empty for "<name> (kopya)"."""
+
+    name: str | None = Field(default=None, max_length=120)
+
+    @field_validator("name")
+    @classmethod
+    def _clean(cls, value: str | None) -> str | None:
+        return " ".join(value.split()) or None if value is not None else None
+
+
+
 class SaveToFileRequest(SaveTarget):
     sheet: PricingSheetIn
 
@@ -137,6 +177,13 @@ class PricingFileRead(BaseModel):
     # Last time a row was saved into it.
     updated_at: datetime
     record_count: int = 0
+
+
+class RecordsChanged(BaseModel):
+    """How many rows a bulk action touched, and the file they went to, if any."""
+
+    count: int
+    file: PricingFileRead | None = None
 
 
 class PricingRecordRead(BaseModel):

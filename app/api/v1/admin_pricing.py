@@ -43,9 +43,14 @@ from app.schemas.pricing import (
     ImportSuggested,
     ImportUnmatched,
     PriceImportResult,
+    DuplicateFileRequest,
+    MoveRecordsRequest,
     PricingFileRead,
     PricingRecordRead,
     PricingSheetIn,
+    RecordIds,
+    RecordsChanged,
+    RenameFileRequest,
     SaveDraftRequest,
     SaveTarget,
     SaveToFileRequest,
@@ -117,6 +122,21 @@ def _record(sheet: PricingSheetIn, file: PricingFile | None, admin: User) -> Pri
     )
 
 
+async def _file_read(db: AsyncSession, file: PricingFile) -> PricingFileRead:
+    count = await db.scalar(select(func.count()).select_from(PricingRecord).where(PricingRecord.file_id == file.id))
+    return PricingFileRead(
+        id=file.id, name=file.name, created_at=file.created_at, updated_at=file.updated_at, record_count=count or 0
+    )
+
+
+async def _name_taken(db: AsyncSession, name: str, but: int | None = None) -> bool:
+    """Another file already has this name (names are compared without case)."""
+    stmt = select(PricingFile.id).where(func.lower(PricingFile.name) == name.lower())
+    if but is not None:
+        stmt = stmt.where(PricingFile.id != but)
+    return await db.scalar(stmt.limit(1)) is not None
+
+
 @router.get("/files", response_model=list[PricingFileRead])
 async def list_files(_admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)):
     counts = (
@@ -143,6 +163,101 @@ async def delete_file(file_id: int, _admin: User = Depends(get_current_admin_use
         raise HTTPException(status_code=404, detail="Dosya bulunamadı")
     await db.delete(file)
     await db.commit()
+
+
+@router.patch("/files/{file_id}", response_model=PricingFileRead)
+async def rename_file(
+    file_id: int,
+    payload: RenameFileRequest,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Yeniden Adlandır". A name another file has is refused: "Dosyaya kaydet"
+    finds a file by its name, so two of the same name could not be told apart."""
+    file = await db.get(PricingFile, file_id)
+    if file is None:
+        raise HTTPException(status_code=404, detail="Dosya bulunamadı")
+    if await _name_taken(db, payload.name, but=file.id):
+        raise HTTPException(status_code=409, detail=f"“{payload.name}” adında bir dosya zaten var")
+    file.name = payload.name
+    await db.commit()
+    return await _file_read(db, file)
+
+
+@router.post("/files/{file_id}/duplicate", response_model=PricingFileRead, status_code=status.HTTP_201_CREATED)
+async def duplicate_file(
+    file_id: int,
+    payload: DuplicateFileRequest,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Çoğalt": a new file with a copy of every row, to try another scenario
+    on. The copies are new rows: none of them has been applied to a product,
+    whatever the originals were. They keep the originals' order."""
+    source = await db.get(PricingFile, file_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Dosya bulunamadı")
+    if payload.name:
+        if await _name_taken(db, payload.name):
+            raise HTTPException(status_code=409, detail=f"“{payload.name}” adında bir dosya zaten var")
+        name = payload.name
+    else:
+        # "Ekim Zam (kopya)", then "(kopya 2)", "(kopya 3)"…, within the 120 characters a name may have.
+        n = 1
+        while True:
+            suffix = " (kopya)" if n == 1 else f" (kopya {n})"
+            name = source.name[: 120 - len(suffix)] + suffix
+            if not await _name_taken(db, name):
+                break
+            n += 1
+    copy = PricingFile(name=name, created_by=admin.id)
+    db.add(copy)
+    await db.flush()
+    rows = (await db.scalars(select(PricingRecord).where(PricingRecord.file_id == source.id))).all()
+    for row in rows:
+        db.add(
+            PricingRecord(
+                file_id=copy.id,
+                product_code=row.product_code,
+                product_name=row.product_name,
+                sheet=dict(row.sheet),
+                created_at=row.created_at,
+                created_by=admin.id,
+            )
+        )
+    await db.commit()
+    return await _file_read(db, copy)
+
+
+@router.post("/records/delete", response_model=RecordsChanged)
+async def delete_records(
+    payload: RecordIds, _admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
+):
+    """"Seçilenleri Sil": those rows only — never their file. Prices already
+    applied to products stay applied."""
+    rows = (await db.scalars(select(PricingRecord).where(PricingRecord.id.in_(payload.ids)))).all()
+    for row in rows:
+        await db.delete(row)
+    await db.commit()
+    return RecordsChanged(count=len(rows))
+
+
+@router.post("/records/move", response_model=RecordsChanged)
+async def move_records(
+    payload: MoveRecordsRequest,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Taşı": the picked rows into another file, or a new one by that name.
+    They keep their own dates; the file they go to counts as saved to now."""
+    target = await _file_for(db, payload, admin)
+    rows = (await db.scalars(select(PricingRecord).where(PricingRecord.id.in_(payload.ids)))).all()
+    for row in rows:
+        row.file_id = target.id
+    if rows:
+        target.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    return RecordsChanged(count=len(rows), file=await _file_read(db, target))
 
 
 @router.get("/records", response_model=list[PricingRecordRead])

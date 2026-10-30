@@ -6,6 +6,8 @@ Covers:
 - A typed "uygulanacak fiyat" is the column's price but never moves the calculated chain
 - USD/EUR sheets: the TL figure at the typed rate
 - Drafts and files: saving, reusing a file by name, listing, deleting
+- Picked rows deleted without their file, moved to another file; files renamed
+  (a taken name refused) and duplicated with every row
 - Applying to a product: every customer group's live price, both VAT sides,
   other-currency rows removed, "son karar" as the TRY retail price
 - A product that cannot be found saves nothing; admins only; bad sheets refused
@@ -179,6 +181,87 @@ async def test_drafts_and_files(client: AsyncClient, admin_user: User):
 
     neither = await client.post(f"{BASE}/file", headers=h, json={"sheet": _sheet()})
     assert neither.status_code == 422
+
+
+async def _file_with(client: AsyncClient, h: dict, name: str, n: int) -> tuple[int, list[str]]:
+    ids = []
+    for i in range(n):
+        resp = await client.post(f"{BASE}/file", headers=h, json={"file_name": name, "sheet": _sheet(product_name=f"{name} {i}")})
+        assert resp.status_code == 201, resp.text
+        ids.append(resp.json()["id"])
+    return resp.json()["file_id"], ids
+
+
+async def _rows(client: AsyncClient, h: dict, file_id: int) -> list[dict]:
+    return (await client.get(f"{BASE}/records", headers=h, params={"file_id": file_id})).json()
+
+
+async def test_deleting_picked_rows_never_deletes_their_file(client: AsyncClient, admin_user: User):
+    h = auth_header(admin_user)
+    file_id, ids = await _file_with(client, h, "Silme Testi", 4)
+    resp = await client.post(f"{BASE}/records/delete", headers=h, json={"ids": ids[:2]})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["count"] == 2
+    left = await _rows(client, h, file_id)
+    assert sorted(r["id"] for r in left) == sorted(ids[2:])
+    files = {f["id"]: f for f in (await client.get(f"{BASE}/files", headers=h)).json()}
+    assert files[file_id]["record_count"] == 2
+    assert (await client.post(f"{BASE}/records/delete", headers=h, json={"ids": []})).status_code == 422
+
+
+async def test_picked_rows_move_to_another_file_or_a_new_one(client: AsyncClient, admin_user: User):
+    h = auth_header(admin_user)
+    source, ids = await _file_with(client, h, "Taşıma Kaynak", 3)
+    target, _ = await _file_with(client, h, "Taşıma Hedef", 1)
+    resp = await client.post(f"{BASE}/records/move", headers=h, json={"ids": ids[:2], "file_id": target})
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["count"], resp.json()["file"]["id"], resp.json()["file"]["record_count"]) == (2, target, 3)
+    assert [r["id"] for r in await _rows(client, h, source)] == [ids[2]]
+    # To a new file, by its name.
+    new = await client.post(f"{BASE}/records/move", headers=h, json={"ids": [ids[2]], "file_name": "Taşıma Yeni"})
+    assert new.status_code == 200, new.text
+    assert new.json()["file"]["name"] == "Taşıma Yeni" and new.json()["file"]["record_count"] == 1
+    assert await _rows(client, h, source) == []
+    missing = await client.post(f"{BASE}/records/move", headers=h, json={"ids": [ids[0]], "file_id": 999999})
+    assert missing.status_code == 404
+
+
+async def test_a_file_is_renamed_but_never_to_a_taken_name(client: AsyncClient, admin_user: User):
+    h = auth_header(admin_user)
+    file_id, _ = await _file_with(client, h, "Ad Eski", 1)
+    await _file_with(client, h, "Ad Dolu", 1)
+    resp = await client.patch(f"{BASE}/files/{file_id}", headers=h, json={"name": "  Ad   Yeni "})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["name"] == "Ad Yeni"
+    taken = await client.patch(f"{BASE}/files/{file_id}", headers=h, json={"name": "ad dolu"})
+    assert taken.status_code == 409
+    # Its own name again (another case) is fine.
+    assert (await client.patch(f"{BASE}/files/{file_id}", headers=h, json={"name": "AD YENİ"})).status_code == 200
+    assert (await client.patch(f"{BASE}/files/{file_id}", headers=h, json={"name": "   "})).status_code == 422
+
+
+async def test_a_duplicated_file_copies_every_row_as_new_unapplied_rows(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User
+):
+    h = auth_header(admin_user)
+    file_id, ids = await _file_with(client, h, "Senaryo A", 3)
+    first = await client.post(f"{BASE}/files/{file_id}/duplicate", headers=h, json={})
+    assert first.status_code == 201, first.text
+    assert (first.json()["name"], first.json()["record_count"]) == ("Senaryo A (kopya)", 3)
+    second = await client.post(f"{BASE}/files/{file_id}/duplicate", headers=h, json={})
+    assert second.json()["name"] == "Senaryo A (kopya 2)"
+    named = await client.post(f"{BASE}/files/{file_id}/duplicate", headers=h, json={"name": "Senaryo B"})
+    assert named.json()["name"] == "Senaryo B"
+    assert (await client.post(f"{BASE}/files/{file_id}/duplicate", headers=h, json={"name": "senaryo b"})).status_code == 409
+
+    original = await _rows(client, h, file_id)
+    copies = await _rows(client, h, first.json()["id"])
+    assert [r["product_name"] for r in copies] == [r["product_name"] for r in original]  # same rows, same order
+    assert [r["sheet"] for r in copies] == [r["sheet"] for r in original]
+    assert not {r["id"] for r in copies} & set(ids) and all(r["applied_at"] is None for r in copies)
+    # The copy is its own: changing it leaves the original alone.
+    await client.post(f"{BASE}/records/delete", headers=h, json={"ids": [copies[0]["id"]]})
+    assert len(await _rows(client, h, file_id)) == 3
 
 
 async def test_only_admins_reach_the_calculator(client: AsyncClient, customer_user: User):
