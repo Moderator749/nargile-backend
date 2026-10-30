@@ -7,6 +7,7 @@ Covers:
   above that, and nothing at all for retail or anonymous callers
 - Screen order kept, unpublished products left out, missing prices omitted
 - Both VAT sides returned, in TRY
+- A business group priced in USD/EUR comes as entered; retail always in TRY
 - The admin's catalogue: any one group, Bayi included, for a section's products
   in screen order; refused to every account that is not an admin
 """
@@ -18,8 +19,10 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1 import products as products_api
 from app.models.catalog import Product, ProductVariant, VariantPrice
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
+from app.services.exchange_rates import Rates, RatesUnavailable
 from tests.conftest import auth_header
 
 URL = "/api/v1/products/price-list"
@@ -43,7 +46,7 @@ async def _account(db: AsyncSession, segments: dict[SegmentType, CustomerSegment
     return user
 
 
-async def _product(db: AsyncSession, segments, *, published=True, prices=PRICES) -> Product:
+async def _product(db: AsyncSession, segments, *, published=True, prices=PRICES, currency="TRY") -> Product:
     suffix = uuid.uuid4().hex[:6]
     product = Product(base_code=f"PL-{suffix}", name=f"Katalog {suffix}", tags=[], is_published=published,
                       image_url=f"https://cdn.example.com/{suffix}.jpg")
@@ -54,7 +57,7 @@ async def _product(db: AsyncSession, segments, *, published=True, prices=PRICES)
     await db.flush()
     for code, incl in prices.items():
         db.add(VariantPrice(
-            variant_id=variant.id, segment_id=segments[code].id, currency="TRY",
+            variant_id=variant.id, segment_id=segments[code].id, currency=currency,
             price_excl_tax=(incl / Decimal("1.2")).quantize(Decimal("0.01")), price_incl_tax=incl, vat_rate=Decimal("20"),
         ))
     await db.commit()
@@ -171,3 +174,53 @@ async def test_the_admin_catalogue_takes_one_known_group_and_a_bounded_list(
         {"product_ids": [str(uuid.uuid4()) for _ in range(201)], "segment": "RETAIL"},
     ):
         assert (await client.post(ADMIN_URL, headers=h, json=body)).status_code == 422, body
+
+
+USD_PRICES = {  # incl. VAT at 20%, in USD
+    SegmentType.DEALER: Decimal("24.00"),
+    SegmentType.WHOLESALE: Decimal("26.40"),
+    SegmentType.CAFE: Decimal("28.80"),
+    SegmentType.RETAIL: Decimal("36.00"),
+}
+
+
+def _rates(usd: str | None):
+    async def get_rates():
+        if usd is None:
+            raise RatesUnavailable("TCMB down")
+        from datetime import date
+
+        return Rates(bulletin_date=date(2026, 10, 30), try_per_unit={"USD": Decimal(usd), "EUR": Decimal("55.00")})
+
+    return get_rates
+
+
+async def test_a_business_group_priced_in_dollars_comes_in_dollars_retail_in_lira(
+    client: AsyncClient, db_session: AsyncSession, segments, admin_user: User, monkeypatch
+):
+    monkeypatch.setattr(products_api, "get_rates", _rates("50.00"))
+    product = await _product(db_session, segments, prices=USD_PRICES, currency="USD")
+    prices = {}
+    for group in USD_PRICES:
+        resp = await client.post(
+            ADMIN_URL, headers=auth_header(admin_user), json={"product_ids": [str(product.id)], "segment": group.value}
+        )
+        assert resp.status_code == 200, resp.text
+        prices.update(resp.json()[0]["prices"])
+    for group in (SegmentType.DEALER, SegmentType.WHOLESALE, SegmentType.CAFE):
+        assert (prices[group.value]["currency"], Decimal(prices[group.value]["price_incl_tax"])) == ("USD", USD_PRICES[group])
+    retail = prices["RETAIL"]
+    assert (retail["currency"], Decimal(retail["price_incl_tax"])) == ("TRY", Decimal("1800.00"))
+
+
+async def test_with_tcmb_down_business_dollars_still_come_and_retail_waits(
+    client: AsyncClient, db_session: AsyncSession, segments, monkeypatch
+):
+    monkeypatch.setattr(products_api, "get_rates", _rates(None))
+    user = await _account(db_session, segments, SegmentType.CAFE)
+    product = await _product(db_session, segments, prices=USD_PRICES, currency="USD")
+    resp = await client.post(URL, headers=auth_header(user), json={"product_ids": [str(product.id)], "groups": ["CAFE", "RETAIL"]})
+    assert resp.status_code == 200, resp.text
+    [item] = resp.json()
+    assert list(item["prices"]) == ["CAFE"]
+    assert item["prices"]["CAFE"]["currency"] == "USD"

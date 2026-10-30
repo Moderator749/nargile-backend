@@ -531,10 +531,15 @@ async def build_price_list(
     db: AsyncSession, product_ids: list[uuid.UUID], groups: list[SegmentType]
 ) -> list[PriceListItem]:
     """A price catalogue's rows: the published products among these, in the
-    order given (each once), with each group's regular list price in TRY (no
-    flash sales: a catalogue outlives a sale; USD/EUR at the day's TCMB rate).
-    A group the product is not sold to is left out of its prices. Who may ask
-    for which group is the caller's to decide."""
+    order given (each once), with each group's regular list price (no flash
+    sales: a catalogue outlives a sale). A group the product is not sold to is
+    left out of its prices. Who may ask for which group is the caller's to
+    decide.
+
+    A business group's price (Bayi, Toptan, Kafe) is given as it was entered:
+    one priced in USD or EUR stays in USD or EUR, as that buyer is quoted it.
+    Retail is always in TRY — a shopper's price — at the day's TCMB rate, and
+    left out when that rate cannot be had."""
     segments = {s.code: s.id for s in (await db.execute(select(CustomerSegment))).scalars()}
     rows = (
         await db.execute(
@@ -558,8 +563,10 @@ async def build_price_list(
         prices = {}
         if variant is not None:
             for group in groups:
-                price, _ = _price_for(variant, segments[group], rates)
-                if price is not None and price.currency == CurrencyType.TRY:
+                price, entered = _price_for(variant, segments[group], rates)
+                if entered is not None and group != SegmentType.RETAIL:
+                    prices[group] = entered  # the foreign figure, as entered
+                elif price is not None and price.currency == CurrencyType.TRY:
                     prices[group] = price
         items.append(PriceListItem(
             product_id=product.id, code=product.base_code, name=product.name,

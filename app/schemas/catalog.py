@@ -201,7 +201,8 @@ class PriceListItem(BaseModel):
     code: str
     name: str
     image_url: str | None
-    # One entry per requested group the product is sold to, in TRY.
+    # One entry per requested group the product is sold to: a business group's
+    # in the currency it was entered in, retail's always in TRY.
     prices: dict[SegmentType, CatalogPrice]
 
 
