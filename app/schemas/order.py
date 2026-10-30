@@ -254,5 +254,10 @@ class OrderRead(BaseModel):
     paid_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancel_reason: str | None = None
+    # Brought back after a cancellation ("Siparişi Kurtar").
+    recovered_at: datetime | None = None
+    delivered_at: datetime | None = None
+    returned_at: datetime | None = None
+    return_reason: str | None = None
     created_at: datetime
     items: list[OrderItemRead] = []

@@ -42,6 +42,12 @@ class OrderStatus(str, enum.Enum):
     # Paid / approved by an admin.
     APPROVED = "APPROVED"
     SHIPPED = "SHIPPED"
+    # In the customer's hands: the carrier reported it delivered, or it was
+    # handed over at the shop ("Mağazadan Teslim").
+    DELIVERED = "DELIVERED"
+    # Came back after it left (İade): unlike a cancellation, the goods had
+    # already gone out. Its points are void, as on a cancellation.
+    RETURNED = "RETURNED"
     CANCELLED = "CANCELLED"
     # PayTR reported the card payment failed (or it was never completed): the
     # reserved stock and points went back, as on a cancellation.
@@ -54,7 +60,10 @@ class OrderStatus(str, enum.Enum):
 PENDING_STATUSES = (OrderStatus.PENDING_APPROVAL, OrderStatus.AWAITING_TRANSFER, OrderStatus.AWAITING_PAYMENT)
 # Orders that came to nothing: their stock went back, the points spent on them
 # returned and the points earned on them are void.
-VOID_STATUSES = (OrderStatus.CANCELLED, OrderStatus.PAYMENT_FAILED)
+VOID_STATUSES = (OrderStatus.CANCELLED, OrderStatus.PAYMENT_FAILED, OrderStatus.RETURNED)
+# Paid for and not given back: what counts as a sale (revenue, best sellers,
+# the spending toward the annual bonus).
+PAID_STATUSES = (OrderStatus.APPROVED, OrderStatus.SHIPPED, OrderStatus.DELIVERED)
 
 
 class ShippingMethod(str, enum.Enum):
@@ -92,6 +101,8 @@ class Carrier(str, enum.Enum):
     OTHER = "OTHER"
     # The shop's own van (the İstanbul run): nothing to track.
     OWN = "OWN"
+    # Collected at the shop ("Mağazadan Teslim"): never shipped at all.
+    STORE = "STORE"
 
 
 class ShippingPayer(str, enum.Enum):
@@ -222,6 +233,17 @@ class Order(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancel_reason: Mapped[str | None] = mapped_column(String(300))
+    # "Siparişi Kurtar": when a cancelled order was brought back (the transfer
+    # came in after the 48-hour cancellation, say). The cancellation's own
+    # time and reason are kept, for the order's history.
+    recovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # When it reached the customer: the carrier's delivery, or the hand-over at the shop.
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    return_reason: Mapped[str | None] = mapped_column(String(300))
+    # "Gizli Mağaza Notu": the shop's own note on the order. Admin-only: no
+    # customer-facing schema carries it.
+    internal_note: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

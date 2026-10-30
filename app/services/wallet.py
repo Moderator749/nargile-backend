@@ -25,16 +25,13 @@ from sqlalchemy.orm import selectinload
 
 from app.core.money import format_tl
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
-from app.models.order import VOID_STATUSES, Order, OrderStatus
+from app.models.order import PAID_STATUSES, VOID_STATUSES, Order
 from app.models.user import User
 from app.services.perks import retail_perks
 from app.services.store_parameters import DEFAULT_LOYALTY, LoyaltyParameters, load_parameters
 
 POINT_LIFETIME = timedelta(days=365)
 EXPIRY_WARNING = timedelta(days=30)
-
-PAID_STATUSES = (OrderStatus.APPROVED, OrderStatus.SHIPPED)
-
 
 def points_for(subtotal: Decimal, loyalty: LoyaltyParameters = DEFAULT_LOYALTY) -> int:
     """Standard Sultan Puan for a single order of this subtotal."""

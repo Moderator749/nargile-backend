@@ -11,7 +11,7 @@ as PAYMENT_FAILED, once the page has long expired (PAYTR_ABANDON_AFTER_MINUTES).
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -41,7 +41,8 @@ async def cancel_expired_pending_orders(db: AsyncSession) -> int:
             (
                 Order.status.in_((OrderStatus.AWAITING_TRANSFER, OrderStatus.PENDING_APPROVAL))
                 & (Order.payment_method == PaymentMethod.BANK_TRANSFER)
-                & (Order.created_at <= cutoff)
+                # A recovered order ("Siparişi Kurtar") has its 48 hours from then.
+                & (func.coalesce(Order.recovered_at, Order.created_at) <= cutoff)
             )
             | (
                 (Order.status == OrderStatus.AWAITING_PAYMENT)

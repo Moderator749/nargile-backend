@@ -216,6 +216,7 @@ def _list_item(
         customer_phone=user.phone,
         company_title=user.profile.company_title if user.profile else None,
         billing_address=_billing_address(order, user),
+        internal_note=order.internal_note,
         items=[_line(item, catalog) for item in order.items],
         payment_failure=(failures or {}).get(order.id),
     )
@@ -244,6 +245,27 @@ CANCELLABLE_STATUSES = (*PENDING_STATUSES, OrderStatus.APPROVED)
 
 class CancelOrderRequest(BaseModel):
     reason: str = Field(min_length=3, max_length=300)
+
+
+# Orders that left the shop, and so can come back (İade).
+RETURNABLE_STATUSES = (OrderStatus.SHIPPED, OrderStatus.DELIVERED)
+
+
+class ReturnOrderRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=300)
+    # Off when the goods cannot be sold again (damaged, kept by the carrier).
+    restock: bool = True
+
+
+class RecoverOrderRequest(BaseModel):
+    """"Siparişi Kurtar": `paid` when the money has arrived (the order is
+    approved at once), else it waits for payment again."""
+
+    paid: bool = False
+
+
+class InternalNoteRequest(BaseModel):
+    internal_note: str | None = Field(default=None, max_length=5000)
 
 
 class ShipOrderRequest(BaseModel):
@@ -345,6 +367,8 @@ async def ship_order(
             status_code=409,
             detail=f"Only approved orders can be shipped — current status is {order.status.value}",
         )
+    if payload.carrier == Carrier.STORE:
+        raise HTTPException(status_code=422, detail="Mağazadan teslim kargolanmaz: \"Mağazadan Teslim\" ile işaretleyin")
     now = datetime.now(timezone.utc)
     carrier = payload.carrier or shipping.default_carrier(order)
     code = (payload.tracking_code or "").strip() or None
@@ -468,4 +492,93 @@ async def cancel_order(
     await db.commit()
     await db.refresh(order, attribute_names=["items"])
     # Same shape as the list, so the admin's open order sheet can replace the row.
+    return _list_item(order, user, await _line_catalog(db, [order]))
+
+
+@router.post("/orders/{order_id}/deliver-in-store", response_model=AdminOrderListItem)
+async def deliver_in_store(
+    order_id: uuid.UUID,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Mağazadan Teslim": a paid order the customer collected at the shop —
+    delivered at once, with no carrier and no tracking code."""
+    order, user = await _order_with_user(db, order_id)
+    if order.status != OrderStatus.APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only approved orders can be handed over — current status is {order.status.value}",
+        )
+    await order_lifecycle.deliver_in_store(db, order, datetime.now(timezone.utc))
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    return _list_item(order, user, await _line_catalog(db, [order]))
+
+
+@router.post("/orders/{order_id}/return", response_model=AdminOrderListItem)
+async def return_order(
+    order_id: uuid.UUID,
+    payload: ReturnOrderRequest,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """İade: an order that had left came back. Not a cancellation, which is for
+    an order that never left: this one was shipped or delivered. Its points
+    settle as on a cancellation; its goods go back to stock unless `restock`
+    is off."""
+    order, user = await _order_with_user(db, order_id)
+    if order.status not in RETURNABLE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only shipped or delivered orders can be returned — current status is {order.status.value}",
+        )
+    await order_lifecycle.return_order(
+        db, order, payload.reason.strip(), datetime.now(timezone.utc), restock=payload.restock
+    )
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    return _list_item(order, user, await _line_catalog(db, [order]))
+
+
+@router.post("/orders/{order_id}/recover", response_model=AdminOrderListItem)
+async def recover_order(
+    order_id: uuid.UUID,
+    payload: RecoverOrderRequest,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Siparişi Kurtar": bring back a cancelled order — for a transfer that
+    arrived after the 48-hour cancellation, say. Its stock is taken again (409,
+    naming the lines, when it has been sold since) and its points count again.
+    `paid` approves it at once; otherwise it waits for payment again, with a
+    fresh 48 hours for a transfer."""
+    order, user = await _order_with_user(db, order_id)
+    if order.status != OrderStatus.CANCELLED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Only cancelled orders can be recovered — current status is {order.status.value}",
+        )
+    try:
+        await order_lifecycle.recover(db, order, datetime.now(timezone.utc), paid=payload.paid)
+    except order_lifecycle.StockShortage as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Stok yetersiz, sipariş kurtarılamadı — {exc}") from exc
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    return _list_item(order, user, await _line_catalog(db, [order]))
+
+
+@router.put("/orders/{order_id}/internal-note", response_model=AdminOrderListItem)
+async def set_internal_note(
+    order_id: uuid.UUID,
+    payload: InternalNoteRequest,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Gizli Mağaza Notu": the shop's own note on the order, never shown to
+    the customer. Empty clears it."""
+    order, user = await _order_with_user(db, order_id)
+    order.internal_note = (payload.internal_note or "").strip() or None
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
     return _list_item(order, user, await _line_catalog(db, [order]))

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
 from app.models.b2b import ApplicationStatus, B2BApplication
-from app.models.order import Order, OrderStatus, PaymentMethod
+from app.models.order import PAID_STATUSES, Order, PaymentMethod
 from app.models.user import User, UserRole
 from app.schemas.b2b import DashboardRead, PeriodTotals
 from app.services.exchange_rates import RatesUnavailable, get_rates
@@ -19,7 +19,7 @@ from app.services.exchange_rates import RatesUnavailable, get_rates
 router = APIRouter(prefix="/admin", tags=["admin-dashboard"])
 
 TR = ZoneInfo("Europe/Istanbul")
-PAID = (OrderStatus.APPROVED, OrderStatus.SHIPPED)
+PAID = PAID_STATUSES
 ZERO = Decimal("0.00")
 
 

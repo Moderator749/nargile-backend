@@ -232,6 +232,13 @@ class AdminOrderListItem(BaseModel):
     paid_at: datetime | None = None
     cancelled_at: datetime | None = None
     cancel_reason: str | None = None
+    recovered_at: datetime | None = None
+    delivered_at: datetime | None = None
+    returned_at: datetime | None = None
+    return_reason: str | None = None
+    # "Gizli Mağaza Notu": the shop's own note. Only here — OrderRead, which
+    # every customer-facing answer is built from, never carries it.
+    internal_note: str | None = None
     created_at: datetime
     items: list[AdminOrderItemDetail] = []
     # Only on a PAYMENT_FAILED order.

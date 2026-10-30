@@ -12,7 +12,7 @@ import re
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
-from app.models.order import Carrier, Order, ShippingMethod, ShippingPayer
+from app.models.order import Carrier, Order, OrderStatus, ShippingMethod, ShippingPayer
 from app.services.shipping import yurtici
 from app.services.shipping.base import ShipmentRequest, ShipmentStatus, ShippingError, ShippingProvider
 
@@ -117,6 +117,10 @@ def apply_status(order: Order, status: ShipmentStatus, now) -> None:
         return
     order.carrier_status = status.code[:10] or None
     order.carrier_status_text = status.text[:200] or None
+    # Delivered: the order is in the customer's hands (and the sync stops asking).
+    if status.delivered and order.status == OrderStatus.SHIPPED:
+        order.status = OrderStatus.DELIVERED
+        order.delivered_at = now
     if status.tracking_number and not order.tracking_code:
         order.tracking_code = status.tracking_number[:100]
     if order.tracking_code and (not order.tracking_url or yurtici.is_reference_url(order.tracking_url)):

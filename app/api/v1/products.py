@@ -21,7 +21,7 @@ from app.models.catalog import (
     ProductCrossSell,
     ProductVariant,
 )
-from app.models.order import Order, OrderItem, OrderStatus
+from app.models.order import PAID_STATUSES, Order, OrderItem
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.catalog import (
@@ -598,10 +598,10 @@ async def list_flash_sale_products(
     return await _catalog_view(db, user, list(result.scalars().all()), lang)
 
 
-# Orders that count as sold: approved (paid) or shipped. Pending, cancelled and
-# failed ones never took the goods, and a quote (an export request) moves no
+# Orders that count as sold: approved (paid), shipped or delivered. Pending,
+# cancelled, failed and returned ones are not, and a quote (an export request) moves no
 # stock — it is not a sale.
-SOLD_STATUSES = (OrderStatus.APPROVED, OrderStatus.SHIPPED)
+SOLD_STATUSES = PAID_STATUSES
 
 
 @router.get("/bestsellers", response_model=list[CatalogProductRead])
