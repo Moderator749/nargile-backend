@@ -175,11 +175,16 @@ class CategoryProductOrderRow(BaseModel):
     brand: str | None
     image_url: str | None
     is_published: bool
-    # Its place in the admin's order; None for one not ranked (it follows the ranked, by name).
+    # Its place in the admin's order (in its part: the top's, or the bottom's);
+    # None for one not ranked (it follows the ranked, by name).
     position: int | None
+    # Kept at the bottom ("En altta sabit"): after the unranked, products added later included.
+    bottom: bool = False
 
 
 class CategoryProductOrderWrite(BaseModel):
-    """The ranked products, first to last; the category's others follow by name."""
+    """The ranked products, first to last; the category's others follow by
+    name; then the ones kept at the bottom, first to last."""
 
     product_ids: list[uuid.UUID] = Field(max_length=2000)
+    bottom_ids: list[uuid.UUID] = Field(default_factory=list, max_length=2000)

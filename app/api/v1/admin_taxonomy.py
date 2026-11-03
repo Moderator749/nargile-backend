@@ -26,7 +26,7 @@ from app.schemas.taxonomy import (
     slugify,
 )
 from app.services import root_slugs, slug_redirects
-from app.services.categories import category_subtree, memberships, products_in
+from app.services.categories import category_subtree, memberships, products_in, ranked_order
 from app.services.media import MAX_IMAGE_BYTES, WIDE_SIDE, InvalidImage, delete_media, save_image
 from app.services import auto_translate
 
@@ -335,7 +335,8 @@ async def delete_brand_logo(
 
 async def _order_rows(db: AsyncSession, category: Category) -> list[CategoryProductOrderRow]:
     """Every product the category's page lists (its subcategories' too), in the
-    page's order: the ranked first by position, the rest by name."""
+    page's order: the ranked first by position, the rest by name, the ones kept
+    at the bottom last."""
     rank = (
         select(CategoryProductOrder.position)
         .where(CategoryProductOrder.category_id == category.id, CategoryProductOrder.product_id == Product.id)
@@ -345,7 +346,7 @@ async def _order_rows(db: AsyncSession, category: Category) -> list[CategoryProd
     rows = await db.execute(
         select(Product, rank.label("position"))
         .where(Product.id.in_(products_in(category_subtree(category.slug))))
-        .order_by(rank.asc().nulls_last(), Product.name, Product.id)
+        .order_by(*ranked_order(rank), Product.name, Product.id)
     )
     return [
         CategoryProductOrderRow(
@@ -355,7 +356,8 @@ async def _order_rows(db: AsyncSession, category: Category) -> list[CategoryProd
             brand=p.brand,
             image_url=p.image_url,
             is_published=p.is_published,
-            position=position,
+            position=None if position is None else position % CategoryProductOrder.BOTTOM,
+            bottom=position is not None and position >= CategoryProductOrder.BOTTOM,
         )
         for p, position in rows.all()
     ]
@@ -383,19 +385,25 @@ async def set_category_product_order(
     db: AsyncSession = Depends(get_db),
 ):
     """Rank these products first, in this order, on this category's page (and
-    only there: a group and its subcategories each keep their own). Products
-    left out are unranked: they follow, by name. An empty list clears it."""
+    only there: a group and its subcategories each keep their own), and keep
+    ``bottom_ids`` last, in theirs. Products left out of both are unranked:
+    they follow the first, by name. Empty lists clear it."""
     category = await _category(db, category_id)
-    if len(set(payload.product_ids)) != len(payload.product_ids):
+    named = [*payload.product_ids, *payload.bottom_ids]
+    if len(set(named)) != len(named):
         raise HTTPException(status_code=422, detail="A product is listed twice")
     listed = set((await db.scalars(products_in(category_subtree(category.slug)))).all())
-    strangers = [str(p) for p in payload.product_ids if p not in listed]
+    strangers = [str(p) for p in named if p not in listed]
     if strangers:
         raise HTTPException(status_code=422, detail=f"Not on this category's page: {strangers[:5]}")
     await db.execute(delete(CategoryProductOrder).where(CategoryProductOrder.category_id == category.id))
     db.add_all(
         CategoryProductOrder(category_id=category.id, product_id=product_id, position=place)
         for place, product_id in enumerate(payload.product_ids)
+    )
+    db.add_all(
+        CategoryProductOrder(category_id=category.id, product_id=product_id, position=CategoryProductOrder.BOTTOM + place)
+        for place, product_id in enumerate(payload.bottom_ids)
     )
     await db.commit()
     return await _order_rows(db, category)

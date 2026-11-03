@@ -74,6 +74,43 @@ async def test_a_category_page_follows_its_own_order(
     assert (await client.get("/api/v1/admin/categories/999999/product-order", headers=h)).status_code == 404
 
 
+async def test_products_kept_at_the_bottom_come_last(
+    client: AsyncClient, admin_user: User, catalog, tag: str, cleanup
+):
+    h = auth_header(admin_user)
+    normal_v, heavy_v = catalog
+    cat = (await client.post("/api/v1/admin/categories", headers=h, json={"name": f"Dip {tag}"})).json()
+    a, b = str(normal_v.product_id), str(heavy_v.product_id)
+    await client.post("/api/v1/admin/products/category", headers=h, json={"product_ids": [a, b], "category_id": cat["id"]})
+    first, second = await _ids(client, cat["slug"])
+    url = f"/api/v1/admin/categories/{cat['id']}/product-order"
+    zones = lambda rows: [(r["product_id"], r["position"], r["bottom"]) for r in rows]  # noqa: E731
+
+    # The first by name kept at the bottom: the unranked one (as a product added later would) comes before it.
+    saved = await client.put(url, headers=h, json={"product_ids": [], "bottom_ids": [first]})
+    assert saved.status_code == 200, saved.text
+    assert zones(saved.json()) == [(second, None, False), (first, 0, True)]
+    assert await _ids(client, cat["slug"]) == [second, first]
+
+    # The bottom keeps its own order; the top still leads.
+    saved = await client.put(url, headers=h, json={"product_ids": [], "bottom_ids": [second, first]})
+    assert zones(saved.json()) == [(second, 0, True), (first, 1, True)]
+    assert await _ids(client, cat["slug"]) == [second, first]
+    saved = await client.put(url, headers=h, json={"product_ids": [second], "bottom_ids": [first]})
+    assert zones(saved.json()) == [(second, 0, False), (first, 0, True)]
+    assert await _ids(client, cat["slug"]) == [second, first]
+    assert zones((await client.get(url, headers=h)).json()) == [(second, 0, False), (first, 0, True)]
+
+    # A client that sends only the top (as before) clears the bottom too.
+    saved = await client.put(url, headers=h, json={"product_ids": [second]})
+    assert zones(saved.json()) == [(second, 0, False), (first, None, False)]
+
+    # A product in both parts, or a stranger at the bottom, is refused.
+    for body in ({"product_ids": [first], "bottom_ids": [first]}, {"product_ids": [], "bottom_ids": [str(uuid.uuid4())]}):
+        resp = await client.put(url, headers=h, json=body)
+        assert resp.status_code == 422, resp.text
+
+
 async def test_the_order_editor_is_for_admins(client: AsyncClient, customer_user: User):
     for method in ("get", "put"):
         resp = await client.request(

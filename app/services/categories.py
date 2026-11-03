@@ -1,6 +1,6 @@
-from sqlalchemy import select, union
+from sqlalchemy import case, select, union
 
-from app.models.catalog import Category, Product, ProductCategory
+from app.models.catalog import Category, CategoryProductOrder, Product, ProductCategory
 
 def category_subtree(slug: str):
     """Ids of the category with this slug and all its descendants (recursive CTE)."""
@@ -35,3 +35,12 @@ def category_subtree_ids(category_id: int):
     tree = select(Category.id).where(Category.id == category_id).cte("category_tree", recursive=True)
     tree = tree.union_all(select(Category.id).where(Category.parent_id == tree.c.id))
     return select(tree.c.id)
+
+
+def ranked_order(rank):
+    """A category page's "Önerilen", given a product's position there (a
+    correlated scalar, NULL for one not ranked): the ranked first, by position;
+    then the unranked; then those kept at the bottom, by position. Ties and the
+    unranked go on by whatever the caller orders by next (by name)."""
+    zone = case((rank.is_(None), 1), (rank >= CategoryProductOrder.BOTTOM, 2), else_=0)
+    return (zone, rank.asc())

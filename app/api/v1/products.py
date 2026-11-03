@@ -41,7 +41,7 @@ from app.schemas.catalog import (
 from app.schemas.cart import CartLineInfo, StockCheckLine, StockCheckRequest
 from app.schemas.i18n import Locale
 from app.services import localize, slug_redirects
-from app.services.categories import category_subtree, memberships, products_in
+from app.services.categories import category_subtree, memberships, products_in, ranked_order
 from app.services.checkout_engine import CENTRAL_STOCK, HAVALE_SWITCH, shows_stock_count, stock_on_hand
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
@@ -318,7 +318,8 @@ async def list_products(
         order = (sets.desc(), *order)
     elif category:
         # A category page in its own order ("Önerilen"): the products the
-        # admin ranked for this very category first, the rest by name.
+        # admin ranked for this very category first, the rest by name, the
+        # ones kept at the bottom last.
         rank = (
             select(CategoryProductOrder.position)
             .where(
@@ -328,7 +329,7 @@ async def list_products(
             .correlate(Product)
             .scalar_subquery()
         )
-        order = (rank.asc().nulls_last(), *order)
+        order = (*ranked_order(rank), *order)
     result = await db.execute(
         stmt.options(*_VARIANT_LOADS).order_by(*((buyable.desc(),) if buyable is not None else ()), *order).offset(skip).limit(limit)
     )

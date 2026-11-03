@@ -270,9 +270,14 @@ class CategoryProductOrder(Base):
     """The admin's own order of a category page's products ("Önerilen"): a
     position per product, per category — a group page has its own, apart from
     its subcategories'. Ranked products come first, in this order; the rest
-    follow in the catalog's usual order (by name). Rows go with their product
-    or category.
+    follow in the catalog's usual order (by name); last come the products the
+    admin keeps at the bottom ("En altta sabit"), in their own order, at
+    positions from ``BOTTOM`` on — so a product added later lands above them.
+    Rows go with their product or category.
     """
+
+    #: Where the bottom's positions start: far past any category's size.
+    BOTTOM = 1_000_000
 
     __tablename__ = "category_product_orders"
     __table_args__ = (Index("ix_category_product_orders_position", "category_id", "position"),)
