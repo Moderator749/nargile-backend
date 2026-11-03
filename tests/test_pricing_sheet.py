@@ -13,6 +13,7 @@ Covers:
 - A product that cannot be found saves nothing; admins only; bad sheets refused
 """
 
+import uuid
 from decimal import Decimal
 
 import pytest
@@ -183,6 +184,60 @@ async def test_drafts_and_files(client: AsyncClient, admin_user: User):
     assert neither.status_code == 422
 
 
+async def test_a_saved_row_is_overwritten_in_place(client: AsyncClient, admin_user: User):
+    h = auth_header(admin_user)
+    code = f"OVR-{uuid.uuid4().hex[:6]}"
+    first = (await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_code=code, cost="1000")})).json()
+    other = (await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_name="Başka")})).json()
+
+    # The drafts hold the code, found whatever its case and spaces; a file does not.
+    found = (await client.get(f"{BASE}/records/matching", headers=h, params={"code": f"  {code.lower()} "})).json()
+    assert [r["id"] for r in found] == [first["id"]]
+    assert (await client.get(f"{BASE}/records/matching", headers=h, params={"code": code, "file_name": "Yok böyle"})).json() == []
+    assert (await client.get(f"{BASE}/records/matching", headers=h, params={"code": " "})).json() == []
+
+    # "Üzerine Yaz" in the drafts: the same row, its sheet and its time new, nothing added.
+    drafts_before = len((await client.get(f"{BASE}/records", headers=h)).json())
+    over = await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_code=code, cost="1200"), "replace_id": first["id"]})
+    assert over.status_code == 201, over.text
+    over = over.json()
+    assert over["id"] == first["id"] and over["sheet"]["cost"] == "1200"
+    assert over["created_at"] == first["created_at"] and over["updated_at"] > first["updated_at"]
+    drafts = (await client.get(f"{BASE}/records", headers=h)).json()
+    assert len(drafts) == drafts_before
+    # Newest save first: the overwritten row leads, ahead of one made after it.
+    assert [r["id"] for r in drafts].index(first["id"]) < [r["id"] for r in drafts].index(other["id"])
+
+    # Into a file: a row is overwritten there and the file's count stays.
+    saved = (await client.post(f"{BASE}/file", headers=h, json={"file_name": f"Dosya {code}", "sheet": _sheet(product_code=code)})).json()
+    file_id = saved["file_id"]
+    by_name = (await client.get(f"{BASE}/records/matching", headers=h, params={"code": code, "file_name": f"dosya {code.lower()}"})).json()
+    assert [r["id"] for r in by_name] == [saved["id"]]
+    again = await client.post(
+        f"{BASE}/file", headers=h, json={"file_id": file_id, "sheet": _sheet(product_code=code, cost="1500"), "replace_id": saved["id"]}
+    )
+    assert again.json()["id"] == saved["id"] and again.json()["sheet"]["cost"] == "1500"
+    files = {f["id"]: f for f in (await client.get(f"{BASE}/files", headers=h)).json()}
+    assert files[file_id]["record_count"] == 1
+
+    # A draft saved over into a file moves there.
+    moved = (await client.post(f"{BASE}/file", headers=h, json={"file_id": file_id, "sheet": _sheet(product_code=code), "replace_id": first["id"]})).json()
+    assert moved["id"] == first["id"] and moved["file_id"] == file_id
+    assert first["id"] not in [r["id"] for r in (await client.get(f"{BASE}/records", headers=h)).json()]
+
+    # A row deleted meanwhile cannot be written over.
+    gone = await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(), "replace_id": str(uuid.uuid4())})
+    assert gone.status_code == 404
+
+    # A copied file keeps its rows' times.
+    copy = (await client.post(f"{BASE}/files/{file_id}/duplicate", headers=h, json={})).json()
+    times = lambda rows: sorted((r["product_code"], r["updated_at"]) for r in rows)  # noqa: E731
+    assert times(await _rows(client, h, copy["id"])) == times(await _rows(client, h, file_id))
+    for f in (file_id, copy["id"]):
+        await client.delete(f"{BASE}/files/{f}", headers=h)
+    await client.delete(f"{BASE}/records/{other['id']}", headers=h)
+
+
 async def _file_with(client: AsyncClient, h: dict, name: str, n: int) -> tuple[int, list[str]]:
     ids = []
     for i in range(n):
@@ -323,6 +378,32 @@ async def test_apply_writes_every_customer_groups_live_price(
     # plus 20% VAT 1999.62 on the shelf.
     assert got[SegmentType.RETAIL] == ("TRY", Decimal("1666.35"), Decimal("1999.62"))
     assert all(len(rows) == 1 for rows in prices.values())
+
+
+async def test_a_row_applied_then_saved_over_keeps_its_application(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog
+):
+    normal_v, _ = catalog
+    code = await _code(db_session, normal_v)
+    h = auth_header(admin_user)
+    applied = (await client.post(f"{BASE}/apply-to-product", headers=h, json={"file_name": f"Uygula {code}", "sheet": _sheet(product_code=code)})).json()
+    row = applied["record"]
+    assert row["applied_at"] >= row["updated_at"]
+
+    # Overwritten and applied again: the same row, applied after its save.
+    again = await client.post(
+        f"{BASE}/apply-to-product", headers=h,
+        json={"file_id": row["file_id"], "sheet": _sheet(product_code=code, cost="1100"), "replace_id": row["id"]},
+    )
+    assert again.status_code == 200, again.text
+    again = again.json()["record"]
+    assert again["id"] == row["id"] and again["applied_at"] > row["applied_at"] and again["applied_at"] >= again["updated_at"]
+
+    # Overwritten without applying: the application stays, older than the save.
+    plain = (await client.post(f"{BASE}/file", headers=h, json={"file_id": row["file_id"], "sheet": _sheet(product_code=code, cost="1300"), "replace_id": row["id"]})).json()
+    assert plain["applied_at"] == again["applied_at"] and plain["applied_summary"] is not None
+    assert plain["updated_at"] > plain["applied_at"]
+    await client.delete(f"{BASE}/files/{row['file_id']}", headers=h)
 
 
 async def test_a_foreign_sheet_replaces_try_rows_and_retail_takes_the_final_decision(

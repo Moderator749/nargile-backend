@@ -10,7 +10,7 @@ it has been applied to the live product, when and what it changed.
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, String
+from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -50,6 +50,12 @@ class PricingRecord(Base):
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     applied_summary: Mapped[dict | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now, index=True)
+    # Last time its sheet was saved: on creation, and on every "Üzerine Yaz" /
+    # "Kaydet" over it. The lists go by it, newest first. A row applied before
+    # its last save shows its site prices as its earlier version's.
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), index=True
+    )
     created_by: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )

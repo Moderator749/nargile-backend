@@ -124,6 +124,9 @@ class SaveTarget(BaseModel):
 
 class SaveDraftRequest(BaseModel):
     sheet: PricingSheetIn
+    # Overwrite this row ("Kaydet" on a loaded row, "Üzerine Yaz") instead of
+    # adding one; it ends up where this request saves to.
+    replace_id: uuid.UUID | None = None
 
 
 class RecordIds(BaseModel):
@@ -168,6 +171,8 @@ class DuplicateFileRequest(BaseModel):
 
 class SaveToFileRequest(SaveTarget):
     sheet: PricingSheetIn
+    # As in SaveDraftRequest: overwrite this row, moved into the file if it was elsewhere.
+    replace_id: uuid.UUID | None = None
 
 
 class PricingFileRead(BaseModel):
@@ -199,6 +204,8 @@ class PricingRecordRead(BaseModel):
     applied_at: datetime | None
     applied_summary: dict | None
     created_at: datetime
+    # Last saved; after `applied_at`, the site has its earlier version's prices.
+    updated_at: datetime
 
 
 class AppliedPrice(BaseModel):

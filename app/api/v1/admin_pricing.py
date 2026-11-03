@@ -66,7 +66,8 @@ def _read(record: PricingRecord, file_name: str | None, image_url: str | None = 
         id=record.id, file_id=record.file_id, file_name=file_name,
         product_code=record.product_code, product_name=record.product_name, image_url=image_url,
         sheet=record.sheet,
-        applied_at=record.applied_at, applied_summary=record.applied_summary, created_at=record.created_at,
+        applied_at=record.applied_at, applied_summary=record.applied_summary,
+        created_at=record.created_at, updated_at=record.updated_at,
     )
 
 
@@ -110,16 +111,28 @@ async def _file_for(db: AsyncSession, target: SaveTarget, admin: User) -> Pricin
     return file
 
 
-def _record(sheet: PricingSheetIn, file: PricingFile | None, admin: User) -> PricingRecord:
+async def _record(
+    db: AsyncSession, sheet: PricingSheetIn, file: PricingFile | None, admin: User, replace_id: uuid.UUID | None = None
+) -> PricingRecord:
+    """The row a save writes: a new one, or — given `replace_id` — that row
+    overwritten ("Kaydet" on a loaded row, "Üzerine Yaz"), moved to where this
+    save goes. An overwritten row keeps its id, its creation and its last
+    application to the site, which its `updated_at` now postdates."""
+    now = datetime.now(timezone.utc)
     if file is not None:
-        file.updated_at = datetime.now(timezone.utc)  # the file was saved to just now
-    return PricingRecord(
-        file_id=file.id if file else None,
-        product_code=sheet.product_code,
-        product_name=sheet.product_name,
-        sheet=compute_sheet(sheet),
-        created_by=admin.id,
-    )
+        file.updated_at = now  # the file was saved to just now
+    if replace_id is None:
+        record = PricingRecord(created_by=admin.id, created_at=now)
+    else:
+        record = await db.get(PricingRecord, replace_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Üzerine yazılacak kayıt bulunamadı; silinmiş olabilir.")
+    record.file_id = file.id if file else None
+    record.product_code = sheet.product_code
+    record.product_name = sheet.product_name
+    record.sheet = compute_sheet(sheet)
+    record.updated_at = now
+    return record
 
 
 async def _file_read(db: AsyncSession, file: PricingFile) -> PricingFileRead:
@@ -222,6 +235,7 @@ async def duplicate_file(
                 product_name=row.product_name,
                 sheet=dict(row.sheet),
                 created_at=row.created_at,
+                updated_at=row.updated_at,
                 created_by=admin.id,
             )
         )
@@ -268,9 +282,40 @@ async def list_records(
 ):
     stmt = select(PricingRecord, PricingFile.name).outerjoin(PricingFile, PricingFile.id == PricingRecord.file_id)
     stmt = stmt.where(PricingRecord.file_id == file_id if file_id is not None else PricingRecord.file_id.is_(None))
-    rows = (await db.execute(stmt.order_by(PricingRecord.created_at.desc()).limit(500))).all()
+    rows = (await db.execute(stmt.order_by(PricingRecord.updated_at.desc(), PricingRecord.id).limit(500))).all()
     images = await _images(db, {r.product_code for r, _ in rows})
     return [_read(r, name, images.get(r.product_code.strip().lower())) for r, name in rows]
+
+
+@router.get("/records/matching", response_model=list[PricingRecordRead])
+async def matching_records(
+    code: str = Query(..., max_length=60, description="A product code, any case"),
+    file_id: int | None = Query(None, description="In this file"),
+    file_name: str | None = Query(None, max_length=120, description="In the file of this name (any case); none of either: the drafts"),
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The rows a save of `code` would sit beside in its destination — a file,
+    or the drafts — newest first: "Mevcut Dosya Bulundu" asks about them. A
+    file named but not yet made holds none; an empty code matches nothing."""
+    wanted = code.strip().lower()
+    if not wanted:
+        return []
+    if file_id is None and file_name:
+        name = " ".join(file_name.split()).lower()
+        file_id = await db.scalar(select(PricingFile.id).where(func.lower(PricingFile.name) == name))
+        if file_id is None:
+            return []
+    where = PricingRecord.file_id == file_id if file_id is not None else PricingRecord.file_id.is_(None)
+    rows = (
+        await db.execute(
+            select(PricingRecord, PricingFile.name)
+            .outerjoin(PricingFile, PricingFile.id == PricingRecord.file_id)
+            .where(where, func.lower(func.trim(PricingRecord.product_code)) == wanted)
+            .order_by(PricingRecord.updated_at.desc(), PricingRecord.id)
+        )
+    ).all()
+    return [_read(r, name) for r, name in rows]
 
 
 @router.delete("/records/{record_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -290,8 +335,9 @@ async def save_draft(
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """"Taslak olarak kaydet": the row joins the drafts, no file needed."""
-    record = _record(payload.sheet, None, admin)
+    """"Taslak olarak kaydet": the row joins the drafts, no file needed — or,
+    with `replace_id`, overwrites that row there."""
+    record = await _record(db, payload.sheet, None, admin, payload.replace_id)
     db.add(record)
     await db.commit()
     return _read(record, None, await _image_for(db, record.product_code))
@@ -303,9 +349,10 @@ async def save_to_file(
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """"Dosyaya kaydet": into the chosen file, or a new one by that name."""
+    """"Dosyaya kaydet": into the chosen file, or a new one by that name — or,
+    with `replace_id`, over that row, in that file."""
     file = await _file_for(db, payload, admin)
-    record = _record(payload.sheet, file, admin)
+    record = await _record(db, payload.sheet, file, admin, payload.replace_id)
     db.add(record)
     await db.commit()
     return _read(record, file.name, await _image_for(db, record.product_code))
@@ -319,11 +366,11 @@ async def save_and_apply(
 ):
     """"Dosya ve sitede ürüne kaydet": save the row, then write its prices to
     the product its code names. All or nothing: if the product cannot be
-    priced, nothing is saved either."""
+    priced, nothing is saved either. With `replace_id`, over that row."""
     if not payload.sheet.product_code:
         raise HTTPException(status_code=422, detail="Siteye kaydetmek için ürün kodu gerekli")
     file = await _file_for(db, payload, admin)
-    record = _record(payload.sheet, file, admin)
+    record = await _record(db, payload.sheet, file, admin, payload.replace_id)
     try:
         applied = await apply_to_product(db, payload.sheet, record.sheet)
     except ApplyError as exc:
