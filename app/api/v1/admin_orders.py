@@ -1,5 +1,6 @@
 """Admin-only order management and approval endpoints."""
 
+import re
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, timezone
@@ -27,6 +28,20 @@ from app.services import mailer, order_emails, order_lifecycle, order_sms, payme
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 
 
+# The six characters an order number ends in ("ORD-20261103084112-A1B2C3"):
+# what the team quotes as "#A1B2C3".
+ORDER_SUFFIX = re.compile(r"[0-9A-F]{6}")
+
+
+def order_number_matches(reference: str):
+    """The orders a reference names: a whole number, case aside, or the last
+    six characters of one, with or without its "#"."""
+    ref = reference.strip().lstrip("#").upper()
+    if ORDER_SUFFIX.fullmatch(ref):
+        return func.upper(Order.order_number).like(f"%-{ref}")
+    return func.upper(Order.order_number) == ref
+
+
 @router.get("/orders", response_model=list[AdminOrderListItem])
 async def list_orders(
     response: Response,
@@ -34,6 +49,11 @@ async def list_orders(
     shipping_method: ShippingMethod | None = Query(None),
     date_from: datetime | None = Query(None),
     date_to: datetime | None = Query(None),
+    number: str | None = Query(
+        None,
+        max_length=40,
+        description="An order number, or its last six characters (\"#A1B2C3\"), as Ekip Kanalı links them",
+    ),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     _admin: User = Depends(get_current_admin_user),
@@ -54,6 +74,8 @@ async def list_orders(
         filters.append(Order.created_at >= date_from)
     if date_to is not None:
         filters.append(Order.created_at <= date_to)
+    if number is not None:
+        filters.append(order_number_matches(number))
     stmt = stmt.where(*filters)
     # Total matches, for page controls.
     response.headers["X-Total-Count"] = str(await db.scalar(select(func.count()).select_from(Order).where(*filters)))
