@@ -46,6 +46,12 @@ ORDER_NO_FIELD = 3
 DELIVERED = "DLV"
 CANCELLED = "CNL"
 
+#: How long one call to the service may take. Its answers come in seconds;
+#: a connection it does not pick up is given up on sooner, so an outage on
+#: their side holds an admin's "Kargola" (or the hourly sync) for seconds,
+#: not for the request's whole budget. Every failure is a ShippingError.
+TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+
 
 def tracking_url(code: str) -> str:
     return TRACKING_URL.format(code=code.strip())
@@ -214,13 +220,17 @@ class YurticiProvider:
 
     async def _post(self, operation: str, body: str) -> bytes:
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
+            async with httpx.AsyncClient(timeout=TIMEOUT) as client:
                 resp = await client.post(
                     self.url,
                     content=envelope(operation, body),
                     headers={"Content-Type": "text/xml; charset=utf-8", "SOAPAction": ""},
                 )
-        except httpx.HTTPError as exc:
+        except httpx.TimeoutException as exc:
+            raise ShippingError("Yurtiçi Kargo zamanında yanıt vermedi; birazdan yeniden deneyin.") from exc
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            # Every transport failure (refused, DNS, TLS, a dropped connection)
+            # and a service address that is no URL at all.
             raise ShippingError(f"Yurtiçi Kargo'ya ulaşılamadı: {exc}") from exc
         # A SOAP fault comes back as a 500 with a body worth reading.
         if resp.status_code >= 400 and b"Fault" not in resp.content:
