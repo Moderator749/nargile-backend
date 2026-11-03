@@ -411,6 +411,19 @@ async def test_every_table_exports(client, admin_user, shop, report):
     assert ws["A1"].value and ws[4][0].value and "Marka: Marka X" in ws["A2"].value
 
 
+@pytest.mark.parametrize("report", ["slow-movers", "tier-margins", "missing-costs"])
+async def test_a_file_about_today_does_not_claim_the_period_or_the_group(client, admin_user, shop, report):
+    """These read the catalog as it is today: the period and the customer
+    group never reached them, so the file must not say they did."""
+    resp = await client.get(
+        f"{BASE}/export/{report}", headers=auth_header(admin_user), params=shop.window(segment="DEALER")
+    )
+    subtitle = load_workbook(BytesIO(resp.content)).active["A2"].value
+    assert "itibarıyla" in subtitle and "Dönem" not in subtitle and "Müşteri grubu" not in subtitle
+    today = datetime.now(TR).strftime("%Y%m%d")
+    assert f"rapor-{report}-{today}.xlsx" in resp.headers["content-disposition"]
+
+
 # ── Who and what ─────────────────────────────────────────────────────────────
 
 

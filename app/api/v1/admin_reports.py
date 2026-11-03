@@ -159,13 +159,21 @@ TOP_TITLES = {
 }
 
 
-async def _describe(db: AsyncSession, f: ReportFilters) -> str:
-    """The period and the filters, for the line under the title."""
-    parts = [f"Dönem: {f.date_from:%d.%m.%Y} – {f.date_to:%d.%m.%Y}"]
-    if f.segment:
-        parts.append(f"Müşteri grubu: {SEGMENT_LABELS[f.segment]}")
-    if f.payment_method:
-        parts.append(f"Ödeme: {PAYMENT_LABELS[f.payment_method]}")
+# Reports about the catalog as it is today: the period, the customer group and
+# the payment method do not reach them, so their files do not claim them.
+AS_OF_TODAY = {"slow-movers", "tier-margins", "missing-costs"}
+
+
+async def _describe(db: AsyncSession, f: ReportFilters, *, as_of_today: bool = False) -> str:
+    """The period and the filters that shaped the table, for the line under the title."""
+    if as_of_today:
+        parts = [f"{datetime.now(TR):%d.%m.%Y} itibarıyla"]
+    else:
+        parts = [f"Dönem: {f.date_from:%d.%m.%Y} – {f.date_to:%d.%m.%Y}"]
+        if f.segment:
+            parts.append(f"Müşteri grubu: {SEGMENT_LABELS[f.segment]}")
+        if f.payment_method:
+            parts.append(f"Ödeme: {PAYMENT_LABELS[f.payment_method]}")
     if f.category_id is not None:
         parts.append(f"Kategori: {await db.scalar(select(Category.name).where(Category.id == f.category_id)) or f.category_id}")
     if f.brand_id is not None:
@@ -320,11 +328,14 @@ async def export(
         title, columns = "Maliyeti Eksik Ürünler", MISSING_COLUMNS
         rows = await reports.missing_costs(db, f, rates, now=now, limit=EXPORT_LIMIT)
 
-    subtitle = await _describe(db, f)
+    subtitle = await _describe(db, f, as_of_today=report in AS_OF_TODAY)
     if report in ("profitability", "tier-margins"):
         subtitle += f" · Marj eşiği: %{threshold}"
+    if report == "missing-costs":
+        subtitle += " · Satışlar: son 90 gün"
     content = workbook(title, subtitle, columns, rows)
-    filename = f"rapor-{report}-{f.date_from:%Y%m%d}-{f.date_to:%Y%m%d}.xlsx"
+    dates = f"{now:%Y%m%d}" if report in AS_OF_TODAY else f"{f.date_from:%Y%m%d}-{f.date_to:%Y%m%d}"
+    filename = f"rapor-{report}-{dates}.xlsx"
     return Response(
         content=content,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
