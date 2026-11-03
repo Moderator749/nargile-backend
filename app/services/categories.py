@@ -28,3 +28,10 @@ def products_in(category_ids):
     """Ids of the products listed under any of these categories (ids or a select of them)."""
     listed = memberships().subquery()
     return select(listed.c.product_id).where(listed.c.category_id.in_(category_ids))
+
+
+def category_subtree_ids(category_id: int):
+    """Ids of this category and all its descendants (recursive CTE)."""
+    tree = select(Category.id).where(Category.id == category_id).cte("category_tree", recursive=True)
+    tree = tree.union_all(select(Category.id).where(Category.parent_id == tree.c.id))
+    return select(tree.c.id)
