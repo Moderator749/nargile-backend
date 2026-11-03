@@ -42,8 +42,9 @@ from app.schemas.reports import (
     TrendRead,
 )
 from app.services.categories import category_subtree_ids, products_in
-from app.services.checkout_engine import CENTRAL_STOCK
+from app.services.checkout_engine import CENTRAL_STOCK, HAVALE_SWITCH
 from app.services.exchange_rates import RatesUnavailable, get_rates
+from app.services.store_parameters import load_parameters
 
 TR = ZoneInfo("Europe/Istanbul")
 CENT = Decimal("0.01")
@@ -643,7 +644,17 @@ async def tier_margins(
 ) -> list[TierMarginRow]:
     """Each costed product's list price per customer group against its cost
     today, lowest margin first. Prices are product-wide in practice, so the
-    first colour on sale stands for the product."""
+    first colour on sale stands for the product.
+
+    Beside each list margin, the margin after the havale discount at the
+    ladder's highest rate — the worst a transfer can do to it: on every
+    Perakende price (a retail cart takes it whole), and on a Kafe, Toptan or
+    Bayi price when the product's switch for that group is on, as checkout
+    gives it (HAVALE_SWITCH). The volume discount is a retail cart's, not a
+    price's, and is left out.
+    """
+    params = await load_parameters(db)
+    havale = max((tier.rate for tier in params.bank_transfer_tiers), default=Decimal(0))
     now_cost = cost_today(rates)
     first = (
         select(ProductVariant.id, ProductVariant.product_id, now_cost.label("cost"))
@@ -654,7 +665,7 @@ async def tier_margins(
     )
     products = (
         await db.execute(
-            select(first.c.id, first.c.cost, Product.id, Product.base_code, Product.name, Category.name, Brand.name)
+            select(first.c.id, first.c.cost, Product, Category.name, Brand.name)
             .join(Product, Product.id == first.c.product_id)
             .outerjoin(Category, Category.id == Product.category_id)
             .outerjoin(Brand, Brand.id == Product.brand_id)
@@ -671,21 +682,30 @@ async def tier_margins(
         prices.setdefault((row.variant_id, codes.get(row.segment_id)), []).append(row)
 
     out = []
-    for variant_id, cost, pid, code, name, category, brand in products:
+    for variant_id, cost, product, category, brand in products:
         cost = Decimal(cost)
         tiers = []
         for segment in SEGMENT_ORDER:
             price = _price_excl_try(prices.get((variant_id, segment), []), rates)
             margin = _percent(price - cost, price) if price else None
+            takes_havale = havale > 0 and (
+                segment == SegmentType.RETAIL or getattr(product, HAVALE_SWITCH[segment])
+            )
+            havale_price = (price * (1 - havale)).quantize(CENT, rounding=ROUND_HALF_UP) if price and takes_havale else None
+            havale_margin = _percent(havale_price - cost, havale_price) if havale_price else None
+            worst = min((m for m in (margin, havale_margin) if m is not None), default=None)
             tiers.append(TierMargin(
                 segment=segment,
                 price_excl_vat=price,
                 margin_percent=margin,
-                below_threshold=margin is not None and margin < threshold,
+                havale_rate_percent=(havale * 100).quantize(TENTH) if havale_price is not None else None,
+                havale_price_excl_vat=havale_price,
+                havale_margin_percent=havale_margin,
+                below_threshold=worst is not None and worst < threshold,
             ))
-        known = [t.margin_percent for t in tiers if t.margin_percent is not None]
+        known = [m for t in tiers for m in (t.margin_percent, t.havale_margin_percent) if m is not None]
         row = TierMarginRow(
-            product_id=pid, code=code, name=name, category=category, brand=brand,
+            product_id=product.id, code=product.base_code, name=product.name, category=category, brand=brand,
             cost=_money(cost), tiers=tiers,
             lowest_margin_percent=min(known) if known else None,
             alert=any(t.below_threshold for t in tiers),

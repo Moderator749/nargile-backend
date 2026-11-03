@@ -143,11 +143,18 @@ class TierMargin(BaseModel):
     segment: SegmentType
     price_excl_vat: Decimal | None
     margin_percent: Decimal | None
+    # Paid by havale/EFT at the highest rate the ladder gives (by default 7%,
+    # from ₺30,000): None when this group's price never takes the discount.
+    havale_rate_percent: Decimal | None
+    havale_price_excl_vat: Decimal | None
+    havale_margin_percent: Decimal | None
+    # Either margin under the threshold.
     below_threshold: bool
 
 
 class TierMarginRow(BaseModel):
-    """A product's list prices against its cost, group by group, as of today."""
+    """A product's list prices against its cost, group by group, as of today —
+    as listed, and after the havale discount where the group takes it."""
 
     product_id: uuid.UUID
     code: str

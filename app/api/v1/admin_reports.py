@@ -213,6 +213,7 @@ def _tier_columns() -> list[Column]:
         columns += [
             Column(f"{label} Fiyatı (KDV hariç)", lambda r, i=i: r.tiers[i].price_excl_vat, "money"),
             Column(f"{label} Marjı", lambda r, i=i: r.tiers[i].margin_percent, "percent"),
+            Column(f"{label} Havale ile Marj", lambda r, i=i: r.tiers[i].havale_margin_percent, "percent"),
         ]
     return columns + [
         Column("En Düşük Marj", lambda r: r.lowest_margin_percent, "percent"),

@@ -21,8 +21,9 @@ Covers:
 - Trend buckets by hour, day and week, zero-filled
 - Customer group shares and margins; best sellers by product/category/brand
 - Card against havale: conversion and cancellation
-- Profitability with the margin threshold; list-price margins per group with
-  the erosion alert (a USD cost at today's rate)
+- Profitability with the margin threshold; list-price margins per group, as
+  listed and after the havale discount, with the erosion alert (a USD cost at
+  today's rate)
 - Stock that has not sold in 60 days; products missing their cost
 - Every table as an Excel file; admins only; impossible periods refused
 """
@@ -101,11 +102,13 @@ async def shop(db_session: AsyncSession, segments: dict[SegmentType, CustomerSeg
     db_session.add_all([child, brand, other_brand])
     await db_session.flush()
 
-    async def product(code, *, category, brand, cost, currency="TRY", stock=None, prices=(), created=long_ago, published=True):
+    async def product(
+        code, *, category, brand, cost, currency="TRY", stock=None, prices=(), created=long_ago, published=True, **switches
+    ):
         p = Product(
             base_code=f"{code}-{tag}", name=f"Ürün {code} {tag}", tags=[], category_id=category.id,
             # The brand is linked from its name, as every writer links it.
-            brand=brand.name, created_at=created, is_published=published,
+            brand=brand.name, created_at=created, is_published=published, **switches,
         )
         db_session.add(p)
         await db_session.flush()
@@ -125,7 +128,11 @@ async def shop(db_session: AsyncSession, segments: dict[SegmentType, CustomerSeg
         return p
 
     R, B_ = SegmentType.RETAIL, SegmentType.DEALER
-    a = await product("A", category=child, brand=brand, cost="500", stock=10, prices=[(R, "1000"), (B_, "550")])
+    # A gives Bayi the havale discount; the switch is off unless turned on.
+    a = await product(
+        "A", category=child, brand=brand, cost="500", stock=10, prices=[(R, "1000"), (B_, "550")],
+        has_dealer_havale_discount=True,
+    )
     b = await product("B", category=other, brand=other_brand, cost="300", prices=[(R, "500")])
     c = await product("C", category=other, brand=brand, cost="100", stock=5)
     d = await product("D", category=other, brand=brand, cost=None, stock=3,
@@ -330,18 +337,32 @@ async def test_list_price_margins_per_group_raise_the_erosion_alert(client, admi
     assert [r["code"] for r in rows] == [shop.a.base_code, shop.e.base_code, shop.c.base_code]
     a, e, c = rows
     tiers = {t["segment"]: t for t in a["tiers"]}
-    assert D(tiers["RETAIL"]["margin_percent"]) == D("50.0") and tiers["RETAIL"]["below_threshold"] is False
-    # Bayi at 550 against 500: 9.1%, under the 15% line.
-    assert D(tiers["DEALER"]["margin_percent"]) == D("9.1") and tiers["DEALER"]["below_threshold"] is True
-    assert tiers["CAFE"]["price_excl_vat"] is None and a["alert"] is True
-    # E's cost is USD 10 at today's 40: 400 against Bayi's 450.
+    # Perakende: 1000 against 500, and 930 after the 7% a large transfer takes.
+    retail = tiers["RETAIL"]
+    assert (D(retail["margin_percent"]), D(retail["havale_rate_percent"]), D(retail["havale_price_excl_vat"])) == (
+        D("50.0"), D("7.0"), D("930.00")
+    )
+    assert D(retail["havale_margin_percent"]) == D("46.2") and retail["below_threshold"] is False
+    # Bayi at 550 against 500 is 9.1%; paid by havale, 511.50 leaves 2.2%.
+    dealer = tiers["DEALER"]
+    assert D(dealer["margin_percent"]) == D("9.1") and D(dealer["havale_margin_percent"]) == D("2.2")
+    assert dealer["below_threshold"] is True and D(a["lowest_margin_percent"]) == D("2.2")
+    assert tiers["CAFE"]["price_excl_vat"] is None and tiers["CAFE"]["havale_margin_percent"] is None
+    assert a["alert"] is True
+    # E's cost is USD 10 at today's 40: 400 against Bayi's 450, and E's Bayi
+    # price never takes the havale discount — its switch is off.
+    e_dealer = next(t for t in e["tiers"] if t["segment"] == "DEALER")
+    assert e_dealer["havale_rate_percent"] is None and e_dealer["havale_margin_percent"] is None
     assert D(e["cost"]) == D("400.00") and D(e["lowest_margin_percent"]) == D("11.1") and e["alert"] is True
     assert c["alert"] is False and c["lowest_margin_percent"] is None
 
     alerts = await _get(client, admin_user, "tier-margins", {"brand_id": shop.brand.id, "only_alerts": "true"})
     assert [r["code"] for r in alerts] == [shop.a.base_code, shop.e.base_code]
-    none = await _get(client, admin_user, "tier-margins", {"brand_id": shop.brand.id, "threshold": "5", "only_alerts": "true"})
-    assert none == []
+    # At 5% only the transfer's erosion of A's Bayi price is left; at 2%, nothing.
+    five = await _get(client, admin_user, "tier-margins", {"brand_id": shop.brand.id, "threshold": "5", "only_alerts": "true"})
+    assert [r["code"] for r in five] == [shop.a.base_code]
+    two = await _get(client, admin_user, "tier-margins", {"brand_id": shop.brand.id, "threshold": "2", "only_alerts": "true"})
+    assert two == []
 
 
 # ── Stock and missing costs ──────────────────────────────────────────────────
