@@ -87,6 +87,22 @@ async def get_current_admin_user(
     return user
 
 
+#: Who is in the panel team's channel: the admins, and the staff who do not
+#: reach the rest of the panel.
+TEAM_ROLES = (UserRole.SUPER_ADMIN, UserRole.ADMIN, UserRole.STAFF)
+
+
+async def get_current_team_user(
+    user: User = Depends(get_current_user),
+) -> User:
+    if user.role not in TEAM_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Panel team access required",
+        )
+    return user
+
+
 def get_session_factory() -> async_sessionmaker:
     """Where work that outlives the request (a campaign, an order's SMS) opens
     its own session once the response has gone; the tests swap it for theirs."""
