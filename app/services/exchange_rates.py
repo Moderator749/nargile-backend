@@ -131,6 +131,17 @@ async def _read_snapshot() -> tuple[float, Rates] | None:
     return time.monotonic() - max(age, 0), rates
 
 
+def cached_rates() -> Rates | None:
+    """The rates already in memory while still usable, without asking TCMB.
+
+    For a figure that must never hold a request up — the cost frozen on an
+    order line — where no rate is a better answer than a slow one.
+    """
+    if _cache and time.monotonic() - _cache[0] < STALE_OK_FOR_S:
+        return _cache[1]
+    return None
+
+
 async def get_rates() -> Rates:
     global _cache
     async with _lock:

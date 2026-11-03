@@ -336,6 +336,8 @@ async def save_and_apply(
         "variants": applied.variants,
         "prices": [p.model_dump(mode="json") for p in applied.prices],
         "skipped": applied.skipped,
+        "cost": str(applied.cost),
+        "cost_currency": applied.cost_currency.value,
     }
     db.add(record)
     await db.commit()

@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
 from app.models.catalog import WarehouseType
+from app.models.user import SegmentType
 
 
 class PaymentMethod(str, enum.Enum):
@@ -253,6 +254,10 @@ class Order(Base):
     )
     # Who it was, as named then: the panel shows it without another lookup.
     store_approved_by_name: Mapped[str | None] = mapped_column(String(150))
+    # The price list it was charged from (Perakende, Kafe, Toptan, Bayi), as it
+    # was then: the account may move to another group later, and the reports
+    # count the sale where it was made.
+    segment_code: Mapped[str | None] = mapped_column(Enum(SegmentType), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
@@ -283,5 +288,11 @@ class OrderItem(Base):
     # it back into the central pool either way. None on a request (nothing
     # taken) and on lines from before it was kept.
     stock_warehouse: Mapped[WarehouseType | None] = mapped_column(Enum(WarehouseType), nullable=True)
+    # Frozen at checkout for the reports, so a later price or cost change does
+    # not rewrite past margins: the VAT rate the unit price includes, and what
+    # one unit cost in TRY before VAT on the day. The cost is None when the
+    # product had none, or its currency's rate was not at hand.
+    vat_rate: Mapped[Decimal | None] = mapped_column(Numeric(4, 2))
+    unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
 
     order: Mapped[Order] = relationship(back_populates="items")

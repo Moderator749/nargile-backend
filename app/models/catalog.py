@@ -332,7 +332,13 @@ class ProductVariant(Base):
         Boolean, nullable=False, default=True, server_default=sa_true()
     )
     attributes: Mapped[dict | None] = mapped_column(JSONB)
-    cost_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    # What one unit costs the shop, before VAT, in `cost_currency`: written by
+    # the pricing worksheet when it is applied ("Dosya ve Sitede Ürüne Kaydet").
+    # None = unknown; the reports list such a product as missing its cost.
+    cost_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    cost_currency: Mapped[str] = mapped_column(
+        Enum(CurrencyType), nullable=False, default=CurrencyType.TRY, server_default=CurrencyType.TRY.value
+    )
     # Weight of one unit in kg (coal's 20 kg free-shipping minimum); None = unknown.
     weight_kg: Mapped[Decimal | None] = mapped_column(Numeric(8, 3))
 

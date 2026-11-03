@@ -41,6 +41,7 @@ from app.models.user import CustomerSegment, SegmentType
 from app.schemas.pricing import AppliedPrice, PricingSheetIn
 
 CENT = Decimal("0.01")
+COST_PLACES = Decimal("0.0001")
 
 
 def _step(previous: Decimal, percent: Decimal) -> Decimal:
@@ -131,6 +132,9 @@ class Applied:
     variants: int
     prices: list[AppliedPrice]
     skipped: list[str]
+    # What was written as the product's cost: before VAT, in the sheet's currency.
+    cost: Decimal
+    cost_currency: CurrencyType
 
 
 def _both_sides(price: Decimal, vat_mode: str, vat_rate: Decimal) -> tuple[Decimal, Decimal]:
@@ -139,6 +143,14 @@ def _both_sides(price: Decimal, vat_mode: str, vat_rate: Decimal) -> tuple[Decim
     if vat_mode == "INCL":
         return (price / factor).quantize(CENT), price.quantize(CENT)
     return price.quantize(CENT), (price * factor).quantize(CENT)
+
+
+def cost_before_vat(cost: Decimal, vat_mode: str, vat_rate: Decimal) -> Decimal:
+    """A sheet's cost before VAT: as typed on an EXCL sheet, less the retail
+    VAT rate on an INCL one (the rate every price is stored with)."""
+    if vat_mode == "INCL":
+        cost = cost / (1 + vat_rate / 100)
+    return cost.quantize(COST_PLACES, rounding=ROUND_HALF_UP)
 
 
 async def find_product(db: AsyncSession, code: str) -> Product | None:
@@ -156,7 +168,8 @@ async def find_product(db: AsyncSession, code: str) -> Product | None:
 
 
 async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: dict) -> Applied:
-    """Write the sheet's prices to every active colour of the product it names.
+    """Write the sheet's prices — and its cost — to every active colour of the
+    product it names.
 
     One price per customer group, in the sheet's currency — except retail on a
     USD/EUR sheet with a "son karar", which is that TRY figure. A group's rows
@@ -200,7 +213,13 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
             label=label, segment=segment, currency=currency, price_excl_tax=excl, price_incl_tax=incl,
         ))
     await write_prices(db, variants, rows, vat_rate)
-    return Applied(product=product, variants=len(variants), prices=applied, skipped=skipped)
+    cost = cost_before_vat(sheet.cost, sheet.vat_mode, sheet.retail.vat_rate)
+    for variant in variants:
+        variant.cost_price, variant.cost_currency = cost, sheet.currency
+    return Applied(
+        product=product, variants=len(variants), prices=applied, skipped=skipped,
+        cost=cost, cost_currency=sheet.currency,
+    )
 
 
 async def segment_ids(db: AsyncSession) -> dict[SegmentType, int]:

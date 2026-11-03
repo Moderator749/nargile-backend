@@ -78,7 +78,7 @@ from app.services.store_parameters import (
     StoreParameters,
     load_parameters,
 )
-from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
+from app.services.exchange_rates import Rates, RatesUnavailable, cached_rates, get_rates
 from app.services.flash_sales import discounted_price, live_flash_sales
 from app.services.loyalty_service import get_user_loyalty_balance
 from app.services.wallet import points_for
@@ -196,6 +196,9 @@ class ResolvedCartItem:
     # pool they come out of: the central one, for every buyer.
     available: int = 0
     stock_warehouse: WarehouseType = CENTRAL_STOCK
+    # What one unit cost in TRY before VAT today, for the reports; None when
+    # the product has no cost or its currency's rate is not at hand.
+    unit_cost: Decimal | None = None
 
     @property
     def line_total_excl_tax(self) -> Decimal:
@@ -214,6 +217,19 @@ class ResolvedCartItem:
     def __post_init__(self) -> None:
         self.line_total = calculate_line_total(self.unit_price, self.quantity)
         self.tags = self.product.tags or []
+
+def unit_cost_try(variant: ProductVariant, rates: Rates | None) -> Decimal | None:
+    """The variant's cost before VAT in TRY, at `rates` when it is in USD/EUR."""
+    if variant.cost_price is None:
+        return None
+    currency = CurrencyType(variant.cost_currency)
+    if currency == CurrencyType.TRY:
+        return variant.cost_price
+    rate = rates.try_per_unit.get(currency.value) if rates else None
+    if not rate or rate <= 0:
+        return None
+    return (variant.cost_price * rate).quantize(Decimal("0.0001"))
+
 
 # ── Shipping quote ───────────────────────────────────────────────────────────
 
@@ -498,6 +514,8 @@ class CheckoutEngine:
                 # Where its stock came from, for a cancellation to put it back;
                 # a request took none.
                 stock_warehouse=None if quote else item.stock_warehouse,
+                vat_rate=item.vat_rate,
+                unit_cost=item.unit_cost,
             )
             for item in cart.items
         ]
@@ -538,6 +556,8 @@ class CheckoutEngine:
             order_note=order_note,
             is_quote=quote,
             transport_mode=transport_mode,
+            # The list it was priced from: Perakende for an account in no group.
+            segment_code=user.segment.code if user.segment else SegmentType.RETAIL,
             # Recorded when they were actually accepted, which a request does
             # not do; the sale that may follow records its own.
             agreements_accepted_at=(
@@ -797,6 +817,9 @@ class CheckoutEngine:
         variants = {v.id: v for v in result.scalars().all()}
         sales = await live_flash_sales(self._db, variant_ids, datetime.now(timezone.utc))
         rates = await self._rates_for(variants.values(), segment_id)
+        # A foreign cost is converted only at rates already in hand: the
+        # reports' figure never sends a checkout to TCMB, nor waits on it.
+        cost_rates = rates or cached_rates()
 
         items: list[ResolvedCartItem] = []
         for vid, qty in variant_quantities.items():
@@ -829,6 +852,7 @@ class CheckoutEngine:
                     unit_weight_kg=variant.weight_kg,
                     vat_rate=price_row.vat_rate,
                     available=available,
+                    unit_cost=unit_cost_try(variant, cost_rates),
                 )
             )
 
