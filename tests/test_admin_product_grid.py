@@ -94,6 +94,59 @@ async def test_a_product_without_a_price_sorts_last_either_way(client: AsyncClie
         assert codes[-1] == priceless["base_code"]
 
 
+async def test_a_foreign_priced_product_sorts_by_its_price_in_lira(
+    client: AsyncClient, admin_user: User, grid, monkeypatch
+):
+    """The grid's prices are 120 / 240 / 360 TRY incl. VAT; $7.50 at 40 TRY/USD
+    is 300 TRY, so it sorts between the 240 and the 360 — not last, as if it
+    had no price."""
+    from app.api.v1 import admin_catalog
+    from app.services.exchange_rates import Rates
+
+    async def rates():
+        return Rates(bulletin_date=datetime.now(timezone.utc).date(), try_per_unit={"USD": Decimal("40"), "EUR": Decimal("45")})
+
+    monkeypatch.setattr(admin_catalog, "get_rates", rates)
+    usd = await _save(
+        client,
+        admin_user,
+        {
+            "base_code": f"GU-{grid['suffix']}",
+            "name": f"Dövizli {grid['suffix']}",
+            "stock": {"quantity": 3},
+            "prices": [{"currency": "USD", "cells": {"RETAIL": {"price_incl_tax": "7.50", "vat_rate": "20.00"}}}],
+            "rules": {},
+            "opportunity": {},
+        },
+    )
+    order = [grid["b"]["base_code"], grid["c"]["base_code"], usd["base_code"], grid["a"]["base_code"]]
+    assert await _codes(client, admin_user, grid["suffix"], order_by="price", order_dir="asc") == order
+    assert await _codes(client, admin_user, grid["suffix"], order_by="price", order_dir="desc") == list(reversed(order))
+
+
+async def test_without_rates_a_foreign_price_sorts_last(client: AsyncClient, admin_user: User, grid, monkeypatch):
+    from app.api.v1 import admin_catalog
+    from app.services.exchange_rates import RatesUnavailable
+
+    async def no_rates():
+        raise RatesUnavailable
+
+    monkeypatch.setattr(admin_catalog, "get_rates", no_rates)
+    usd = await _save(
+        client,
+        admin_user,
+        {
+            "base_code": f"GU-{grid['suffix']}",
+            "name": f"Dövizli {grid['suffix']}",
+            "stock": {"quantity": 3},
+            "prices": [{"currency": "USD", "cells": {"RETAIL": {"price_incl_tax": "1.00", "vat_rate": "20.00"}}}],
+            "rules": {},
+            "opportunity": {},
+        },
+    )
+    assert (await _codes(client, admin_user, grid["suffix"], order_by="price", order_dir="asc"))[-1] == usd["base_code"]
+
+
 # ── Bulk delete ──────────────────────────────────────────────────────────────
 
 

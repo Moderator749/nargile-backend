@@ -1,6 +1,7 @@
 """Admin-only catalog and inventory management endpoints."""
 
 import uuid
+from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
@@ -36,6 +37,8 @@ from app.schemas.admin import (
 from app.schemas.product_sheet import ProductSheetRead, ProductSheetWrite
 from app.services import product_blueprint
 from app.services.checkout_engine import CENTRAL_STOCK
+from app.services.exchange_rates import RatesUnavailable, get_rates
+from app.services.pricing_engine import CURRENCY_PREFERENCE
 from app.services import auto_translate
 
 router = APIRouter(prefix="/admin", tags=["admin-catalog"])
@@ -149,19 +152,39 @@ async def _product_order(db: AsyncSession, sort: ProductSort | None, direction: 
         .scalar_subquery()
     )
     retail_id = await _retail_segment_id(db)
-    retail_price = (
-        select(func.min(VariantPrice.price_incl_tax))
-        .select_from(VariantPrice)
-        .join(ProductVariant, ProductVariant.id == VariantPrice.variant_id)
-        .where(
-            ProductVariant.product_id == Product.id,
-            ProductVariant.is_active.is_(True),
-            VariantPrice.segment_id == retail_id,
-            VariantPrice.currency == CurrencyType.TRY,
+
+    def retail_in(currency: CurrencyType, try_per_unit: Decimal | None = None):
+        """The product's cheapest retail price in `currency`, in TRY."""
+        amount = VariantPrice.price_incl_tax if try_per_unit is None else VariantPrice.price_incl_tax * try_per_unit
+        return (
+            select(func.min(amount))
+            .select_from(VariantPrice)
+            .join(ProductVariant, ProductVariant.id == VariantPrice.variant_id)
+            .where(
+                ProductVariant.product_id == Product.id,
+                ProductVariant.is_active.is_(True),
+                VariantPrice.segment_id == retail_id,
+                VariantPrice.currency == currency,
+            )
+            .correlate(Product)
+            .scalar_subquery()
         )
-        .correlate(Product)
-        .scalar_subquery()
-    )
+
+    # The price the storefront charges: its TRY row, else its USD or EUR one at
+    # the day's TCMB rate (pricing_engine's CURRENCY_PREFERENCE). Without rates
+    # a foreign price can't be placed, and sorts with the priceless, last.
+    retail_price = retail_in(CurrencyType.TRY)
+    if sort == ProductSort.PRICE:
+        try:
+            rates = await get_rates()
+        except RatesUnavailable:
+            rates = None
+        foreign = [
+            retail_in(currency, rates.try_per_unit[currency.value])
+            for currency in CURRENCY_PREFERENCE
+            if currency != CurrencyType.TRY and rates and rates.try_per_unit.get(currency.value)
+        ]
+        retail_price = func.coalesce(retail_price, *foreign)
 
     column = {
         # The product code, not a stock code: a coloured product has one per colour.
