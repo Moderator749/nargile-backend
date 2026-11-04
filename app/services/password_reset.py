@@ -16,7 +16,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import ADMIN_PASSWORD_MIN, hash_password
+from app.core.security import ADMIN_PASSWORD_MIN, hash_password_async
 from app.models.notification import EMAIL, SMS, PasswordResetToken
 from app.models.user import User, UserRole
 from app.services.notify import dispatch
@@ -189,7 +189,7 @@ async def reset_password(
     # Customers may choose six characters; an account that runs the shop may not.
     if user.role in (UserRole.SUPER_ADMIN, UserRole.ADMIN) and len(new_password) < ADMIN_PASSWORD_MIN:
         raise PasswordTooShort
-    user.hashed_password = hash_password(new_password)
+    user.hashed_password = await hash_password_async(new_password)
     # Every session from before the reset ends with it: whoever had the old
     # password, or a token, is out.
     user.token_version = (user.token_version or 0) + 1

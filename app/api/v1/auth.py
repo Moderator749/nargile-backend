@@ -10,7 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
 from app.core.database import get_db
-from app.core.security import NO_PASSWORD, create_session_token, hash_password, needs_rehash, verify_password
+from app.core.security import (
+    NO_PASSWORD,
+    create_session_token,
+    hash_password_async,
+    needs_rehash,
+    verify_password_async,
+)
 from app.models.user import (
     AccountType,
     AddressKind,
@@ -82,7 +88,7 @@ async def register(payload: RegistrationCreate, db: AsyncSession = Depends(get_d
     user = User(
         email=payload.email,
         username=payload.username,
-        hashed_password=hash_password(payload.password),
+        hashed_password=await hash_password_async(payload.password),
         full_name=payload.full_name,
         phone=payload.phone,
         landline_phone=payload.landline_phone,
@@ -147,7 +153,7 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
         .limit(1)
     )
     user = result.scalars().first()
-    if not user or not verify_password(payload.password, user.hashed_password):
+    if not user or not await verify_password_async(payload.password, user.hashed_password):
         failures.append(now)
         raise HTTPException(status_code=401, detail="Invalid credentials")
     _failures.pop(given, None)
@@ -156,7 +162,7 @@ async def login(payload: LoginRequest, db: AsyncSession = Depends(get_db)):
     # An account from the old store signs in with its OpenCart password once;
     # from then on it has a bcrypt hash like everyone else.
     if needs_rehash(user.hashed_password):
-        user.hashed_password = hash_password(payload.password)
+        user.hashed_password = await hash_password_async(payload.password)
         await db.commit()
 
     return Token(access_token=create_session_token(user))
@@ -218,7 +224,7 @@ async def claim_guest(
         raise HTTPException(status_code=409, detail="Bu oturum zaten bir hesaba ait.")
     if await _account_with(db, user.email):
         raise HTTPException(status_code=409, detail=ACCOUNT_EXISTS)
-    user.hashed_password = hash_password(payload.password)
+    user.hashed_password = await hash_password_async(payload.password)
     user.is_guest = False
     user.token_version = (user.token_version or 0) + 1
     try:

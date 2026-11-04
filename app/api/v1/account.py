@@ -15,8 +15,8 @@ from app.core.security import (
     ADMIN_PASSWORD_MIN,
     CUSTOMER_PASSWORD_MIN,
     create_session_token,
-    hash_password,
-    verify_password,
+    hash_password_async,
+    verify_password_async,
 )
 from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
@@ -490,12 +490,12 @@ async def change_my_password(
     Every other session ends with the old password, as at a reset; this one
     carries on with the fresh token returned.
     """
-    if not verify_password(payload.current_password, user.hashed_password):
+    if not await verify_password_async(payload.current_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Mevcut şifreniz hatalı.")
     minimum = ADMIN_PASSWORD_MIN if user.role in (UserRole.SUPER_ADMIN, UserRole.ADMIN) else CUSTOMER_PASSWORD_MIN
     if len(payload.new_password) < minimum:
         raise HTTPException(status_code=422, detail=f"Yeni şifre en az {minimum} karakter olmalı.")
-    user.hashed_password = hash_password(payload.new_password)
+    user.hashed_password = await hash_password_async(payload.new_password)
     user.token_version = (user.token_version or 0) + 1
     await db.commit()
     return Token(access_token=create_session_token(user))

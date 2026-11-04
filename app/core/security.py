@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from starlette.concurrency import run_in_threadpool
 
 from app.core.config import settings
 
@@ -77,6 +78,17 @@ def verify_password(plain: str, hashed: str) -> bool:
     if hashed.startswith(OPENCART_PREFIX):
         return _verify_opencart(plain, hashed)
     return pwd_context.verify(plain, hashed)
+
+
+# bcrypt takes a few hundred milliseconds of CPU by design. A request handler
+# runs on the event loop, so it hashes and verifies off it: the server keeps
+# answering everyone else meanwhile. Scripts and tests use the plain forms.
+async def hash_password_async(password: str) -> str:
+    return await run_in_threadpool(hash_password, password)
+
+
+async def verify_password_async(plain: str, hashed: str) -> bool:
+    return await run_in_threadpool(verify_password, plain, hashed)
 
 
 def needs_rehash(hashed: str) -> bool:
