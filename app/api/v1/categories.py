@@ -7,18 +7,18 @@ from app.models.catalog import Category, Product
 from app.schemas.catalog import CategoryRead
 from app.schemas.i18n import Locale
 from app.services import localize, slug_redirects
-from app.services.categories import memberships
+from app.services.categories import memberships, visible_ids
 
 # Public, read-only. Category writes belong in the admin API.
 router = APIRouter(prefix="/categories", tags=["categories"])
 
 
 async def _visible(db: AsyncSession) -> list[Category]:
-    """Active categories whose parent (if any) is active too: what the storefront shows."""
+    """Active categories with every category above them active too: what the storefront shows."""
     result = await db.execute(select(Category).order_by(Category.sort_order, Category.name, Category.id))
     rows = result.scalars().all()
-    active = {c.id for c in rows if c.is_active}
-    return [c for c in rows if c.is_active and (c.parent_id is None or c.parent_id in active)]
+    shown = visible_ids((c.id, c.parent_id, c.is_active) for c in rows)
+    return [c for c in rows if c.id in shown]
 
 
 @router.get("/by-slug/{slug}", response_model=CategoryRead)
@@ -46,8 +46,8 @@ async def list_categories(
     lang: Locale | None = Query(None, description="en | ar — the names in that language"),
     db: AsyncSession = Depends(get_db),
 ):
-    """The active categories. A subcategory of an inactive parent is hidden with
-    it, so switching a parent off takes its whole branch out of the menus.
+    """The active categories. A subcategory of an inactive one, at any depth, is
+    hidden with it, so switching a category off takes its whole branch out.
 
     Each says how many published products its page lists (its subcategories'
     included, a product in two of them counted once) and when the newest of

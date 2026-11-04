@@ -90,28 +90,58 @@ async def test_parent_category_lists_subcategory_products(
         assert [p["id"] for p in resp.json()] == [product_id]
 
 
-async def test_menu_is_two_levels(client: AsyncClient, admin_user: User, tag: str, cleanup):
+async def test_menu_is_three_levels(client: AsyncClient, admin_user: User, tag: str, cleanup):
+    put = lambda c, parent_id: client.put(  # noqa: E731
+        f"/api/v1/admin/categories/{c['id']}",
+        headers=auth_header(admin_user),
+        json={"name": c["name"], "slug": c["slug"], "parent_id": parent_id},
+    )
     top = (await _create_category(client, admin_user, name=f"Top {tag}")).json()
     sub = (await _create_category(client, admin_user, name=f"Sub {tag}", parent_id=top["id"])).json()
+    leaf = await _create_category(client, admin_user, name=f"Leaf {tag}", parent_id=sub["id"])
+    assert leaf.status_code == 201
+    leaf = leaf.json()
 
-    deeper = await _create_category(client, admin_user, name=f"Deep {tag}", parent_id=sub["id"])
-    assert deeper.status_code == 422
+    # A fourth level is refused, in Turkish.
+    deeper = await _create_category(client, admin_user, name=f"Deep {tag}", parent_id=leaf["id"])
+    assert deeper.status_code == 422 and "en fazla 3 seviye" in deeper.json()["detail"]
 
-    # A parent with subcategories can't be moved under another category.
+    # A branch moves whole while it fits: Sub (with Leaf) under another group.
     other = (await _create_category(client, admin_user, name=f"Other {tag}")).json()
-    resp = await client.put(
-        f"/api/v1/admin/categories/{top['id']}",
-        headers=auth_header(admin_user),
-        json={"name": top["name"], "slug": top["slug"], "parent_id": other["id"]},
-    )
-    assert resp.status_code == 422
+    assert (await put(sub, other["id"])).status_code == 200
+    # Not where it would reach a fourth level: Top (Top > Sub > Leaf) under Other.
+    moved_top = await put(top, other["id"])
+    assert moved_top.status_code == 200  # Top has no children any more: fine
+    grown = await put(other, (await _create_category(client, admin_user, name=f"Root {tag}")).json()["id"])
+    assert grown.status_code == 422 and "3 seviyeyi aşar" in grown.json()["detail"]
 
-    self_parent = await client.put(
-        f"/api/v1/admin/categories/{other['id']}",
+    # Never under its own branch, nor under itself.
+    loop = await put(other, leaf["id"])
+    assert loop.status_code == 422 and "kendi alt kategorisinin" in loop.json()["detail"]
+    assert (await put(other, other["id"])).status_code == 422
+
+    # Back to the top: always allowed.
+    assert (await put(sub, None)).status_code == 200
+
+
+async def test_a_group_lists_its_grandchildren_products(
+    client: AsyncClient, admin_user: User, catalog, tag: str, cleanup
+):
+    normal_v, _ = catalog
+    top = (await _create_category(client, admin_user, name=f"Takim {tag}")).json()
+    brand = (await _create_category(client, admin_user, name=f"Marka {tag}", parent_id=top["id"])).json()
+    bowls = (await _create_category(client, admin_user, name=f"Lule {tag}", parent_id=brand["id"])).json()
+    product_id = str((await client.get("/api/v1/products/", params={"q": normal_v.sku})).json()[0]["id"])
+    await client.post(
+        "/api/v1/admin/products/category",
         headers=auth_header(admin_user),
-        json={"name": other["name"], "parent_id": other["id"]},
+        json={"product_ids": [product_id], "category_id": bowls["id"]},
     )
-    assert self_parent.status_code == 422
+    for slug in (bowls["slug"], brand["slug"], top["slug"]):
+        listed = (await client.get("/api/v1/products/", params={"category": slug})).json()
+        assert [p["id"] for p in listed] == [product_id], slug
+    counts = {c["slug"]: c["product_count"] for c in (await client.get("/api/v1/categories/")).json()}
+    assert counts[top["slug"]] == counts[brand["slug"]] == counts[bowls["slug"]] == 1
 
 
 async def test_category_slug_conflicts_and_validation(client: AsyncClient, admin_user: User, tag: str, cleanup):

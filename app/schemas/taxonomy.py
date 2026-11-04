@@ -29,7 +29,7 @@ class CategoryWrite(BaseModel):
     name: str = Field(min_length=1, max_length=150)
     # Omitted/blank = derived from the name.
     slug: str | None = Field(default=None, max_length=180)
-    # None = top-level menu item. Only two levels: a parent must itself be top-level.
+    # None = top-level menu item. Three levels at most (app.services.categories).
     parent_id: int | None = None
     sort_order: int = Field(default=0, ge=0, le=100_000)
     # Off hides it (and its subcategories) from the storefront; products stay.

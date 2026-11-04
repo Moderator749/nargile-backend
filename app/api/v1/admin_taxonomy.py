@@ -1,4 +1,4 @@
-"""Admin-only menu taxonomy: the two-level category tree, product → category
+"""Admin-only menu taxonomy: the category tree (three levels at most), product → category
 mapping, and brands (with logos) for the menu and the homepage marquee."""
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, Response, UploadFile, status
@@ -26,7 +26,7 @@ from app.schemas.taxonomy import (
     slugify,
 )
 from app.services import root_slugs, slug_redirects
-from app.services.categories import category_subtree, memberships, products_in, ranked_order
+from app.services.categories import category_subtree, memberships, placement_error, products_in, ranked_order
 from app.services.media import MAX_IMAGE_BYTES, WIDE_SIDE, InvalidImage, delete_media, save_image
 from app.services import auto_translate
 
@@ -75,15 +75,15 @@ async def _apply_category(db: AsyncSession, category: Category, payload: Categor
 
     if payload.parent_id is not None:
         if payload.parent_id == category.id:
-            raise HTTPException(status_code=422, detail="A category cannot be its own parent")
+            raise HTTPException(status_code=422, detail="Bir kategori kendisinin altına taşınamaz.")
         parent = await db.get(Category, payload.parent_id)
         if parent is None:
             raise HTTPException(status_code=404, detail="Parent category not found")
-        # The menu has two levels: parents are top-level, and a parent can't be nested.
-        if parent.parent_id is not None:
-            raise HTTPException(status_code=422, detail="Subcategories cannot have subcategories")
-        if category.id is not None and await db.scalar(select(Category.id).where(Category.parent_id == category.id).limit(1)):
-            raise HTTPException(status_code=422, detail="A category with subcategories must stay top-level")
+        # Three levels at most, and never under its own branch.
+        parents = dict((await db.execute(select(Category.id, Category.parent_id))).all())
+        problem = placement_error(category.id, payload.parent_id, parents)
+        if problem:
+            raise HTTPException(status_code=422, detail=problem)
 
     if category.id is not None and category.slug and category.slug != slug:
         # Renamed: /<old> keeps leading here.

@@ -17,7 +17,7 @@ PREFIX = "zz-test-"
 async def cleanup(db_session: AsyncSession):
     yield
     await db_session.rollback()
-    await db_session.execute(delete(Category).where(Category.slug.like(f"{PREFIX}%"), Category.parent_id.is_not(None)))
+    await db_session.execute(Category.__table__.update().where(Category.slug.like(f"{PREFIX}%")).values(parent_id=None))
     await db_session.execute(delete(Category).where(Category.slug.like(f"{PREFIX}%")))
     await db_session.execute(delete(SiteContent).where(SiteContent.key == "homepage"))
     await db_session.commit()
@@ -55,6 +55,29 @@ async def test_inactive_category_hides_its_branch_but_stays_in_admin(
     assert f"{PREFIX}parent" not in public and f"{PREFIX}child" not in public
     admin = {c["slug"] for c in (await client.get("/api/v1/admin/categories", headers=auth_header(admin_user))).json()}
     assert {f"{PREFIX}parent", f"{PREFIX}child"} <= admin
+
+
+async def test_switching_off_a_group_hides_its_grandchildren_too(client: AsyncClient, admin_user: User, cleanup):
+    top = await _create(client, admin_user, name="Nargile Takımları", slug=f"{PREFIX}takimlar")
+    brand = await _create(client, admin_user, name="Oduman Nargile", slug=f"{PREFIX}oduman", parent_id=top["id"])
+    bowls = await _create(client, admin_user, name="Oduman Lüleler", slug=f"{PREFIX}oduman-luleler", parent_id=brand["id"])
+
+    def public():
+        return client.get("/api/v1/categories/")
+
+    shown = {c["slug"] for c in (await public()).json()}
+    assert {top["slug"], brand["slug"], bowls["slug"]} <= shown
+    assert (await client.get(f"/api/v1/categories/by-slug/{bowls['slug']}")).status_code == 200
+
+    # The group off: its child and its grandchild, both still on, go with it.
+    await client.put(
+        f"/api/v1/admin/categories/{top['id']}",
+        headers=auth_header(admin_user),
+        json={"name": top["name"], "slug": top["slug"], "is_active": False},
+    )
+    shown = {c["slug"] for c in (await public()).json()}
+    assert not {top["slug"], brand["slug"], bowls["slug"]} & shown
+    assert (await client.get(f"/api/v1/categories/by-slug/{bowls['slug']}")).status_code == 404
 
 
 async def test_category_image_must_be_a_url_or_site_path(client: AsyncClient, admin_user: User, cleanup):
