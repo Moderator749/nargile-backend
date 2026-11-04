@@ -22,6 +22,8 @@ class CategoryRead(BaseModel):
     parent_id: int | None
     sort_order: int = 0
     image_url: str | None = None
+    # The wide banner under the page's heading; null = none.
+    banner_url: str | None = None
     # The page's introduction, as the admin wrote it; null = none of its own.
     description: str | None = None
     # The passage closing its page (heading, HTML); null = the shop's own. Turkish only.

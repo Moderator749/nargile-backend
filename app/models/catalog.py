@@ -67,6 +67,9 @@ class Category(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
     # A cover photo for the category's showcase tile; null = borrow a product photo.
     image_url: Mapped[str | None] = mapped_column(String(500))
+    # The wide banner (about 4:1) under the category page's heading; null = none,
+    # and the page closes the space.
+    banner_url: Mapped[str | None] = mapped_column(String(500))
     # The category page's introduction under its heading (clamped there, with
     # "Devamını Oku") and its meta description's source; null = the
     # storefront's built-in copy for the slug, if any.

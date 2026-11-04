@@ -36,6 +36,9 @@ class CategoryWrite(BaseModel):
     is_active: bool = True
     # Cover photo for its showcase tile: an http(s) URL or a site path.
     image_url: str | None = Field(default=None, max_length=500)
+    # The category page's banner, the same kind of address; null removes it,
+    # left out = the stored one stays.
+    banner_url: str | None = Field(default=None, max_length=500)
     # The page's introduction, HTML from the panel's editor (cleaned here);
     # blank = the storefront's built-in copy.
     description: str | None = Field(default=None, max_length=RICH_TEXT_MAX)
@@ -58,7 +61,7 @@ class CategoryWrite(BaseModel):
     def _blank_title(cls, v: str | None) -> str | None:
         return (v or "").strip() or None
 
-    @field_validator("image_url")
+    @field_validator("image_url", "banner_url")
     @classmethod
     def _check_image(cls, v: str | None) -> str | None:
         if v is None or not v.strip():
@@ -90,6 +93,7 @@ class AdminCategoryRead(BaseModel):
     sort_order: int
     is_active: bool
     image_url: str | None
+    banner_url: str | None = None
     description: str | None = None
     seo_title: str | None = None
     seo_text: str | None = None

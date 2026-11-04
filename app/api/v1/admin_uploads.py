@@ -13,7 +13,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_current_admin_user
 from app.models.user import User
-from app.services.media import MAX_PRODUCT_IMAGE_BYTES, InvalidImage, media_url, save_image
+from app.services.media import MAX_PRODUCT_IMAGE_BYTES, WIDE_SIDE, InvalidImage, media_url, save_image
 
 router = APIRouter(prefix="/admin", tags=["admin-uploads"])
 
@@ -54,3 +54,20 @@ async def upload_images(
             raise HTTPException(status_code=422, detail=f"{name}: {exc}") from None
         saved.append(UploadedImage(url=media_url(request, path), path=path))
     return saved
+
+
+@router.post("/uploads/banner", response_model=UploadedImage, status_code=status.HTTP_201_CREATED)
+async def upload_banner(
+    request: Request,
+    file: UploadFile = File(...),
+    _admin: User = Depends(get_current_admin_user),
+):
+    """A category page's banner: PNG, JPEG or WebP up to 5 MB, stored as a WebP
+    up to 2560px wide — it spans the page's column, on a retina screen too,
+    where the 1800px of a product photo would blur."""
+    data = await file.read(MAX_PRODUCT_IMAGE_BYTES + 1)
+    try:
+        path = await run_in_threadpool(save_image, data, "banners", MAX_PRODUCT_IMAGE_BYTES, optimise=True, max_side=WIDE_SIDE)
+    except InvalidImage as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return UploadedImage(url=media_url(request, path), path=path)
