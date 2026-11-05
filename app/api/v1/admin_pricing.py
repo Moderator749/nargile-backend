@@ -51,7 +51,10 @@ from app.schemas.pricing import (
     RecordIds,
     RecordsChanged,
     RenameFileRequest,
+    SaveApplied,
     SaveDraftRequest,
+    SaveRequest,
+    SaveResult,
     SaveTarget,
     SaveToFileRequest,
 )
@@ -274,15 +277,22 @@ async def move_records(
     return RecordsChanged(count=len(rows), file=await _file_read(db, target))
 
 
+# "Kayıtlar": every row, whatever its folder, newest first.
+ALL_RECORDS_LIMIT = 1000
+
+
 @router.get("/records", response_model=list[PricingRecordRead])
 async def list_records(
     file_id: int | None = Query(None, description="A file's rows; omit for the drafts"),
+    everything: bool = Query(False, alias="all", description="Every row, in a folder or not (\"Kayıtlar\")"),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     stmt = select(PricingRecord, PricingFile.name).outerjoin(PricingFile, PricingFile.id == PricingRecord.file_id)
-    stmt = stmt.where(PricingRecord.file_id == file_id if file_id is not None else PricingRecord.file_id.is_(None))
-    rows = (await db.execute(stmt.order_by(PricingRecord.updated_at.desc(), PricingRecord.id).limit(500))).all()
+    if not everything:
+        stmt = stmt.where(PricingRecord.file_id == file_id if file_id is not None else PricingRecord.file_id.is_(None))
+    limit = ALL_RECORDS_LIMIT if everything else 500
+    rows = (await db.execute(stmt.order_by(PricingRecord.updated_at.desc(), PricingRecord.id).limit(limit))).all()
     images = await _images(db, {r.product_code for r, _ in rows})
     return [_read(r, name, images.get(r.product_code.strip().lower())) for r, name in rows]
 
@@ -292,6 +302,7 @@ async def matching_records(
     code: str = Query(..., max_length=60, description="A product code, any case"),
     file_id: int | None = Query(None, description="In this file"),
     file_name: str | None = Query(None, max_length=120, description="In the file of this name (any case); none of either: the drafts"),
+    everywhere: bool = Query(False, description="In any folder or none: what \"Kaydet\" asks about"),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -301,6 +312,8 @@ async def matching_records(
     wanted = code.strip().lower()
     if not wanted:
         return []
+    if everywhere:
+        return [_read(r, name) for r, name in await _same_code(db, wanted)]
     if file_id is None and file_name:
         name = " ".join(file_name.split()).lower()
         file_id = await db.scalar(select(PricingFile.id).where(func.lower(PricingFile.name) == name))
@@ -316,6 +329,18 @@ async def matching_records(
         )
     ).all()
     return [_read(r, name) for r, name in rows]
+
+
+async def _same_code(db: AsyncSession, wanted: str) -> list:
+    """Every row of this code (trimmed, any case), in any folder, newest first."""
+    return (
+        await db.execute(
+            select(PricingRecord, PricingFile.name)
+            .outerjoin(PricingFile, PricingFile.id == PricingRecord.file_id)
+            .where(func.lower(func.trim(PricingRecord.product_code)) == wanted)
+            .order_by(PricingRecord.updated_at.desc(), PricingRecord.id)
+        )
+    ).all()
 
 
 @router.delete("/records/{record_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -395,6 +420,94 @@ async def save_and_apply(
         variants_updated=applied.variants,
         prices=applied.prices,
         skipped=applied.skipped,
+    )
+
+
+@router.post("/save", response_model=SaveResult)
+async def save(
+    payload: SaveRequest,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Kaydet" and "Kaydet ve Siteye Uygula": the calculator's one save.
+
+    A sheet loaded from a row (or saved once) and still under that row's code
+    is saved over it, without a question, as a document is. A new sheet, or
+    one whose code was changed, is a new row — unless that code is already
+    saved, in any folder: then 409, with those rows, and the admin chooses
+    "Üstüne Yaz" (`overwrite`) or "Yeni Kayıt" (`new`). With `apply`, the
+    prices then go to the product, all or nothing, as before.
+    """
+    sheet = payload.sheet
+    wanted = sheet.product_code.strip().lower()
+    # Two saves of one code at once (a double click, two tabs) are taken in
+    # turn, so the second sees the first's row and asks.
+    await db.execute(select(func.pg_advisory_xact_lock(func.hashtext(f"pricing-save:{wanted}"))))
+
+    target: PricingRecord | None = None
+    if payload.mode == "overwrite":
+        target = await db.get(PricingRecord, payload.overwrite_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Üzerine yazılacak kayıt bulunamadı; silinmiş olabilir.")
+    elif payload.mode == "auto":
+        tied = await db.get(PricingRecord, payload.record_id) if payload.record_id else None
+        if tied is not None and tied.product_code.strip().lower() == wanted:
+            target = tied
+        elif wanted:
+            same = await _same_code(db, wanted)
+            if same:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": f"“{same[0][0].product_code}” kodlu bir kayıt zaten var.",
+                        "matches": [_read(r, name).model_dump(mode="json") for r, name in same],
+                    },
+                )
+
+    now = datetime.now(timezone.utc)
+    record = target or PricingRecord(created_by=admin.id, created_at=now, file_id=None)
+    record.product_code = sheet.product_code
+    record.product_name = sheet.product_name
+    record.sheet = compute_sheet(sheet)
+    record.updated_at = now
+    file = await db.get(PricingFile, record.file_id) if record.file_id is not None else None
+    if file is not None:
+        file.updated_at = now  # its folder was saved into just now
+    db.add(record)
+
+    applied: SaveApplied | None = None
+    image_url: str | None = None
+    if payload.apply:
+        try:
+            done = await apply_to_product(db, sheet, record.sheet)
+        except ApplyError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc))
+        record.applied_at = now
+        record.applied_summary = {
+            "product_id": str(done.product.id),
+            "product_name": done.product.name,
+            "variants": done.variants,
+            "prices": [p.model_dump(mode="json") for p in done.prices],
+            "skipped": done.skipped,
+            "cost": str(done.cost),
+            "cost_currency": done.cost_currency.value,
+        }
+        applied = SaveApplied(
+            product_id=done.product.id,
+            product_name=done.product.name,
+            variants_updated=done.variants,
+            prices=done.prices,
+            skipped=done.skipped,
+        )
+        image_url = done.product.image_url
+    await db.commit()
+    if image_url is None:
+        image_url = await _image_for(db, record.product_code)
+    return SaveResult(
+        record=_read(record, file.name if file else None, image_url),
+        overwritten=target is not None,
+        applied=applied,
     )
 
 

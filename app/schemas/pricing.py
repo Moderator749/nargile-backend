@@ -175,6 +175,33 @@ class SaveToFileRequest(SaveTarget):
     replace_id: uuid.UUID | None = None
 
 
+class SaveRequest(BaseModel):
+    """"Kaydet" / "Kaydet ve Siteye Uygula": one save, wherever the row is.
+
+    `auto` (the button): over `record_id` — the row the sheet was loaded from
+    or last saved — when the code is still that row's; otherwise a new row,
+    unless the code is already saved somewhere, which answers 409 with those
+    rows for the admin to choose. `overwrite`: over `overwrite_id` (one of
+    them). `new`: a new row, no question. A new row is in no folder; a row
+    written over stays in its own.
+    """
+
+    sheet: PricingSheetIn
+    record_id: uuid.UUID | None = None
+    mode: Literal["auto", "overwrite", "new"] = "auto"
+    overwrite_id: uuid.UUID | None = None
+    # Then write the sheet's prices to the product its code names.
+    apply: bool = False
+
+    @model_validator(mode="after")
+    def _target(self) -> "SaveRequest":
+        if (self.mode == "overwrite") != (self.overwrite_id is not None):
+            raise ValueError("Üzerine yazılacak kayıt yalnızca “overwrite” ile ve onunla birlikte verilir")
+        if self.apply and not self.sheet.product_code:
+            raise ValueError("Siteye uygulamak için ürün kodu gerekli")
+        return self
+
+
 class PricingFileRead(BaseModel):
     id: int
     name: str
@@ -224,6 +251,23 @@ class ApplyResult(BaseModel):
     prices: list[AppliedPrice]
     # Columns left out: no customer group chosen for them.
     skipped: list[str]
+
+
+class SaveApplied(BaseModel):
+    """What "Kaydet ve Siteye Uygula" wrote to the product."""
+
+    product_id: uuid.UUID
+    product_name: str
+    variants_updated: int
+    prices: list[AppliedPrice]
+    skipped: list[str]
+
+
+class SaveResult(BaseModel):
+    record: PricingRecordRead
+    # Written over an existing row (silently, or as chosen), not added.
+    overwritten: bool
+    applied: SaveApplied | None = None
 
 
 # ── Toplu fiyat (Excel) ───────────────────────────────────────────────────────
