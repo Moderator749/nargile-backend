@@ -44,6 +44,9 @@ for _name in (
 ):
     setattr(settings, _name, "")
 settings.YURTICI_TEST_MODE = True
+# Never Anthropic's real API either: without a key auto-translation is off, and
+# the tests that turn it on answer for Claude themselves (no_claude_calls below).
+settings.ANTHROPIC_API_KEY = None
 
 from httpx import ASGITransport, AsyncClient  # noqa: E402
 from sqlalchemy import select  # noqa: E402
@@ -148,6 +151,27 @@ def no_rates_snapshot(monkeypatch):
         raise RuntimeError("no rates snapshot store in this test")
 
     monkeypatch.setattr(exchange_rates, "_sessions", no_store)
+
+
+@pytest.fixture(autouse=True)
+def no_claude_calls(monkeypatch):
+    """No test reaches Anthropic's API, whatever .env holds. A test that turns
+    auto-translation on replaces `auto_translate.complete` itself (see
+    tests/test_auto_translate.py); one that forgets fails here, even though the
+    background task that made the call swallows the error."""
+    from app.services import auto_translate
+
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", None)
+    calls: list[str] = []
+
+    async def refuse(system, prompt, tool):
+        calls.append(tool["name"])
+        raise RuntimeError("a real Claude call in a test: replace auto_translate.complete")
+
+    monkeypatch.setattr(auto_translate, "complete", refuse)
+    yield
+    if calls:
+        pytest.fail(f"{len(calls)} real Claude call(s) attempted in this test")
 
 
 @pytest.fixture

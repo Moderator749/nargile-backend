@@ -2,7 +2,9 @@
 not indexed until approved, rewritten when the Turkish changes, never over a
 reviewed translation. Claude itself is replaced by a stub."""
 
+import sys
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from httpx import AsyncClient
@@ -14,6 +16,9 @@ from app.models.user import User
 from app.services import auto_translate
 from tests.conftest import auth_header
 from tests.test_product_sheet import _post, _sheet
+
+#: The real call, before conftest's no_claude_calls swaps it for a refusal.
+REAL_COMPLETE = auto_translate.complete
 
 ANSWER = {
     "en": {
@@ -156,3 +161,63 @@ async def test_the_sweep_catches_what_a_save_missed_up_to_its_limit(
     monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(auto_translate, "complete", fake)
     assert await auto_translate.sweep(limit=2, factory=factory(db_session)) == 2
+
+
+# ── The call itself, against a stand-in for the anthropic package ──
+
+TOOL = auto_translate._tool(["en"], auto_translate.CATEGORY_FIELDS)
+
+
+def fake_anthropic(monkeypatch, *answers: list) -> list[dict]:
+    """`import anthropic` inside complete() gets a client answering `answers` in turn; returns the requests."""
+    requests: list[dict] = []
+
+    class Messages:
+        async def create(self, **kwargs):
+            requests.append(kwargs)
+            return SimpleNamespace(content=answers[len(requests) - 1], stop_reason="end_turn")
+
+    class AsyncAnthropic:
+        def __init__(self, **kwargs):
+            self.messages = Messages()
+
+    monkeypatch.setattr(settings, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setitem(sys.modules, "anthropic", SimpleNamespace(AsyncAnthropic=AsyncAnthropic))
+    return requests
+
+
+def tool_call(**input):
+    return SimpleNamespace(type="tool_use", name="submit_translation", input=input)
+
+
+THINKING = SimpleNamespace(type="thinking", thinking="…")
+PROSE = SimpleNamespace(type="text", text="Here is the translation: Oduman Pipes")
+
+
+async def test_the_model_picks_the_tool_and_its_thinking_is_skipped(monkeypatch):
+    requests = fake_anthropic(monkeypatch, [THINKING, tool_call(en={"name": "Oduman Pipes"})])
+    assert await REAL_COMPLETE("brief", "Translate", TOOL) == {"en": {"name": "Oduman Pipes"}}
+    (request,) = requests
+    assert request["tool_choice"] == {"type": "auto"}  # a forced tool_choice is refused by Opus 5.5
+    assert request["model"] == settings.AUTO_TRANSLATE_MODEL
+    assert request["system"].startswith("brief") and "only by calling the submit_translation tool" in request["system"]
+
+
+async def test_an_answer_without_the_tool_is_asked_for_once_more(monkeypatch):
+    requests = fake_anthropic(monkeypatch, [THINKING, PROSE], [tool_call(en={"name": "Oduman Pipes"})])
+    assert await REAL_COMPLETE("brief", "Translate", TOOL) == {"en": {"name": "Oduman Pipes"}}
+    first, second = (r["messages"][0]["content"] for r in requests)
+    assert first == "Translate" and second.startswith("Translate") and "did not call the submit_translation tool" in second
+
+
+async def test_two_answers_without_the_tool_fail(monkeypatch):
+    requests = fake_anthropic(monkeypatch, [PROSE], [PROSE])
+    with pytest.raises(ValueError, match="no tool call"):
+        await REAL_COMPLETE("brief", "Translate", TOOL)
+    assert len(requests) == 2
+
+
+def test_no_test_reaches_claude():
+    """conftest's guard: the feature is off, and the call is a refusal (which, called, fails the test)."""
+    assert not auto_translate.enabled()
+    assert auto_translate.complete is not REAL_COMPLETE

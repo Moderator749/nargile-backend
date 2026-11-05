@@ -86,22 +86,36 @@ def _tool(languages: list[str], fields: tuple[str, ...]) -> dict:
     }
 
 
+#: Said with every call: the model picks the tool itself (Opus 5.5 refuses a
+#: forced tool_choice, "type tool and any are not supported for this model").
+TOOL_ONLY = (
+    "Answer only by calling the {name} tool, once, with every requested language. "
+    "Write no text outside the tool call."
+)
+#: Added to the prompt when an answer came back without the tool call.
+TOOL_NUDGE = "\n\nYour previous answer did not call the {name} tool. Call it now with the translation, and nothing else."
+
+
 async def complete(system: str, prompt: str, tool: dict) -> dict:
-    """One Claude call, its answer forced through the tool. (Tests replace this.)"""
+    """One Claude answer, read from its tool call; asked once more if it has none. (Tests replace this.)"""
     import anthropic  # here, so the app starts without the package when the feature is off
 
     client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY, timeout=120)
-    message = await client.messages.create(
-        model=settings.AUTO_TRANSLATE_MODEL,
-        max_tokens=16000,
-        system=system,
-        tools=[tool],
-        tool_choice={"type": "tool", "name": tool["name"]},
-        messages=[{"role": "user", "content": prompt}],
-    )
-    for block in message.content:
-        if block.type == "tool_use":
-            return block.input
+    name = tool["name"]
+    for attempt in range(2):
+        message = await client.messages.create(
+            model=settings.AUTO_TRANSLATE_MODEL,
+            max_tokens=16000,
+            system=f"{system}\n\n{TOOL_ONLY.format(name=name)}",
+            tools=[tool],
+            tool_choice={"type": "auto"},
+            messages=[{"role": "user", "content": prompt + (TOOL_NUDGE.format(name=name) if attempt else "")}],
+        )
+        # Thinking and text blocks may come first; only the tool call is the answer.
+        for block in message.content:
+            if block.type == "tool_use" and block.name == name:
+                return block.input
+        logger.warning("Claude answered without %s (stop_reason %s)", name, message.stop_reason)
     raise ValueError("no tool call in Claude's answer")
 
 
