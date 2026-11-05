@@ -8,13 +8,13 @@ from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_admin_user, get_session_factory
 from app.core.database import get_db
-from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
+from app.models.catalog import Product, ProductVariant, VariantPrice
 from app.core.config import settings
 from app.models.order import PENDING_STATUSES, VOID_STATUSES, Carrier, Order, OrderItem, OrderStatus, ShippingMethod
 from app.models.payment import PaymentTransaction
@@ -24,6 +24,7 @@ from app.schemas.address import address_line, international_line
 from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse, PaymentFailureRead
 from app.schemas.order import OrderItemRead, OrderRead
 from app.services import mailer, order_emails, order_lifecycle, order_sms, payment_failures, shipping, sms_settings
+from app.services.pricing_engine import CURRENCY_PREFERENCE
 
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 
@@ -127,8 +128,11 @@ LineCatalog = dict[uuid.UUID, tuple[str, str, str, str | None, Decimal | None]]
 async def _line_catalog(db: AsyncSession, orders: Sequence[Order]) -> LineCatalog:
     """Catalogue data for the ordered variants, in one query, for the detail sheet.
 
-    The order lines store only ids and prices, but the order sheet prints the
-    product code, the name, the colour and the VAT the price includes.
+    The order lines store ids, prices and (since checkout freezes it) the VAT
+    rate, but the sheet also prints the product code, the name and the colour.
+    The rate here is the fallback for a line from before it was frozen: the
+    product's own, from the row the pricing engine charges — TRY, else USD,
+    else EUR — so a product sold in dollars or euros has one too.
     """
     variant_ids = {item.variant_id for order in orders for item in order.items}
     if not variant_ids:
@@ -141,14 +145,14 @@ async def _line_catalog(db: AsyncSession, orders: Sequence[Order]) -> LineCatalo
             Product.name,
             ProductVariant.color_name,
             # The rate belongs to the product, so it is the same in every
-            # segment's price row; max() just collapses them to one.
-            func.max(VariantPrice.vat_rate),
+            # segment's row of a currency; max() collapses them to one, and
+            # the first currency in the engine's order that has one wins.
+            func.coalesce(
+                *(func.max(case((VariantPrice.currency == currency, VariantPrice.vat_rate))) for currency in CURRENCY_PREFERENCE)
+            ),
         )
         .join(Product, ProductVariant.product_id == Product.id)
-        .outerjoin(
-            VariantPrice,
-            (VariantPrice.variant_id == ProductVariant.id) & (VariantPrice.currency == CurrencyType.TRY),
-        )
+        .outerjoin(VariantPrice, VariantPrice.variant_id == ProductVariant.id)
         .where(ProductVariant.id.in_(variant_ids))
         .group_by(
             ProductVariant.id,
@@ -162,9 +166,11 @@ async def _line_catalog(db: AsyncSession, orders: Sequence[Order]) -> LineCatalo
 
 
 def _line(item: OrderItem, catalog: LineCatalog) -> AdminOrderItemDetail:
-    sku, product_code, product_name, color_name, vat_rate = catalog.get(
+    sku, product_code, product_name, color_name, catalog_vat = catalog.get(
         item.variant_id, (None, None, None, None, None)
     )
+    # The rate the line was sold at, frozen at checkout; the catalogue's for an older line.
+    vat_rate = item.vat_rate if item.vat_rate is not None else catalog_vat
     return AdminOrderItemDetail(
         **OrderItemRead.model_validate(item).model_dump(),
         sku=sku,

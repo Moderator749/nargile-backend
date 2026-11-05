@@ -1,6 +1,8 @@
 """Admin-only flash sale management ("Fırsat Ürünleri")."""
 
+from collections.abc import Iterable
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
@@ -13,6 +15,8 @@ from app.models.catalog import CurrencyType, ProductVariant
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.promotion import FlashSaleRead, FlashSaleWrite
+from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
+from app.services.pricing_engine import pick_price_row, to_try
 
 router = APIRouter(prefix="/admin/flash-sales", tags=["admin-promotions"])
 
@@ -26,15 +30,30 @@ async def _retail_id(db: AsyncSession) -> int:
     return await db.scalar(select(CustomerSegment.id).where(CustomerSegment.code == SegmentType.RETAIL))
 
 
-def _read(sale: FlashSale, retail_id: int, now: datetime) -> FlashSaleRead:
-    regular = next(
-        (
-            p.price_incl_tax
-            for p in sale.variant.prices
-            if p.segment_id == retail_id and p.currency == CurrencyType.TRY
-        ),
-        None,
+async def _rates_for(variants: Iterable[ProductVariant], retail_id: int) -> Rates | None:
+    """TCMB rates, fetched only when a RETAIL price here is in a foreign currency."""
+    foreign = any(
+        (row := pick_price_row(v.prices, retail_id)) is not None and CurrencyType(row.currency) != CurrencyType.TRY
+        for v in variants
     )
+    if not foreign:
+        return None
+    try:
+        return await get_rates()
+    except RatesUnavailable:
+        return None
+
+
+def _regular(variant: ProductVariant, retail_id: int, rates: Rates | None) -> Decimal | None:
+    """The RETAIL price checkout charges without the sale, in TRY, as the sale
+    price is: the row the pricing engine picks (TRY, else USD, else EUR) at the
+    day's TCMB rate. None with no RETAIL price, or its rate not at hand."""
+    row = pick_price_row(variant.prices, retail_id)
+    return None if row is None else to_try(row.price_incl_tax, row.currency, rates)
+
+
+def _read(sale: FlashSale, retail_id: int, now: datetime, rates: Rates | None) -> FlashSaleRead:
+    regular = _regular(sale.variant, retail_id, rates)
     return FlashSaleRead(
         id=sale.id,
         variant_id=sale.variant_id,
@@ -48,6 +67,13 @@ def _read(sale: FlashSale, retail_id: int, now: datetime) -> FlashSaleRead:
         is_active=sale.is_active,
         is_live=sale.is_live(now),
     )
+
+
+async def _present(db: AsyncSession, sales: list[FlashSale]) -> list[FlashSaleRead]:
+    """The sales as the panel lists them, each with its regular price in TRY."""
+    retail_id, now = await _retail_id(db), datetime.now(timezone.utc)
+    rates = await _rates_for((s.variant for s in sales), retail_id)
+    return [_read(s, retail_id, now, rates) for s in sales]
 
 
 async def _load(db: AsyncSession, sale_id: int) -> FlashSale:
@@ -77,12 +103,17 @@ async def _apply(db: AsyncSession, sale: FlashSale, payload: FlashSaleWrite) -> 
         raise HTTPException(status_code=409, detail="This variant already has a flash sale; edit that one")
 
     retail_id = await _retail_id(db)
-    regular = next(
-        (p.price_incl_tax for p in variant.prices if p.segment_id == retail_id and p.currency == CurrencyType.TRY),
-        None,
-    )
-    if regular is None:
+    row = pick_price_row(variant.prices, retail_id)
+    if row is None:
         raise HTTPException(status_code=422, detail="Variant has no RETAIL price to discount")
+    # A dollar or euro price is compared at today's rate, as checkout will; a
+    # sale that cannot be checked against it is not saved unchecked.
+    regular = _regular(variant, retail_id, await _rates_for([variant], retail_id))
+    if regular is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Güncel {CurrencyType(row.currency).value} kuru alınamadı; fırsat fiyatı normal fiyatla karşılaştırılamıyor, lütfen sonra deneyin",
+        )
     if payload.sale_price_incl_tax >= regular:
         raise HTTPException(status_code=422, detail=f"Sale price must be below the RETAIL price ({regular})")
 
@@ -99,8 +130,7 @@ async def list_flash_sales(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(select(FlashSale).options(*_LOADS).order_by(FlashSale.ends_at.desc(), FlashSale.id))
-    retail_id, now = await _retail_id(db), datetime.now(timezone.utc)
-    return [_read(s, retail_id, now) for s in result.scalars()]
+    return await _present(db, list(result.scalars()))
 
 
 @router.post("", response_model=FlashSaleRead, status_code=status.HTTP_201_CREATED)
@@ -114,7 +144,7 @@ async def create_flash_sale(
     db.add(sale)
     await db.commit()
     sale = await _load(db, sale.id)
-    return _read(sale, await _retail_id(db), datetime.now(timezone.utc))
+    return (await _present(db, [sale]))[0]
 
 
 @router.put("/{sale_id}", response_model=FlashSaleRead)
@@ -128,7 +158,7 @@ async def update_flash_sale(
     await _apply(db, sale, payload)
     await db.commit()
     sale = await _load(db, sale_id)
-    return _read(sale, await _retail_id(db), datetime.now(timezone.utc))
+    return (await _present(db, [sale]))[0]
 
 
 @router.delete("/{sale_id}", status_code=status.HTTP_204_NO_CONTENT)
