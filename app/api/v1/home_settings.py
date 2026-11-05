@@ -11,9 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
+from app.core.rich_text import looks_like_html, to_rich_html
 from app.models.content import SiteContent
 from app.models.user import User
-from app.schemas.homepage import HomepageDocument, HomepageSettingsRead, upgrade_document
+from app.schemas.homepage import SEO_INTRO_CONTENT_MAX, HomepageDocument, HomepageSettingsRead, upgrade_document
 
 router = APIRouter(tags=["home-settings"])
 
@@ -81,8 +82,12 @@ async def admin_put_homepage_settings(
 # misaligns a translation, a text used twice is translated once, and a text
 # the admin rewrites simply shows in Turkish until it is translated again.
 
-_Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=6000)]
-TextMemory = Annotated[dict[_Text, Annotated[str, StringConstraints(strip_whitespace=True, max_length=6000)]], Field(max_length=2000)]
+# As long as the longest text it translates ("Alt SEO Metni"'s passage, HTML).
+_Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=SEO_INTRO_CONTENT_MAX)]
+TextMemory = Annotated[
+    dict[_Text, Annotated[str, StringConstraints(strip_whitespace=True, max_length=SEO_INTRO_CONTENT_MAX)]],
+    Field(max_length=2000),
+]
 
 
 class HomeTranslations(BaseModel):
@@ -94,8 +99,11 @@ class HomeTranslations(BaseModel):
     @field_validator("en", "ar")
     @classmethod
     def _drop_blank(cls, memory: dict[str, str]) -> dict[str, str]:
-        # A blank translation is no translation: the Turkish shows.
-        return {source: text for source, text in memory.items() if text}
+        # A blank translation is no translation: the Turkish shows. A rich
+        # text's translation is HTML the storefront puts on the page as it is,
+        # so it is cleaned the same way as the Turkish.
+        cleaned = {source: (to_rich_html(text) or "") if looks_like_html(text) else text for source, text in memory.items()}
+        return {source: text for source, text in cleaned.items() if text}
 
 
 class HomeTranslationsRead(HomeTranslations):

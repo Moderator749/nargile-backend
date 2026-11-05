@@ -16,8 +16,9 @@ import re
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
+from app.core.rich_text import to_rich_html
 from app.schemas.catalog import IMAGE_URL_PATTERN
 from app.schemas.content import HeroTextColors, HeroTextSizes, Point, _href
 
@@ -228,15 +229,26 @@ class Advantages(_Strict):
     cards: list[AdvantageCard] = Field(max_length=12)
 
 
+# The longest "Devamını Oku" passage, as HTML (a third or so above its text).
+SEO_INTRO_CONTENT_MAX = 12_000
+
+
 class SeoIntro(_Strict):
     """"Alt SEO Metni": the passage that closes the homepage and every catalog
     listing above the footer. A field left empty falls back to the storefront's
-    own copy for it. `content` is what "Devamını Oku" opens; a blank line in it
-    starts a new paragraph."""
+    own copy for it. `content` is what "Devamını Oku" opens: HTML from the
+    panel's editor — headings, lists, bold and links to the categories —
+    cleaned like every rich text (app/core/rich_text); plain text from before
+    the editor becomes paragraphs at its blank lines."""
 
     title: _text(150)
     summary: _text(1500)
-    content: _text(6000)
+    content: str = Field(max_length=SEO_INTRO_CONTENT_MAX)
+
+    @field_validator("content")
+    @classmethod
+    def _clean_content(cls, v: str) -> str:
+        return to_rich_html(v) or ""
 
 
 # ── Footer ───────────────────────────────────────────────────────────────────

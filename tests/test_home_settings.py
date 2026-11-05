@@ -313,7 +313,12 @@ async def test_the_seo_passage_is_saved_and_read_back(client: AsyncClient, admin
     saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"seo_intro": seo})
     assert saved.status_code == 200, saved.text
     public = (await client.get("/api/v1/home/settings")).json()["data"]["seo_intro"]
-    assert public == {**seo, "title": "Nargile Malzemelerinde Tek Adres"}
+    # Plain text from before the editor becomes paragraphs at its blank lines.
+    assert public == {
+        **seo,
+        "title": "Nargile Malzemelerinde Tek Adres",
+        "content": "<p>İkinci paragraf.</p><p>Üçüncü paragraf.</p>",
+    }
 
     # Empty fields are allowed: the storefront fills them from its own copy.
     blank = await client.put(
@@ -322,12 +327,35 @@ async def test_the_seo_passage_is_saved_and_read_back(client: AsyncClient, admin
     assert blank.status_code == 200, blank.text
 
 
+async def test_the_seo_passage_keeps_headings_lists_and_links_and_nothing_else(
+    client: AsyncClient, admin_user: User, cleanup
+):
+    """What "Devamını Oku" opens is the editor's HTML: a buying guide with its
+    headings, lists, bold and links to the categories — cleaned on the way in,
+    since the storefront puts it on the page as it is."""
+    content = (
+        '<h2>Nargile Takımları</h2><p>Gövdesi <strong>V2A paslanmaz çelik</strong>: '
+        '<a href="/nargile-takimlari" target="_blank" onclick="x()">tüm takımlar</a>.</p>'
+        '<h3>Kömürler</h3><ul><li><a href="javascript:alert(1)">küp</a> kömür</li></ul>'
+        '<script>alert(1)</script><p style="color:red">Son.</p>'
+    )
+    seo = {"title": "Başlık", "summary": "Özet.", "content": content}
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"seo_intro": seo})
+    assert saved.status_code == 200, saved.text
+    stored = (await client.get("/api/v1/home/settings")).json()["data"]["seo_intro"]["content"]
+    assert stored == (
+        '<h2>Nargile Takımları</h2><p>Gövdesi <strong>V2A paslanmaz çelik</strong>: '
+        '<a href="/nargile-takimlari" rel="noopener noreferrer">tüm takımlar</a>.</p>'
+        '<h3>Kömürler</h3><ul><li><a rel="noopener noreferrer">küp</a> kömür</li></ul><p>Son.</p>'
+    )
+
+
 @pytest.mark.parametrize(
     "seo",
     [
         {"title": "x" * 151, "summary": "", "content": ""},
         {"title": "", "summary": "x" * 1501, "content": ""},
-        {"title": "", "summary": "", "content": "x" * 6001},
+        {"title": "", "summary": "", "content": "x" * 12_001},
         {"title": "", "summary": "", "content": "", "extra": "?"},
     ],
 )
