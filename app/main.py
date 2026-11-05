@@ -1,5 +1,6 @@
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
@@ -16,6 +17,26 @@ from app.services.order_tasks import cancel_expired_pending_orders
 from app.services.shipping.sync import sync_shipments
 
 logger = logging.getLogger(__name__)
+
+
+def _app_logging() -> None:
+    """The app's own lines (app.*) in the service log at INFO, beside uvicorn's.
+
+    Uvicorn configures only its loggers; without this, app.* has no handler and
+    only warnings and errors reach journald (through logging's last resort) —
+    a sweep that ran, a translation written, the scheduler starting: none of
+    it showed. They still propagate, so pytest's caplog sees them too.
+    """
+    app_logger = logging.getLogger("app")
+    if not any(getattr(h, "_app_log", False) for h in app_logger.handlers):
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s: %(message)s"))
+        handler._app_log = True  # type: ignore[attr-defined]
+        app_logger.addHandler(handler)
+    app_logger.setLevel(logging.INFO)
+
+
+_app_logging()
 
 
 async def _run_sla_check() -> None:
@@ -50,13 +71,39 @@ async def _run_translation_sweep() -> None:
         logger.exception("Translation sweep failed")
 
 
-@asynccontextmanager
-async def lifespan(application: FastAPI):
-    scheduler = AsyncIOScheduler()
+#: Every job: a run up to 5 minutes late still runs (APScheduler's default is
+#: 1 second, and on a one-core server a busy moment would skip it silently),
+#: and runs missed meanwhile are made up once, not one by one.
+JOB_DEFAULTS = {"misfire_grace_time": 300, "coalesce": True}
+#: The first translation sweep a minute after startup, not a full interval later.
+FIRST_SWEEP_AFTER = timedelta(minutes=1)
+
+
+def build_scheduler() -> AsyncIOScheduler:
+    """The background jobs, not yet started; says once whether auto-translation is on."""
+    scheduler = AsyncIOScheduler(job_defaults=JOB_DEFAULTS)
     scheduler.add_job(_run_sla_check, "interval", hours=1, id="sla_check")
     scheduler.add_job(_run_shipment_sync, "interval", hours=1, id="shipment_sync")
     if auto_translate.enabled():
-        scheduler.add_job(_run_translation_sweep, "interval", minutes=15, id="translation_sweep")
+        scheduler.add_job(
+            _run_translation_sweep,
+            "interval",
+            minutes=15,
+            id="translation_sweep",
+            next_run_time=datetime.now(timezone.utc) + FIRST_SWEEP_AFTER,
+        )
+        logger.info(
+            "Auto-translation on (model %s): first sweep in a minute, then every 15 minutes.",
+            settings.AUTO_TRANSLATE_MODEL,
+        )
+    else:
+        logger.warning("Auto-translation off: ANTHROPIC_API_KEY is not set.")
+    return scheduler
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    scheduler = build_scheduler()
     scheduler.start()
     logger.info("SLA scheduler started (every 1 hour).")
     yield
