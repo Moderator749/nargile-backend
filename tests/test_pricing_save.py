@@ -166,3 +166,54 @@ async def test_one_list_and_matching_across_folders(client: AsyncClient, admin_u
     assert {in_file["id"], draft["id"]} <= listed
     found = (await client.get(f"{BASE}/records/matching", headers=h, params={"code": code.lower(), "everywhere": "true"})).json()
     assert [r["id"] for r in found] == [draft["id"], in_file["id"]]
+
+
+async def test_the_button_says_where_the_row_goes(client: AsyncClient, db_session: AsyncSession, admin_user: User):
+    """"Taslak olarak kaydet" → Taslaklar; "Dosyaya kaydet" → the file chosen,
+    or a new one by name; "Üstüne Yaz" moves the row written over there too."""
+    h = auth_header(admin_user)
+    code = _new_code()
+    draft = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code), "place": "draft"})
+    assert draft.status_code == 200 and draft.json()["record"]["file_id"] is None
+
+    name = f"Kasım {code}"
+    filed = await client.post(
+        f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=_new_code()), "place": "file", "file_name": f"  {name} "}
+    )
+    assert filed.status_code == 200, filed.text
+    assert filed.json()["record"]["file_name"] == name
+    file_id = filed.json()["record"]["file_id"]
+
+    # The draft's code into that file: asked first — and the file is not
+    # touched by the question.
+    asked = await client.post(
+        f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code), "place": "file", "file_id": file_id}
+    )
+    assert asked.status_code == 409
+    over = await client.post(
+        f"{BASE}/save", headers=h,
+        json={"sheet": _sheet(product_code=code, cost="1300"), "place": "file", "file_id": file_id,
+              "mode": "overwrite", "overwrite_id": draft.json()["record"]["id"]},
+    )
+    assert over.status_code == 200, over.text
+    assert (over.json()["record"]["id"], over.json()["record"]["file_id"]) == (draft.json()["record"]["id"], file_id)
+    assert await _rows_of(db_session, code) == 1
+
+    # Loaded and saved again as a draft: over it, silently, back in Taslaklar.
+    back = await client.post(
+        f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code), "record_id": draft.json()["record"]["id"], "place": "draft"}
+    )
+    assert back.status_code == 200 and back.json()["overwritten"] is True and back.json()["record"]["file_id"] is None
+
+
+async def test_a_question_creates_no_file(client: AsyncClient, admin_user: User):
+    h = auth_header(admin_user)
+    code = _new_code()
+    await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code)})
+    name = f"Sorulan {code}"
+    asked = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code), "place": "file", "file_name": name})
+    assert asked.status_code == 409
+    assert name not in [f["name"] for f in (await client.get(f"{BASE}/files", headers=h)).json()]
+    # A file is named only with "file", and "file" needs one.
+    assert (await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(), "place": "file"})).status_code == 422
+    assert (await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(), "place": "draft", "file_id": 1})).status_code == 422

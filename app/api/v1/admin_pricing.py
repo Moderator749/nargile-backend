@@ -429,14 +429,16 @@ async def save(
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """"Kaydet" and "Kaydet ve Siteye Uygula": the calculator's one save.
+    """The calculator's save, whichever button pressed it.
 
     A sheet loaded from a row (or saved once) and still under that row's code
     is saved over it, without a question, as a document is. A new sheet, or
     one whose code was changed, is a new row — unless that code is already
-    saved, in any folder: then 409, with those rows, and the admin chooses
-    "Üstüne Yaz" (`overwrite`) or "Yeni Kayıt" (`new`). With `apply`, the
-    prices then go to the product, all or nothing, as before.
+    saved, in a file or the drafts: then 409, with those rows, and the admin
+    chooses "Üstüne Yaz" (`overwrite`) or "Yeni Kayıt" (`new`). Nothing is
+    created before that answer, a new file included. The row then goes where
+    the button said (`place`). With `apply`, the prices go to the product,
+    all or nothing, as before.
     """
     sheet = payload.sheet
     wanted = sheet.product_code.strip().lower()
@@ -470,6 +472,10 @@ async def save(
     record.product_name = sheet.product_name
     record.sheet = compute_sheet(sheet)
     record.updated_at = now
+    if payload.place == "draft":
+        record.file_id = None
+    elif payload.place == "file":
+        record.file_id = (await _file_for(db, SaveTarget(file_id=payload.file_id, file_name=payload.file_name), admin)).id
     file = await db.get(PricingFile, record.file_id) if record.file_id is not None else None
     if file is not None:
         file.updated_at = now  # its folder was saved into just now

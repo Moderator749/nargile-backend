@@ -176,20 +176,27 @@ class SaveToFileRequest(SaveTarget):
 
 
 class SaveRequest(BaseModel):
-    """"Kaydet" / "Kaydet ve Siteye Uygula": one save, wherever the row is.
+    """The calculator's save, whichever button: "Taslak olarak kaydet",
+    "Dosyaya kaydet", "Dosya ve sitede ürüne kaydet".
 
-    `auto` (the button): over `record_id` — the row the sheet was loaded from
-    or last saved — when the code is still that row's; otherwise a new row,
-    unless the code is already saved somewhere, which answers 409 with those
-    rows for the admin to choose. `overwrite`: over `overwrite_id` (one of
-    them). `new`: a new row, no question. A new row is in no folder; a row
-    written over stays in its own.
+    `auto`: over `record_id` — the row the sheet was loaded from or last saved
+    — when the code is still that row's; otherwise a new row, unless the code
+    is already saved somewhere (any file, or the drafts), which answers 409
+    with those rows for the admin to choose. `overwrite`: over `overwrite_id`
+    (one of them). `new`: a new row, no question.
+
+    `place`: where the row ends up — "draft" (Taslaklar), "file" (`file_id`,
+    or a new file named `file_name`), or "keep" (a new row in Taslaklar, a row
+    written over where it is).
     """
 
     sheet: PricingSheetIn
     record_id: uuid.UUID | None = None
     mode: Literal["auto", "overwrite", "new"] = "auto"
     overwrite_id: uuid.UUID | None = None
+    place: Literal["keep", "draft", "file"] = "keep"
+    file_id: int | None = None
+    file_name: str | None = Field(default=None, max_length=120)
     # Then write the sheet's prices to the product its code names.
     apply: bool = False
 
@@ -199,6 +206,11 @@ class SaveRequest(BaseModel):
             raise ValueError("Üzerine yazılacak kayıt yalnızca “overwrite” ile ve onunla birlikte verilir")
         if self.apply and not self.sheet.product_code:
             raise ValueError("Siteye uygulamak için ürün kodu gerekli")
+        self.file_name = " ".join((self.file_name or "").split()) or None
+        if self.place == "file" and (self.file_id is None) == (self.file_name is None):
+            raise ValueError("Bir dosya seçin ya da yeni dosya adı girin")
+        if self.place != "file" and (self.file_id is not None or self.file_name is not None):
+            raise ValueError("Dosya yalnızca “file” ile verilir")
         return self
 
 
