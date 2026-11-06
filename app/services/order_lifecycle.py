@@ -159,6 +159,34 @@ async def recover_to_transfer(db: AsyncSession, order: Order, now: datetime) -> 
     return discount
 
 
+def can_revert_recovery(order: Order) -> str | None:
+    """Why "Kurtarmayı Geri Al" cannot undo this order's recovery, or None when it can."""
+    if order.status != OrderStatus.AWAITING_TRANSFER or not order.recovery_discount:
+        return "Yalnızca WhatsApp ile kurtarılmış ve havale bekleyen bir siparişin kurtarması geri alınabilir"
+    if order.paid_at is not None:
+        return "Sipariş ödenmiş; kurtarma geri alınamaz"
+    if order.store_approved_at is not None:
+        return "Mağaza onayı verilmiş; önce mağaza onayını geri alın"
+    return None
+
+
+async def revert_recovery(db: AsyncSession, order: Order) -> None:
+    """"Kurtarmayı Geri Al": undo "WhatsApp ile Kurtar" — the customer turned
+    the transfer down, or the message was never sent. Back to the failed card
+    payment it was: its goods on the shelf again, the "Kurtarma İndirimi" off
+    `discount_amount`, CREDIT_CARD, PAYMENT_FAILED, and no recovery on record
+    (so it can be recovered again). Why the card failed was kept all along.
+    The caller checks `can_revert_recovery`; `order.items` must be loaded.
+    """
+    await _put_back(db, order)
+    order.discount_amount -= order.recovery_discount
+    order.recovery_discount = Decimal("0.00")
+    order.payment_method = PaymentMethod.CREDIT_CARD
+    order.status = OrderStatus.PAYMENT_FAILED
+    order.recovered_at = None
+    await db.flush()
+
+
 async def _take_stock_again(db: AsyncSession, order: Order) -> None:
     """The goods of an order that came to nothing, taken out of stock again,
     under the same lock as checkout. When any line's goods have been sold

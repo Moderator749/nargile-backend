@@ -332,8 +332,14 @@ class ShippingIntegrationRead(BaseModel):
     yurtici_customer_code: str | None
 
 
-async def _order_with_user(db: AsyncSession, order_id: uuid.UUID) -> tuple[Order, User]:
-    order = await db.scalar(select(Order).where(Order.id == order_id).options(selectinload(Order.items)))
+async def _order_with_user(db: AsyncSession, order_id: uuid.UUID, *, lock: bool = False) -> tuple[Order, User]:
+    """The order, its lines and who placed it. `lock` holds the order's row
+    until the commit, so a second request for the same change (a double
+    click, two admins) waits and then finds it already made."""
+    query = select(Order).where(Order.id == order_id).options(selectinload(Order.items))
+    if lock:
+        query = query.with_for_update(of=Order)
+    order = await db.scalar(query)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     user = await db.scalar(
@@ -615,7 +621,7 @@ async def recover_to_transfer(
     taken again first — 409 naming the lines when it has been sold since, and
     nothing about the order changes. 409 too for any other status, so the
     discount is never given twice."""
-    order, user = await _order_with_user(db, order_id)
+    order, user = await _order_with_user(db, order_id, lock=True)
     if order.status != OrderStatus.PAYMENT_FAILED:
         raise HTTPException(
             status_code=409,
@@ -629,6 +635,27 @@ async def recover_to_transfer(
     await db.commit()
     await db.refresh(order, attribute_names=["items"])
     return _list_item(order, user, await _line_catalog(db, [order]))
+
+
+@router.post("/orders/{order_id}/revert-recovery", response_model=AdminOrderListItem)
+async def revert_recovery(
+    order_id: uuid.UUID,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Kurtarmayı Geri Al": a "WhatsApp ile Kurtar" order back to the failed
+    card payment it was — stock released, the 5% off the total, PAYMENT_FAILED.
+    Only while it waits for the transfer, unpaid and without the store's
+    approval (409 otherwise, saying which)."""
+    order, user = await _order_with_user(db, order_id, lock=True)
+    refusal = order_lifecycle.can_revert_recovery(order)
+    if refusal:
+        raise HTTPException(status_code=409, detail=refusal)
+    await order_lifecycle.revert_recovery(db, order)
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    # A failed payment again: with its PayTR record, as the list shows one.
+    return _list_item(order, user, await _line_catalog(db, [order]), await _payment_failures(db, [order]))
 
 
 @router.put("/orders/{order_id}/internal-note", response_model=AdminOrderListItem)

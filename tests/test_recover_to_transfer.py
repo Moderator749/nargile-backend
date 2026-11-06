@@ -187,3 +187,95 @@ async def test_the_transfer_gets_its_own_48_hours(
     await cancel_expired_pending_orders(db_session)
     db_session.expire_all()
     assert (await db_session.get(Order, order_id)).status == OrderStatus.AWAITING_TRANSFER
+
+
+# ── Kurtarmayı Geri Al ───────────────────────────────────────────────────────
+
+
+def _revert(order_id) -> str:
+    return f"/api/v1/admin/orders/{order_id}/revert-recovery"
+
+
+async def test_reverting_puts_the_failed_payment_back_as_it_was(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    # Some discount of its own already (points, say), which must survive the round trip.
+    order = await _failed_card_order(db_session, customer_user, variant, total="1600.00", discount="48.48")
+    order_id, variant_id = order.id, variant.id
+    before = await _stock(db_session, variant_id)
+    assert (await client.post(_url(order_id), headers=auth_header(admin_user))).status_code == 200
+    assert await _stock(db_session, variant_id) == before - QTY
+
+    resp = await client.post(_revert(order_id), headers=auth_header(admin_user))
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["status"] == "PAYMENT_FAILED"
+    assert data["payment_method"] == "CREDIT_CARD"
+    assert Decimal(data["discount_amount"]) == Decimal("48.48")
+    assert Decimal(data["recovery_discount"]) == Decimal("0.00")
+    assert data["recovered_at"] is None
+    assert data["cancel_reason"] == "Kart limiti yetersiz"
+    # The goods are on the shelf again.
+    assert await _stock(db_session, variant_id) == before
+
+
+async def test_a_reverted_order_can_be_recovered_again_without_stacking(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _failed_card_order(db_session, customer_user, variant)
+    order_id, headers = order.id, auth_header(admin_user)
+    assert (await client.post(_url(order_id), headers=headers)).status_code == 200
+    assert (await client.post(_revert(order_id), headers=headers)).status_code == 200
+    # Once reverted, a second revert has nothing to undo.
+    assert (await client.post(_revert(order_id), headers=headers)).status_code == 409
+    again = await client.post(_url(order_id), headers=headers)
+    assert again.status_code == 200
+    assert Decimal(again.json()["discount_amount"]) == Decimal("150.00")
+
+
+async def test_only_an_unpaid_recovered_transfer_is_reverted(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    headers = auth_header(admin_user)
+    # A failed payment never recovered, and an ordinary transfer (no recovery discount).
+    failed = await _failed_card_order(db_session, customer_user, variant)
+    plain = await _failed_card_order(db_session, customer_user, variant, status=OrderStatus.AWAITING_TRANSFER)
+    failed_id, plain_id = failed.id, plain.id
+    assert (await client.post(_revert(failed_id), headers=headers)).status_code == 409
+    resp = await client.post(_revert(plain_id), headers=headers)
+    assert resp.status_code == 409
+    assert "kurtarılmış" in resp.json()["detail"]
+
+    # Paid meanwhile: the money is in, there is nothing to undo.
+    paid = await _failed_card_order(db_session, customer_user, variant)
+    paid_id = paid.id
+    assert (await client.post(_url(paid_id), headers=headers)).status_code == 200
+    assert (await client.post(f"/api/v1/admin/orders/{paid_id}/approve", headers=headers)).status_code == 200
+    resp = await client.post(_revert(paid_id), headers=headers)
+    assert resp.status_code == 409
+
+    # The store has released it for packing: that is taken back first.
+    packed = await _failed_card_order(db_session, customer_user, variant)
+    packed_id = packed.id
+    assert (await client.post(_url(packed_id), headers=headers)).status_code == 200
+    approval = await client.post(f"/api/v1/admin/orders/{packed_id}/store-approval", json={"approved": True}, headers=headers)
+    assert approval.status_code == 200, approval.text
+    resp = await client.post(_revert(packed_id), headers=headers)
+    assert resp.status_code == 409
+    assert "mağaza onayı" in resp.json()["detail"].lower()
+    db_session.expire_all()
+    assert (await db_session.get(Order, packed_id)).status == OrderStatus.AWAITING_TRANSFER
+
+
+async def test_only_an_admin_reverts(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _failed_card_order(db_session, customer_user, variant)
+    order_id = order.id
+    assert (await client.post(_url(order_id), headers=auth_header(admin_user))).status_code == 200
+    assert (await client.post(_revert(order_id), headers=auth_header(customer_user))).status_code == 403
+    assert (await client.post(_revert(order_id))).status_code == 401
