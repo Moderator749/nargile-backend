@@ -37,8 +37,10 @@ Malzemeleri, and each product of their kinds goes onto its shelf by its name.
 
 Running it again changes nothing. Each write saves what it changed, product
 by product, to scripts/migration_reports/malzemeler-tree-<date>.json; all of
-it is one transaction, and the way back is the dump taken before. Then it
-asks the storefront to drop its cached catalog (STOREFRONT_REVALIDATE_URL).
+it is one transaction, and the way back is the dump taken before. With
+--refresh-storefront it then asks the storefront to drop its cached catalog
+(STOREFRONT_REVALIDATE_URL) — never by default, as a developer's .env points
+at the live storefront.
 
 Note: apply_category_taxonomy.py puts the four groups back at the top if run
 again; it is the October tree, kept for its history and its RULES.
@@ -135,7 +137,7 @@ def with_names(category: Category, en: str, ar: str) -> dict:
     return translations
 
 
-async def run(dry_run: bool) -> None:
+async def run(dry_run: bool, refresh: bool) -> None:
     async with async_session() as db:
         cats = {c.slug: c for c in (await db.execute(select(Category))).scalars()}
         report: dict = {"created": [], "moved": [], "renamed": [], "switched_off": [], "deleted": [], "products": [], "unmatched": []}
@@ -307,7 +309,10 @@ async def run(dry_run: bool) -> None:
         out.parent.mkdir(exist_ok=True)
         out.write_text(json.dumps(report, ensure_ascii=False, indent=1))
         print(f"\nwritten; report: {out}")
-        await refresh_storefront()
+        if refresh:
+            await refresh_storefront()
+        else:
+            print("storefront cache: not refreshed (--refresh-storefront asks for it; or an admin save)")
 
 
 async def refresh_storefront() -> None:
@@ -326,11 +331,16 @@ async def refresh_storefront() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--dry-run", action="store_true", help="show what would change, write nothing")
+    # Opt-in: the URL in a developer's .env is the live storefront's, and a run
+    # on a local copy must not reach it.
+    parser.add_argument(
+        "--refresh-storefront", action="store_true", help="after writing, drop the storefront's cached catalog (STOREFRONT_REVALIDATE_URL)"
+    )
     args = parser.parse_args()
 
     async def go():
         try:
-            await run(args.dry_run)
+            await run(args.dry_run, args.refresh_storefront)
         finally:
             await engine.dispose()
 
