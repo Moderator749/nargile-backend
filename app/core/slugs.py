@@ -43,6 +43,7 @@ OLD_ROOT_ADDRESSES = frozenset({
     "kozlukler-isi-yonetimi", "yedek-siseler", "yedek-sise-ve-govde", "masaustu-nargile-takimlari",
     "mini-masaustu-takimlar", "rus-takimlari", "panada-hookah", "oduman-nargile", "mr-wood-nargile",
     "steamulation-nargile-takimlari", "quasar-arguile", "meduse-nargile-takimlari",
+    "purmuzler",  # into Gazlar ve Pürmüzler (scripts/apply_malzemeler_tree.py)
 })
 RESERVED_ROOT_PATHS = STOREFRONT_PAGES | OLD_ROOT_ADDRESSES
 
