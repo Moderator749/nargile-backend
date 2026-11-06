@@ -43,7 +43,9 @@ it is one transaction, and the way back is the dump taken before. With
 at the live storefront.
 
 Note: apply_category_taxonomy.py puts the four groups back at the top if run
-again; it is the October tree, kept for its history and its RULES.
+again; it is the October tree, kept for its history and its RULES. And this
+script refuses to run once the panel has given a group a new slug
+(MOVED_SLUGS: Sarf is /sarf-ve-tuketim-malzemeleri since 2026-11-06).
 """
 
 import argparse
@@ -114,6 +116,11 @@ SWITCHED_OFF = {"cakmaklar"}
 
 LEAVES = {shelf[0] for *_, shelves in TREE for shelf in shelves}
 
+# Groups whose slug the panel has changed since this ran (2026-11-06): with the
+# new one in place, a run would not find the group and would open an empty one
+# beside it under the old slug.
+MOVED_SLUGS = {"sarf-ve-tuketim-malzemeleri": "sarf-malzemeleri"}
+
 
 def kind_of(name: str) -> str | None:
     """The shelf the name says, by the October rules (first match wins); None when none matches."""
@@ -140,6 +147,12 @@ def with_names(category: Category, en: str, ar: str) -> dict:
 async def run(dry_run: bool, refresh: bool) -> None:
     async with async_session() as db:
         cats = {c.slug: c for c in (await db.execute(select(Category))).scalars()}
+        moved = [f"/{new} (was /{old})" for new, old in MOVED_SLUGS.items() if new in cats]
+        if moved:
+            raise SystemExit(
+                f"Refusing: {', '.join(moved)} exists — this tree was applied on 2026-11-06 and its groups "
+                "have been renamed since; running it again would open a new, empty category. Nothing written."
+            )
         report: dict = {"created": [], "moved": [], "renamed": [], "switched_off": [], "deleted": [], "products": [], "unmatched": []}
 
         def ensure(slug: str, name: str, en: str, ar: str) -> Category:
