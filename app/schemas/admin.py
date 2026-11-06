@@ -233,6 +233,8 @@ class AdminOrderListItem(BaseModel):
     cancelled_at: datetime | None = None
     cancel_reason: str | None = None
     recovered_at: datetime | None = None
+    # "WhatsApp ile Kurtar": the 5% "Kurtarma İndirimi", already in `discount_amount`.
+    recovery_discount: Decimal = Decimal("0.00")
     delivered_at: datetime | None = None
     returned_at: datetime | None = None
     return_reason: str | None = None

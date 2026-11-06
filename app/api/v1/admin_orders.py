@@ -604,6 +604,33 @@ async def recover_order(
     return _list_item(order, user, await _line_catalog(db, [order]))
 
 
+@router.post("/orders/{order_id}/recover-to-transfer", response_model=AdminOrderListItem)
+async def recover_to_transfer(
+    order_id: uuid.UUID,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"WhatsApp ile Kurtar": a failed card payment (PAYMENT_FAILED) back as a
+    bank transfer at 5% off, waiting for the money for 48 hours. Its stock is
+    taken again first — 409 naming the lines when it has been sold since, and
+    nothing about the order changes. 409 too for any other status, so the
+    discount is never given twice."""
+    order, user = await _order_with_user(db, order_id)
+    if order.status != OrderStatus.PAYMENT_FAILED:
+        raise HTTPException(
+            status_code=409,
+            detail="Yalnızca ödemesi başarısız olan bir sipariş havaleye çevrilerek kurtarılabilir",
+        )
+    try:
+        await order_lifecycle.recover_to_transfer(db, order, datetime.now(timezone.utc))
+    except order_lifecycle.StockShortage as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=f"Stok yetersiz, bu sipariş kurtarılamaz — {exc}") from exc
+    await db.commit()
+    await db.refresh(order, attribute_names=["items"])
+    return _list_item(order, user, await _line_catalog(db, [order]))
+
+
 @router.put("/orders/{order_id}/internal-note", response_model=AdminOrderListItem)
 async def set_internal_note(
     order_id: uuid.UUID,

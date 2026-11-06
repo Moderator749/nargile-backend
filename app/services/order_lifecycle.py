@@ -1,6 +1,7 @@
 """Order state changes shared by the admin API and the SLA job."""
 
 from datetime import datetime, timezone
+from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -90,7 +91,7 @@ async def return_order(
 
 
 class StockShortage(Exception):
-    """A cancelled order's goods have been sold since: it cannot take them back."""
+    """A closed order's goods have been sold since: it cannot take them back."""
 
 
 def recovered_status(order: Order) -> OrderStatus:
@@ -106,13 +107,63 @@ async def recover(db: AsyncSession, order: Order, now: datetime, *, paid: bool) 
     """"Siparişi Kurtar": bring a cancelled order back — paid (APPROVED, the
     money arrived after it was cancelled) or waiting for payment again.
 
-    Its stock is taken again first, under the same lock as checkout; when a
-    line's goods have been sold since, nothing changes and StockShortage says
-    which. The wallet counts its points again by itself (the order is no longer
-    void). The 48-hour transfer clock starts again from now (see
-    order_tasks). Returns the points granted, as `mark_paid` does.
-    `order.items` must be loaded.
+    Its stock is taken again first (see `_take_stock_again`). The wallet counts
+    its points again by itself (the order is no longer void). The 48-hour
+    transfer clock starts again from now (see order_tasks). Returns the points
+    granted, as `mark_paid` does. `order.items` must be loaded.
     """
+    await _take_stock_again(db, order)
+    order.recovered_at = now
+    if not paid:
+        order.status = recovered_status(order)
+        await db.flush()
+        return 0, 0
+    if order.paid_at is not None:
+        # Paid before it was cancelled: its points come back with it.
+        order.status = OrderStatus.APPROVED
+        await db.flush()
+        return 0, 0
+    return await mark_paid(db, order, now)
+
+
+# "WhatsApp ile Kurtar": what the shop gives up of a failed card payment's
+# total — the virtual POS commission it no longer pays — to have it by transfer.
+RECOVERY_DISCOUNT_RATE = Decimal("0.05")
+
+
+def payable(order: Order) -> Decimal:
+    """What the customer pays for the order: its goods, less its discounts, plus carriage."""
+    return (order.total_amount + order.shipping_cost - order.discount_amount).quantize(Decimal("0.01"))
+
+
+async def recover_to_transfer(db: AsyncSession, order: Order, now: datetime) -> Decimal:
+    """"WhatsApp ile Kurtar": a failed card order (PAYMENT_FAILED) back as a
+    bank transfer at 5% off — the "Kurtarma İndirimi" — waiting for the money
+    (AWAITING_TRANSFER) with a fresh 48 hours.
+
+    Its stock is taken again first; when a line's goods have been sold since,
+    nothing changes and StockShortage says which. The discount is 5% of what
+    the customer was to pay, rounded half up to the kuruş, and goes into
+    `discount_amount` (which every total reads) as well as `recovery_discount`.
+    Its points count again by themselves, as on "Siparişi Kurtar". Returns the
+    discount. `order.items` must be loaded; the caller checks the status.
+    """
+    await _take_stock_again(db, order)
+    discount = (payable(order) * RECOVERY_DISCOUNT_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    order.discount_amount += discount
+    order.recovery_discount = discount
+    order.payment_method = PaymentMethod.BANK_TRANSFER
+    order.status = OrderStatus.AWAITING_TRANSFER
+    order.recovered_at = now
+    await db.flush()
+    return discount
+
+
+async def _take_stock_again(db: AsyncSession, order: Order) -> None:
+    """The goods of an order that came to nothing, taken out of stock again,
+    under the same lock as checkout. When any line's goods have been sold
+    since, StockShortage names every such line, and the caller rolls back
+    whatever the lines before it took."""
     short: list[str] = []
     for item in order.items:
         if item.stock_warehouse is None and order.is_quote:
@@ -132,17 +183,6 @@ async def recover(db: AsyncSession, order: Order, now: datetime, *, paid: bool) 
         item.stock_warehouse = CENTRAL_STOCK
     if short:
         raise StockShortage("; ".join(short))
-    order.recovered_at = now
-    if not paid:
-        order.status = recovered_status(order)
-        await db.flush()
-        return 0, 0
-    if order.paid_at is not None:
-        # Paid before it was cancelled: its points come back with it.
-        order.status = OrderStatus.APPROVED
-        await db.flush()
-        return 0, 0
-    return await mark_paid(db, order, now)
 
 
 async def _line_name(db: AsyncSession, variant_id) -> str:

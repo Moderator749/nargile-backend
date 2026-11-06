@@ -238,6 +238,12 @@ class Order(Base):
     # came in after the 48-hour cancellation, say). The cancellation's own
     # time and reason are kept, for the order's history.
     recovered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # "WhatsApp ile Kurtar": the 5% "Kurtarma İndirimi" a failed card order
+    # took when it was turned into a bank transfer. Already counted in
+    # `discount_amount`; kept apart so the order can say what it was.
+    recovery_discount: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=Decimal("0.00"), server_default="0.00"
+    )
     # When it reached the customer: the carrier's delivery, or the hand-over at the shop.
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     returned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
