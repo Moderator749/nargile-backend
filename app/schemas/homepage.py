@@ -13,6 +13,7 @@ never "javascript:" or "data:".
 """
 
 import re
+import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -74,11 +75,13 @@ class Sections(_Strict):
     hero: bool = True  # hero slider and the category column beside it (always first)
     perks: bool = True  # the payment advantages bar
     brands_top: bool = True  # the brand ticker under the perks bar
-    picks: bool = True  # "Sizin İçin Seçtiklerimiz"
+    picks: bool = True  # "Sizin İçin Seçtiklerimiz": the products the admin picked
+    tabs: bool = True  # "Çok Satanlar" / "Yeni Gelenler": the two automatic lists behind tabs
     lules: bool = True  # "Lüle Alırken Kararsız Kalacaksınız"
     sultanpuan: bool = True  # the SultanPuan band
     kumbara: bool = True  # "Kumbara 20.000 TL"
-    bento: bool = True  # "Görsel Vitrin": three photo boxes, over the deals
+    bento: bool = True  # "Görsel Vitrin": three photo boxes
+    bento4: bool = True  # "Görsel Vitrin 4": three more, between the tabbed lists and the deals
     bento2: bool = True  # "Görsel Vitrin 2": three more, between SultanPuan and Kumbara
     deals: bool = True  # "Fırsatları Kaçırma"
     bento3: bool = True  # "Görsel Vitrin 3": three more, under the deals (where the campaign boxes were)
@@ -107,8 +110,8 @@ class Sections(_Strict):
 #: the admin has dragged them into another ("Bölümler"). Each is also a
 #: switch in `Sections`.
 HomeBlock = Literal[
-    "perks", "brands_top", "picks", "lules", "sultanpuan", "bento2", "kumbara", "bento", "deals",
-    "bento3", "promos", "brands", "brand_showcase", "kozlukler", "games", "showcase", "about",
+    "perks", "brands_top", "picks", "lules", "sultanpuan", "bento2", "kumbara", "bento", "tabs", "bento4",
+    "deals", "bento3", "promos", "brands", "brand_showcase", "kozlukler", "games", "showcase", "about",
 ]
 
 
@@ -333,6 +336,8 @@ MobileSection = Literal[
     "bento",  # "Görsel Vitrin", the photo boxes
     "bento2",  # "Görsel Vitrin 2", the second row of them
     "bento3",  # "Görsel Vitrin 3", the photo boxes under the deals
+    "tabs",  # "Çok Satanlar" / "Yeni Gelenler"
+    "bento4",  # "Görsel Vitrin 4", the photo boxes over the deals
     "brand_statement",  # "Sektörde Referans Noktası"
     "brand_showcase",  # "Markalarımız"
     "kozlukler",  # the "Közlükler" row
@@ -387,11 +392,29 @@ class Perks(_Strict):
     transfer: Perk
 
 
+#: "Sizin İçin Seçtiklerimiz" holds at most this many hand-picked products.
+PICKS_MAX = 20
+
+
+def _unique_products(ids: list[uuid.UUID]) -> list[uuid.UUID]:
+    if len(ids) != len(set(ids)):
+        raise ValueError("A product appears once in the list")
+    return ids
+
+
 class Picks(_Strict):
-    """ "Sizin İçin Seçtiklerimiz", its two tabs, and the free-shipping note beside it."""
+    """ "Sizin İçin Seçtiklerimiz" — the products the admin picked, in their
+    order, and the free-shipping note beside them — and the section of the two
+    automatic lists that it once held behind tabs ("Çok Satanlar" / "Yeni
+    Gelenler"), now further down the page under its own heading."""
 
     title: _text(80, required=True)
     subtitle: _text(200)
+    # The admin's picks; an unpublished or deleted one is simply not shown.
+    # None of them yet: the storefront shows its automatic picks meanwhile.
+    products: Annotated[list[uuid.UUID], Field(max_length=PICKS_MAX), AfterValidator(_unique_products)] = []
+    tabs_title: _text(80) = "Çok Satanlar & Yeni Gelenler"
+    tabs_subtitle: _text(200) = ""
     bestsellers: _text(30, required=True)
     newest: _text(30, required=True)
     shipping_eyebrow: _text(60)
@@ -579,6 +602,7 @@ class HomepageDocument(_Strict):
     bento: Bento | None = None
     bento2: Bento | None = None  # "Görsel Vitrin 2": its own three boxes, edited as the first's
     bento3: Bento | None = None  # "Görsel Vitrin 3": the same, in the campaign boxes' place
+    bento4: Bento | None = None  # "Görsel Vitrin 4": the same, between the tabbed lists and the deals
     statement: Statement | None = None  # the "promos" section
     brand_showcase: BrandShowcaseCopy | None = None
     kozlukler: ProductRowCopy | None = None

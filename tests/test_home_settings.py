@@ -420,6 +420,55 @@ async def test_the_sections_order_is_held_to_its_rules(client: AsyncClient, admi
     assert response.status_code == 422
 
 
+PICKS = {
+    "title": "Sizin İçin Seçtiklerimiz",
+    "subtitle": "",
+    "bestsellers": "Çok Satanlar",
+    "newest": "Yeni Gelenler",
+    "shipping_eyebrow": "Ücretsiz Kargo & Hızlı Sevk",
+    "shipping_text": "{tutar} ve üzeri siparişlerde",
+}
+
+
+async def test_the_picked_products_are_kept_in_their_order(client: AsyncClient, admin_user: User, cleanup):
+    """"Sizin İçin Seçtiklerimiz" holds the admin's products, in the order given;
+    the tabbed lists have their own heading, and both sections their switches."""
+    import uuid
+
+    ids = [str(uuid.uuid4()) for _ in range(20)]
+    body = {
+        "picks": {**PICKS, "products": ids, "tabs_title": " Çok Satanlar & Yeni Gelenler "},
+        "order": ["picks", "lules", "tabs", "bento4", "deals"],
+        "sections": {"tabs": False, "bento4": True},
+    }
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json=body)
+    assert saved.status_code == 200, saved.text
+    data = (await client.get("/api/v1/home/settings")).json()["data"]
+    assert data["picks"]["products"] == ids
+    assert data["picks"]["tabs_title"] == "Çok Satanlar & Yeni Gelenler"
+    assert data["order"] == ["picks", "lules", "tabs", "bento4", "deals"]
+    assert (data["sections"]["tabs"], data["sections"]["bento4"]) == (False, True)
+
+
+async def test_picks_saved_before_the_products_read_with_none(client: AsyncClient, admin_user: User, cleanup):
+    saved = await client.put("/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"picks": PICKS})
+    assert saved.status_code == 200, saved.text
+    picks = (await client.get("/api/v1/home/settings")).json()["data"]["picks"]
+    assert (picks["products"], picks["tabs_title"]) == ([], "Çok Satanlar & Yeni Gelenler")
+
+
+@pytest.mark.parametrize("products", ["21", "twice", "not-a-uuid"])
+async def test_the_picked_products_are_held_to_their_rules(client: AsyncClient, admin_user: User, cleanup, products: str):
+    import uuid
+
+    one = str(uuid.uuid4())
+    ids = {"21": [str(uuid.uuid4()) for _ in range(21)], "twice": [one, one], "not-a-uuid": ["LL282"]}[products]
+    response = await client.put(
+        "/api/v1/admin/home/settings", headers=auth_header(admin_user), json={"picks": {**PICKS, "products": ids}}
+    )
+    assert response.status_code == 422
+
+
 async def test_the_top_brand_ticker_follows_an_older_brands_switch(client: AsyncClient, admin_user: User, cleanup):
     h = auth_header(admin_user)
     await client.put("/api/v1/admin/home/settings", headers=h, json={"sections": {"brands": False}})
