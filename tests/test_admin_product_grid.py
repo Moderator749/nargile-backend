@@ -292,3 +292,62 @@ async def test_duplicating_twice_keeps_finding_a_free_code(client: AsyncClient, 
     second = (await client.post("/api/v1/admin/products/duplicate", headers=auth_header(admin_user), json=ids)).json()
     assert first[0]["base_code"] != second[0]["base_code"]
     assert first[0]["variants"][0]["sku"] != second[0]["variants"][0]["sku"]
+
+
+# ── Quick stock edit ─────────────────────────────────────────────────────────
+
+
+def _central(row: dict) -> list[int]:
+    return [sum(i["quantity"] for i in v["inventory"]) for v in row["variants"]]
+
+
+async def test_the_stock_column_sets_a_colours_stock(client: AsyncClient, admin_user: User, grid):
+    product = grid["a"]
+    row = (await client.get("/api/v1/admin/products", headers=auth_header(admin_user), params={"q": product["base_code"]})).json()[0]
+    variant_id = row["variants"][0]["id"]
+
+    resp = await client.patch(
+        f"/api/v1/admin/products/{row['id']}/stock",
+        headers=auth_header(admin_user),
+        json={"variants": [{"id": variant_id, "quantity": 42}]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert _central(resp.json()) == [42]
+    again = (await client.get("/api/v1/admin/products", headers=auth_header(admin_user), params={"q": product["base_code"]})).json()[0]
+    assert _central(again) == [42]
+
+
+async def test_the_stock_edit_sets_each_colour(client: AsyncClient, admin_user: User):
+    body = _sheet(f"SC-{uuid.uuid4().hex[:5].upper()}", "İki Renk", price="10.00", stock=0)
+    body |= {"color_names": ["Siyah", "Beyaz"], "variants": [{"color": "Siyah", "stock": {"quantity": 5}}, {"color": "Beyaz", "stock": {"quantity": 0}}]}
+    await _save(client, admin_user, body)
+    row = (await client.get("/api/v1/admin/products", headers=auth_header(admin_user), params={"q": body["base_code"]})).json()[0]
+    siyah, beyaz = row["variants"]
+
+    resp = await client.patch(
+        f"/api/v1/admin/products/{row['id']}/stock",
+        headers=auth_header(admin_user),
+        json={"variants": [{"id": beyaz["id"], "quantity": 7}]},
+    )
+    assert _central(resp.json()) == [5, 7]  # the colour not sent keeps its stock
+
+
+@pytest.mark.parametrize("quantity", [-1, 1_000_001])
+async def test_an_impossible_stock_is_refused(client: AsyncClient, admin_user: User, grid, quantity: int):
+    row = (await client.get("/api/v1/admin/products", headers=auth_header(admin_user), params={"q": grid["a"]["base_code"]})).json()[0]
+    resp = await client.patch(
+        f"/api/v1/admin/products/{row['id']}/stock",
+        headers=auth_header(admin_user),
+        json={"variants": [{"id": row["variants"][0]["id"], "quantity": quantity}]},
+    )
+    assert resp.status_code == 422
+
+
+async def test_another_products_colour_is_refused(client: AsyncClient, admin_user: User, customer_user: User, grid):
+    h = auth_header(admin_user)
+    a = (await client.get("/api/v1/admin/products", headers=h, params={"q": grid["a"]["base_code"]})).json()[0]
+    b = (await client.get("/api/v1/admin/products", headers=h, params={"q": grid["b"]["base_code"]})).json()[0]
+    url = f"/api/v1/admin/products/{a['id']}/stock"
+    body = {"variants": [{"id": b["variants"][0]["id"], "quantity": 3}]}
+    assert (await client.patch(url, headers=h, json=body)).status_code == 422
+    assert (await client.patch(url, headers=auth_header(customer_user), json=body)).status_code == 403

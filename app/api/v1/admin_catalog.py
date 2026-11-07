@@ -31,10 +31,11 @@ from app.schemas.admin import (
     AdminVariantDetail,
     ProductPublishRead,
     ProductPublishUpdate,
+    ProductStockUpdate,
     AdminVariantPrice,
     SegmentRead,
 )
-from app.schemas.product_sheet import ProductSheetRead, ProductSheetWrite
+from app.schemas.product_sheet import ProductSheetRead, ProductSheetWrite, SheetStock
 from app.services import product_blueprint
 from app.services.checkout_engine import CENTRAL_STOCK
 from app.services.exchange_rates import RatesUnavailable, get_rates
@@ -347,6 +348,31 @@ async def set_product_published(
     product.is_published = payload.is_published
     await db.commit()
     return ProductPublishRead(id=product.id, is_published=product.is_published)
+
+
+@router.patch("/products/{product_id}/stock", response_model=AdminProductDetail)
+async def set_product_stock(
+    product_id: uuid.UUID,
+    payload: ProductStockUpdate,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The stock column's quick edit: set each given colour's stock without
+    opening the product's form (and without its prices, flash sale or
+    translations being saved again). Returns the table row as it now is."""
+    product = await db.scalar(
+        select(Product).where(Product.id == product_id).options(selectinload(Product.variants))
+    )
+    if product is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    variants = {v.id: v for v in product.variants if v.is_active}
+    unknown = [str(item.id) for item in payload.variants if item.id not in variants]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Bu ürünün rengi değil: {', '.join(unknown)}")
+    for item in payload.variants:
+        await product_blueprint.sync_stock(db, variants[item.id], SheetStock(quantity=item.quantity))
+    await db.commit()
+    return (await _admin_product_rows(db, [product.id]))[0]
 
 
 @router.get("/segments", response_model=list[SegmentRead])

@@ -120,6 +120,17 @@ class ProductPublishUpdate(BaseModel):
     is_published: bool
 
 
+class VariantStockUpdate(BaseModel):
+    id: uuid.UUID
+    quantity: int = Field(ge=0, le=1_000_000)
+
+
+class ProductStockUpdate(BaseModel):
+    """The stock column's quick edit: each colour's central stock, as typed."""
+
+    variants: list[VariantStockUpdate] = Field(min_length=1, max_length=200)
+
+
 class ProductPublishRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -215,7 +215,7 @@ async def save(
         # weight, and an omitted field must leave the stored one alone.
         if "weight_kg" in payload.model_fields_set:
             variant.weight_kg = payload.weight_kg
-        await _sync_stock(db, variant, sheet.stock)
+        await sync_stock(db, variant, sheet.stock)
         await _sync_prices(db, variant, payload.prices, segments)
         await _sync_flash_sale(db, variant, payload.opportunity, now)
     await _sync_cross_sells(db, product, payload.related_product_ids)
@@ -426,7 +426,7 @@ async def _retire_variant(db: AsyncSession, variant: ProductVariant) -> None:
         row.quantity = 0
 
 
-async def _sync_stock(db: AsyncSession, variant: ProductVariant, stock: SheetStock) -> None:
+async def sync_stock(db: AsyncSession, variant: ProductVariant, stock: SheetStock) -> None:
     """The colour's central stock row, created on first use. The retired
     per-segment quota rows are left as they are: nothing reads them."""
     row = await db.scalar(
