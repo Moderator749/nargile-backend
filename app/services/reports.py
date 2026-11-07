@@ -559,6 +559,7 @@ async def slow_movers(
         .outerjoin(Brand, Brand.id == Product.brand_id)
         .where(
             stock.c.stock > 0,
+            Product.is_deleted.is_(False),
             Product.created_at < cutoff,
             or_(last.c.last_sold_at.is_(None), last.c.last_sold_at < cutoff),
             *_catalog_filters(f),
@@ -607,7 +608,7 @@ async def missing_costs(
         .outerjoin(sold, sold.c.product_id == Product.id)
         .outerjoin(Category, Category.id == Product.category_id)
         .outerjoin(Brand, Brand.id == Product.brand_id)
-        .where(Product.id.in_(uncosted), *_catalog_filters(f))
+        .where(Product.id.in_(uncosted), Product.is_deleted.is_(False), *_catalog_filters(f))
         .order_by(func.coalesce(sold.c.revenue, 0).desc(), func.coalesce(stock.c.stock, 0).desc(), Product.name)
         .limit(limit)
     )
@@ -669,7 +670,7 @@ async def tier_margins(
             .join(Product, Product.id == first.c.product_id)
             .outerjoin(Category, Category.id == Product.category_id)
             .outerjoin(Brand, Brand.id == Product.brand_id)
-            .where(first.c.cost.is_not(None), *_catalog_filters(f))
+            .where(first.c.cost.is_not(None), Product.is_deleted.is_(False), *_catalog_filters(f))
         )
     ).all()
     if not products:

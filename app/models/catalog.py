@@ -19,7 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import false as sa_false
 from sqlalchemy import func
-from sqlalchemy import event, inspect, or_, select
+from sqlalchemy import and_, event, inspect, or_, select
 from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, object_session, relationship
@@ -137,6 +137,13 @@ class Product(Base):
     is_published: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=sa_true()
     )
+    # Deleted by the admin: gone from the storefront and the admin lists, but the
+    # row (and its colours) stays for the order lines that point at it. Deleting
+    # also unpublishes, so a reader that only checks `is_published` hides it too.
+    is_deleted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=sa_false(), index=True
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # When the product row was written and last changed: the sitemap's
     # <lastmod>. A price or stock change lives on the variant rows and does not
     # move it; a name, text, photo or rule edit on the product sheet does.
@@ -200,6 +207,11 @@ class Product(Base):
     category: Mapped[Category | None] = relationship(back_populates="products")
     # Loaded with the product, for its slug in every read (CatalogProductRead.brand_slug).
     brand_row: Mapped["Brand | None"] = relationship(lazy="selectin")
+
+    @classmethod
+    def on_storefront(cls):
+        """What a shopper may see: published and not deleted."""
+        return and_(cls.is_published.is_(True), cls.is_deleted.is_(False))
 
     @property
     def brand_slug(self) -> str | None:

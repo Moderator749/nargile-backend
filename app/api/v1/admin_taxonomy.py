@@ -345,7 +345,7 @@ async def _order_rows(db: AsyncSession, category: Category) -> list[CategoryProd
     )
     rows = await db.execute(
         select(Product, rank.label("position"))
-        .where(Product.id.in_(products_in(category_subtree(category.slug))))
+        .where(Product.id.in_(products_in(category_subtree(category.slug))), Product.is_deleted.is_(False))
         .order_by(*ranked_order(rank), Product.name, Product.id)
     )
     return [

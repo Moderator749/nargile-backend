@@ -154,16 +154,18 @@ def cost_before_vat(cost: Decimal, vat_mode: str, vat_rate: Decimal) -> Decimal:
 
 
 async def find_product(db: AsyncSession, code: str) -> Product | None:
-    """By the product's code, else by one of its colours' SKUs (case-insensitive)."""
+    """By the product's code, else by one of its colours' SKUs (case-insensitive);
+    a deleted product is not found."""
     code = code.strip()
     if not code:
         return None
     options = selectinload(Product.variants)
-    product = await db.scalar(select(Product).where(func.lower(Product.base_code) == code.lower()).options(options))
+    live = Product.is_deleted.is_(False)
+    product = await db.scalar(select(Product).where(func.lower(Product.base_code) == code.lower(), live).options(options))
     if product is None:
         variant = await db.scalar(select(ProductVariant).where(func.lower(ProductVariant.sku) == code.lower()))
         if variant is not None:
-            product = await db.scalar(select(Product).where(Product.id == variant.product_id).options(options))
+            product = await db.scalar(select(Product).where(Product.id == variant.product_id, live).options(options))
     return product
 
 

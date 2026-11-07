@@ -1,6 +1,7 @@
 """Admin-only catalog and inventory management endpoints."""
 
 import uuid
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
@@ -209,16 +210,17 @@ async def list_products_admin(
     category: str | None = Query(None, max_length=180),
     order_by: ProductSort | None = Query(None, description="code | name | stock | price"),
     order_dir: SortDirection = Query(SortDirection.ASC),
+    include_deleted: bool = Query(False, description="deleted products too"),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Products with every segment price and their stock, for the admin panel.
-    The X-Total-Count header carries the number of matches, for page controls."""
-    total = await db.scalar(
-        select(func.count()).select_from(apply_catalog_filters(select(Product.id), category=category, q=q).subquery())
-    )
+    """Products with every segment price and their stock, for the admin panel;
+    deleted ones only when asked for. The X-Total-Count header carries the
+    number of matches, for page controls."""
+    filters = dict(category=category, q=q, include_deleted=include_deleted)
+    total = await db.scalar(select(func.count()).select_from(apply_catalog_filters(select(Product.id), **filters).subquery()))
     response.headers["X-Total-Count"] = str(total)
-    stmt = apply_catalog_filters(select(Product), category=category, q=q)
+    stmt = apply_catalog_filters(select(Product), **filters)
     result = await db.execute(
         stmt.options(
             selectinload(Product.variants).selectinload(ProductVariant.prices),
@@ -291,23 +293,22 @@ async def delete_products(
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Delete the ticked products, with everything that exists only for them.
-
-    A product that appears in an order is kept and reported back: deleting it would
-    take order lines with it. Unpublishing is the way to retire such a product.
-    """
+    """Delete the ticked products (one or many): a soft delete, so a product
+    that appears in orders goes as well and its order lines keep it."""
     result = ProductDeleteResult()
-    for product_id in payload.product_ids:
-        product = await db.scalar(
-            select(Product).where(Product.id == product_id).options(selectinload(Product.variants))
-        )
+    products = {
+        p.id: p
+        for p in (
+            await db.scalars(select(Product).where(Product.id.in_(payload.product_ids), Product.is_deleted.is_(False)))
+        ).all()
+    }
+    now = datetime.now(timezone.utc)
+    for product_id in dict.fromkeys(payload.product_ids):
+        product = products.get(product_id)
         if product is None:
             result.refused[product_id] = "Ürün bulunamadı"
             continue
-        if await product_blueprint.is_sold(db, product):
-            result.refused[product_id] = f"“{product.name}” siparişlerde kullanılıyor, yayından alabilirsiniz"
-            continue
-        await product_blueprint.delete_product(db, product)
+        product_blueprint.soft_delete(product, now)
         result.deleted.append(product_id)
     await db.commit()
     return result
@@ -342,7 +343,7 @@ async def set_product_published(
     db: AsyncSession = Depends(get_db),
 ):
     """Put a product on the storefront, or take it off, without opening its form."""
-    product = await db.scalar(select(Product).where(Product.id == product_id))
+    product = await db.scalar(select(Product).where(Product.id == product_id, Product.is_deleted.is_(False)))
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")
     product.is_published = payload.is_published
@@ -361,7 +362,9 @@ async def set_product_stock(
     opening the product's form (and without its prices, flash sale or
     translations being saved again). Returns the table row as it now is."""
     product = await db.scalar(
-        select(Product).where(Product.id == product_id).options(selectinload(Product.variants))
+        select(Product)
+        .where(Product.id == product_id, Product.is_deleted.is_(False))
+        .options(selectinload(Product.variants))
     )
     if product is None:
         raise HTTPException(status_code=404, detail="Product not found")

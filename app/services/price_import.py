@@ -285,7 +285,10 @@ def spellings(key: str) -> set[str]:
 
 
 async def match_blocks(db: AsyncSession, parsed: Parsed) -> Preview:
-    products = (await db.scalars(select(Product).options(selectinload(Product.variants)))).all()
+    # A deleted product takes no prices: its code is left to a live one.
+    products = (
+        await db.scalars(select(Product).where(Product.is_deleted.is_(False)).options(selectinload(Product.variants)))
+    ).all()
     product_by_id = {p.id: p for p in products}
     by: dict[str, dict[str, set]] = {"code": defaultdict(set), "sku": defaultdict(set), "name": defaultdict(set)}
     keys_of: dict = defaultdict(set)  # product -> its code and SKUs, normalised

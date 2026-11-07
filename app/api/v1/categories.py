@@ -60,7 +60,7 @@ async def list_categories(
         await db.execute(
             select(listed.c.category_id, Product.id, Product.updated_at)
             .join(Product, Product.id == listed.c.product_id)
-            .where(Product.is_published.is_(True))
+            .where(Product.on_storefront())
         )
     ).all()
     edited: dict = {}

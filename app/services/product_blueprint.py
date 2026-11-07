@@ -127,14 +127,15 @@ async def _segment_ids(db: AsyncSession) -> dict[SegmentType, int]:
 
 
 async def load(db: AsyncSession, product_id: uuid.UUID) -> Product | None:
-    """The product with everything the sheet needs.
+    """The product with everything the sheet needs; none for a deleted one,
+    which no form opens again.
 
     `populate_existing` because the session does not expire on commit: without it
     a save would read back its own stale collections, deleted price rows included.
     """
     return await db.scalar(
         select(Product)
-        .where(Product.id == product_id)
+        .where(Product.id == product_id, Product.is_deleted.is_(False))
         .options(*_LOADS)
         .execution_options(populate_existing=True)
     )
@@ -620,11 +621,23 @@ async def _free_code(db: AsyncSession, code: str) -> str:
     raise SheetError("Kopya için boş bir ürün kodu bulunamadı")
 
 
-async def delete_product(db: AsyncSession, product: Product) -> None:
-    """Remove a product and everything that only exists for it.
+def soft_delete(product: Product, now: datetime | None = None) -> None:
+    """The admin's "Sil": the product leaves the storefront and the admin lists
+    but its row stays, with its colours, so the order lines that point at them
+    keep their product. Unpublished as well, for every reader that only asks
+    `is_published`. Deleting it again keeps the first date."""
+    if not product.is_deleted:
+        product.deleted_at = now or datetime.now(timezone.utc)
+    product.is_deleted = True
+    product.is_published = False
 
-    Order lines are *not* touched: a product that has been sold cannot be deleted
-    (the caller checks `is_sold` first), because its lines are part of the orders.
+
+async def delete_product(db: AsyncSession, product: Product) -> None:
+    """Remove a product and everything that only exists for it, for good.
+
+    Not what the admin's delete does (see soft_delete): for tests and scripts
+    tidying up products that were never sold, since order lines are not touched
+    and a sold product's would refuse to go.
     """
     variant_ids = [v.id for v in product.variants]
     if variant_ids:
@@ -634,17 +647,6 @@ async def delete_product(db: AsyncSession, product: Product) -> None:
         await db.execute(delete(ProductVariant).where(ProductVariant.id.in_(variant_ids)))
     # product_cross_sells rows go with the product, in both directions.
     await db.delete(product)
-
-
-async def is_sold(db: AsyncSession, product: Product) -> bool:
-    """Whether any of the product's variants appears in an order."""
-    if not product.variants:
-        return False
-    return (
-        await db.scalar(
-            select(OrderItem.id).where(OrderItem.variant_id.in_([v.id for v in product.variants])).limit(1)
-        )
-    ) is not None
 
 
 def _variant_stock(variant: ProductVariant) -> SheetStock:

@@ -151,11 +151,11 @@ async def test_a_deleted_product_leaves_new_arrivals(client: AsyncClient, admin_
     assert (await client.get(f"/api/v1/products/{created['id']}")).status_code == 404
 
 
-async def test_a_withdrawn_product_leaves_both_lists_and_a_sold_one_cannot_be_deleted(
+async def test_a_deleted_product_leaves_both_lists_even_when_sold(
     client: AsyncClient, admin_user: User, picks
 ):
-    """A product that has sold cannot be deleted (its order lines need it): it
-    is withdrawn instead, and that takes it off both lists as surely."""
+    """A product that has sold is deleted all the same (a soft delete: its order
+    lines keep it), and that takes it off both lists."""
     products, variants, sell = picks
     sold = products[3]  # the newest of the fixture's four
     await sell([(variants[sold.id][0], 10 * BIG)])
@@ -163,10 +163,7 @@ async def test_a_withdrawn_product_leaves_both_lists_and_a_sold_one_cannot_be_de
     assert str(sold.id) in await _ids(client, "", sort="newest", limit=5)
     assert str(sold.id) in await _ids(client, "/bestsellers", limit=50)
 
-    refused = (await client.post("/api/v1/admin/products/delete", headers=h, json={"product_ids": [str(sold.id)]})).json()
-    assert refused["deleted"] == [] and str(sold.id) in refused["refused"]
-
-    off = await client.patch(f"/api/v1/admin/products/{sold.id}/publish", headers=h, json={"is_published": False})
-    assert off.status_code == 200, off.text
+    gone = (await client.post("/api/v1/admin/products/delete", headers=h, json={"product_ids": [str(sold.id)]})).json()
+    assert gone == {"deleted": [str(sold.id)], "refused": {}}
     assert str(sold.id) not in await _ids(client, "", sort="newest", limit=50)
     assert str(sold.id) not in await _ids(client, "/bestsellers", limit=50)

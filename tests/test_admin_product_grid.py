@@ -1,4 +1,4 @@
-"""The admin products table: sorting, bulk delete and deep duplicate."""
+"""The admin products table: sorting, (soft) delete and deep duplicate."""
 
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -150,9 +150,9 @@ async def test_without_rates_a_foreign_price_sorts_last(client: AsyncClient, adm
 # ── Bulk delete ──────────────────────────────────────────────────────────────
 
 
-async def test_bulk_delete_removes_products_and_their_rows(
-    client: AsyncClient, admin_user: User, db_session: AsyncSession, grid
-):
+async def test_bulk_delete_is_a_soft_delete(client: AsyncClient, admin_user: User, db_session: AsyncSession, grid):
+    """The rows stay, with their colours, prices and stock; the product is marked
+    deleted, unpublished and gone from the admin list unless asked for."""
     ids = [grid["a"]["id"], grid["b"]["id"]]
     variant_ids = [uuid.UUID(grid["a"]["variant_id"]), uuid.UUID(grid["b"]["variant_id"])]
 
@@ -160,27 +160,59 @@ async def test_bulk_delete_removes_products_and_their_rows(
     assert resp.status_code == 200, resp.text
     assert set(resp.json()["deleted"]) == set(ids) and resp.json()["refused"] == {}
 
-    assert (await db_session.execute(select(Product.id).where(Product.id.in_([uuid.UUID(i) for i in ids])))).all() == []
+    rows = (
+        await db_session.execute(
+            select(Product.is_deleted, Product.deleted_at, Product.is_published)
+            .where(Product.id.in_([uuid.UUID(i) for i in ids]))
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    assert len(rows) == 2
+    assert all(deleted and at is not None and not published for deleted, at, published in rows)
     for table in (ProductVariant, VariantPrice, Inventory):
         column = ProductVariant.id if table is ProductVariant else table.variant_id
-        assert (await db_session.execute(select(table.id).where(column.in_(variant_ids)))).all() == []
+        assert (await db_session.execute(select(table.id).where(column.in_(variant_ids)))).all() != []
+
     assert await _codes(client, admin_user, grid["suffix"]) == [grid["c"]["base_code"]]
+    listed = await client.get(
+        "/api/v1/admin/products", headers=auth_header(admin_user), params={"q": grid["suffix"]}
+    )
+    assert listed.headers["X-Total-Count"] == "1"
+    every = await _codes(client, admin_user, grid["suffix"], include_deleted="true")
+    assert sorted(every) == sorted(grid[k]["base_code"] for k in "abc")
 
 
-async def test_a_sold_product_is_kept_and_reported(
-    client: AsyncClient, admin_user: User, customer_user: User, grid
+async def test_a_deleted_product_is_not_found_again(client: AsyncClient, admin_user: User, grid):
+    """Not deleted twice, nor opened, published, restocked or copied."""
+    gone = grid["a"]["id"]
+    headers = auth_header(admin_user)
+    await client.post("/api/v1/admin/products/delete", headers=headers, json={"product_ids": [gone]})
+
+    again = await client.post("/api/v1/admin/products/delete", headers=headers, json={"product_ids": [gone]})
+    assert again.json() == {"deleted": [], "refused": {gone: "Ürün bulunamadı"}}
+    assert (await client.get(f"/api/v1/admin/products/{gone}/sheet", headers=headers)).status_code == 404
+    published = await client.patch(f"/api/v1/admin/products/{gone}/publish", headers=headers, json={"is_published": True})
+    assert published.status_code == 404
+    stock = await client.patch(
+        f"/api/v1/admin/products/{gone}/stock",
+        headers=headers,
+        json={"variants": [{"id": grid["a"]["variant_id"], "quantity": 3}]},
+    )
+    assert stock.status_code == 404
+    copied = await client.post("/api/v1/admin/products/duplicate", headers=headers, json={"product_ids": [gone]})
+    assert copied.status_code == 404
+
+
+async def test_a_sold_product_is_deleted_and_its_order_kept(
+    client: AsyncClient, admin_user: User, customer_user: User, db_session: AsyncSession, grid
 ):
-    """Deleting it would take order lines with it, so it is refused by name."""
+    """No more refusing a product that is in an order: its order line keeps its
+    colour and product, and the storefront and checkout no longer offer it."""
     sold = grid["a"]
+    line = {"variant_id": sold["variant_id"], "quantity": 1}
+    order = {**CONSENTS, "payment_method": "CREDIT_CARD", "shipping_address": ADDRESS, "shipping_consent": True}
     placed = await client.post(
-        "/api/v1/orders/checkout",
-        headers=auth_header(customer_user),
-        json={**CONSENTS, 
-            "payment_method": "CREDIT_CARD",
-            "items": [{"variant_id": sold["variant_id"], "quantity": 1}],
-            "shipping_address": ADDRESS,
-            "shipping_consent": True,
-        },
+        "/api/v1/orders/checkout", headers=auth_header(customer_user), json={**order, "items": [line]}
     )
     assert placed.status_code == 201, placed.text
 
@@ -189,9 +221,32 @@ async def test_a_sold_product_is_kept_and_reported(
         headers=auth_header(admin_user),
         json={"product_ids": [sold["id"], grid["b"]["id"]]},
     )
-    assert resp.json()["deleted"] == [grid["b"]["id"]]
-    assert "siparişlerde kullanılıyor" in resp.json()["refused"][sold["id"]]
-    assert sold["base_code"] in await _codes(client, admin_user, grid["suffix"])
+    assert resp.status_code == 200, resp.text
+    assert set(resp.json()["deleted"]) == {sold["id"], grid["b"]["id"]} and resp.json()["refused"] == {}
+
+    # The order line still reaches its product.
+    from app.models.order import OrderItem
+
+    name = await db_session.scalar(
+        select(Product.name)
+        .join(ProductVariant, ProductVariant.product_id == Product.id)
+        .join(OrderItem, OrderItem.variant_id == ProductVariant.id)
+        .where(OrderItem.variant_id == uuid.UUID(sold["variant_id"]))
+        .limit(1)
+    )
+    assert name == sold["name"]
+
+    # Gone from the storefront: its page, the list, the search, the cart.
+    product = await db_session.get(Product, uuid.UUID(sold["id"]))
+    assert (await client.get(f"/api/v1/products/{product.slug}")).status_code == 404
+    listed = await client.get("/api/v1/products", params={"q": grid["suffix"]})
+    assert sold["id"] not in {p["id"] for p in listed.json()}
+    lines = await client.get("/api/v1/products/cart-lines", params={"ids": [sold["variant_id"]]})
+    assert lines.json() == []
+    again = await client.post(
+        "/api/v1/orders/checkout", headers=auth_header(customer_user), json={**order, "items": [line]}
+    )
+    assert again.status_code in (400, 409, 422) and "satışta değil" in again.text
 
 
 # ── Deep duplicate ───────────────────────────────────────────────────────────

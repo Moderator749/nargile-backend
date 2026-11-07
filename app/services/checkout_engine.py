@@ -826,8 +826,9 @@ class CheckoutEngine:
             variant = variants.get(vid)
             if variant is None:
                 raise ValueError(f"Variant {vid} not found")
-            # A retired colour keeps its order lines but cannot be bought again.
-            if not variant.is_active:
+            # A retired colour, or a deleted product's, keeps its order lines
+            # but cannot be bought again.
+            if not variant.is_active or variant.product.is_deleted:
                 raise ValueError(f"{variant.sku} artık satışta değil")
 
             price_row = pick_price_row(variant.prices, segment_id)

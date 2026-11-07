@@ -211,7 +211,7 @@ async def sweep(limit: int | None = None, factory: async_sessionmaker | None = N
     async with (factory or async_session)() as db:
         for kind, model, fields, live in (
             ("category", Category, CATEGORY_FIELDS, Category.is_active.is_(True)),
-            ("product", Product, PRODUCT_FIELDS, Product.is_published.is_(True)),
+            ("product", Product, PRODUCT_FIELDS, Product.on_storefront()),
         ):
             for row in (await db.scalars(select(model).where(live))).all():
                 if needed(row.translations, fingerprint({f: getattr(row, f) for f in fields if getattr(row, f, None)})):

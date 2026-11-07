@@ -118,16 +118,20 @@ def apply_catalog_filters(
     published_only: bool = False,
     lang: str | None = None,
     brand: str | None = None,
+    include_deleted: bool = False,
 ):
     """Filter by category slug (a parent includes its subcategories) and
     Turkish-aware free-text search — in English or Arabic too, with `lang`, so
     "hookah bowl" finds the Lüleler.
 
     `published_only` is for the storefront; the admin lists see every product,
-    published or not, because that is where publishing is switched.
+    published or not, because that is where publishing is switched. A deleted
+    product is left out of both unless `include_deleted` (the admin's ask).
     """
     if published_only:
-        stmt = stmt.where(Product.is_published.is_(True))
+        stmt = stmt.where(Product.on_storefront())
+    elif not include_deleted:
+        stmt = stmt.where(Product.is_deleted.is_(False))
     if category:
         stmt = stmt.where(Product.id.in_(products_in(category_subtree(category))))
     if brand:
@@ -360,7 +364,7 @@ async def _live_variants(db: AsyncSession, ids) -> list[ProductVariant]:
             await db.execute(
                 select(ProductVariant)
                 .join(Product, Product.id == ProductVariant.product_id)
-                .where(ProductVariant.id.in_(ids), ProductVariant.is_active.is_(True), Product.is_published.is_(True))
+                .where(ProductVariant.id.in_(ids), ProductVariant.is_active.is_(True), Product.on_storefront())
                 .options(selectinload(ProductVariant.inventory), selectinload(ProductVariant.product))
             )
         ).scalars()
@@ -545,7 +549,7 @@ async def build_price_list(
     rows = (
         await db.execute(
             select(Product)
-            .where(Product.id.in_(product_ids), Product.is_published.is_(True))
+            .where(Product.id.in_(product_ids), Product.on_storefront())
             .options(selectinload(Product.variants).selectinload(ProductVariant.prices))
         )
     ).scalars().all()
@@ -598,7 +602,7 @@ async def list_flash_sale_products(
     )
     result = await db.execute(
         select(Product)
-        .where(Product.is_opportunity.is_(True), Product.is_published.is_(True))
+        .where(Product.is_opportunity.is_(True), Product.on_storefront())
         .order_by(missed.asc(), Product.opportunity_end_date.asc().nulls_last(), Product.id)
         .options(*_VARIANT_LOADS)
         .limit(limit)
@@ -636,7 +640,7 @@ async def list_bestsellers(
     result = await db.execute(
         select(Product)
         .join(sold, sold.c.product_id == Product.id)
-        .where(Product.is_published.is_(True))
+        .where(Product.on_storefront())
         .order_by(sold.c.sold.desc(), Product.name, Product.id)
         .options(*_VARIANT_LOADS)
         .limit(limit)
@@ -675,7 +679,7 @@ async def list_sultanpuan_products(lang: Locale | None = LANG, db: AsyncSession 
     if not loyalty.enabled:
         return showcase
     result = await db.execute(
-        select(Product).where(Product.is_published.is_(True)).options(*_VARIANT_LOADS).order_by(Product.name, Product.id)
+        select(Product).where(Product.on_storefront()).options(*_VARIANT_LOADS).order_by(Product.name, Product.id)
     )
     priced = [
         (price, product)
@@ -709,7 +713,7 @@ async def get_product(
         match = or_(Product.slug == slug, Product.id == renamed) if renamed else Product.slug == slug
     product = await db.scalar(
         select(Product)
-        .where(match, Product.is_published.is_(True))
+        .where(match, Product.on_storefront())
         # A live slug wins over a redirect that happens to share it.
         .order_by((Product.slug == product_ref.lower()).desc())
         .options(*_VARIANT_LOADS)
@@ -722,7 +726,7 @@ async def get_product(
         await db.execute(
             select(Product)
             .join(ProductCrossSell, ProductCrossSell.related_product_id == Product.id)
-            .where(ProductCrossSell.product_id == product.id, Product.is_published.is_(True))
+            .where(ProductCrossSell.product_id == product.id, Product.on_storefront())
             .order_by(ProductCrossSell.position)
             .options(*_VARIANT_LOADS)
         )
