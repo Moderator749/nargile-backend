@@ -20,6 +20,8 @@ class UserRead(BaseModel):
     role: UserRole
     is_active: bool
     is_verified: bool
+    # Sistem Yöneticisi (User.is_superadmin): the panel shows it "Yöneticiler".
+    is_superadmin: bool = False
     # A guest checkout's buyer, not an account (see User.is_guest).
     is_guest: bool = False
     created_at: datetime

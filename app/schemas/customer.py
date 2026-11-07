@@ -39,6 +39,8 @@ class AdminCustomerRead(BaseModel):
     created_at: datetime
     # A guest checkout's buyer ("Misafir"), not an account.
     is_guest: bool = False
+    # The Sistem Yöneticisi's account — said to a Sistem Yöneticisi only.
+    is_superadmin: bool = False
     # Where they are, from their invoice address: a Turkish row carries its
     # şehir and ilçe, a foreign one its country. Structured rather than
     # pre-formatted, so the grid decides how to say it.
@@ -97,6 +99,11 @@ class AdminCustomerDetail(BaseModel):
     account_type: AccountType
     is_active: bool
     is_verified: bool
+    # The Sistem Yöneticisi's account — said to a Sistem Yöneticisi only.
+    is_superadmin: bool = False
+    # Whether the viewer may change its price list and points (guard_protected);
+    # the panel simply leaves those controls out when not.
+    can_manage: bool = True
     created_at: datetime
     segment: SegmentType | None
     order_count: int

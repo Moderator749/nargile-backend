@@ -103,6 +103,34 @@ async def get_current_team_user(
     return user
 
 
+async def require_superadmin(admin: User = Depends(get_current_admin_user)) -> User:
+    """The Sistem Yöneticisi (User.is_superadmin), and only while it is an admin.
+
+    Anyone else is told the route does not exist (404, FastAPI's own wording):
+    to the rest of the team there is no such feature."""
+    if not admin.is_superadmin:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
+    return admin
+
+
+# Says nothing about why: the account is not marked out to whoever is refused.
+PROTECTED_DETAIL = "Bu işlem için yetkiniz yok"
+
+
+def may_change(actor: User, target: User) -> bool:
+    """Whether `actor` may change `target`: anyone's account but a Sistem
+    Yöneticisi's, which is its own and its peers' alone."""
+    return not target.is_superadmin or actor.id == target.id or actor.is_superadmin
+
+
+def guard_protected(actor: User, target: User) -> None:
+    """The absolute guard on a Sistem Yöneticisi account: whoever changes it —
+    its details, role, state, password or existence — is the account itself
+    or another Sistem Yöneticisi; anyone else is refused (403)."""
+    if not may_change(actor, target):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=PROTECTED_DETAIL)
+
+
 def get_session_factory() -> async_sessionmaker:
     """Where work that outlives the request (a campaign, an order's SMS) opens
     its own session once the response has gone; the tests swap it for theirs."""

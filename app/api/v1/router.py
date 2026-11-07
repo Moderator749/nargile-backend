@@ -12,6 +12,7 @@ from app.api.v1.admin_dashboard import router as admin_dashboard_router
 from app.api.v1.admin_reports import router as admin_reports_router
 from app.api.v1.admin_team import router as admin_team_router
 from app.api.v1.admin_notes import router as admin_notes_router
+from app.api.v1.admin_users import router as admin_users_router
 from app.api.v1.admin_communications import router as admin_communications_router
 from app.api.v1.password_reset import router as password_reset_router
 from app.api.v1.admin_orders import router as admin_orders_router
@@ -51,6 +52,7 @@ api_router.include_router(admin_dashboard_router)
 api_router.include_router(admin_reports_router)
 api_router.include_router(admin_team_router)
 api_router.include_router(admin_notes_router)
+api_router.include_router(admin_users_router)
 api_router.include_router(admin_communications_router)
 api_router.include_router(password_reset_router)
 api_router.include_router(admin_uploads_router)

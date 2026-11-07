@@ -200,6 +200,13 @@ class User(Base):
     role: Mapped[str] = mapped_column(
         Enum(UserRole), default=UserRole.CUSTOMER, nullable=False
     )
+    # Sistem Yöneticisi: the root account above the roles (the developer's
+    # "Moderator"). Only it manages the panel team (/admin/users), and no one
+    # else may change, deactivate or remove it. Set by scripts/set_superadmin.py,
+    # never through the API.
+    is_superadmin: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )

@@ -10,7 +10,7 @@ from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.deps import get_current_admin_user
+from app.api.deps import get_current_admin_user, guard_protected, may_change
 from app.api.v1.account import application_read, wallet_read
 from app.core.database import get_db
 from app.models.b2b import ApplicationStatus, B2BApplication
@@ -57,7 +57,7 @@ async def list_customers(
     order_dir: SortDirection = Query(SortDirection.ASC),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
-    _admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     """The customers grid: who registered, as what, where, on which price list.
@@ -159,6 +159,8 @@ async def list_customers(
             order_count=n,
             created_at=u.created_at,
             is_guest=u.is_guest,
+            # Told to a Sistem Yöneticisi only: to the rest of the team it is an account like any.
+            is_superadmin=u.is_superadmin and admin.is_superadmin,
             city=city,
             district=district,
             country=country,
@@ -167,10 +169,14 @@ async def list_customers(
     ]
 
 
-async def _customer(db: AsyncSession, user_id: uuid.UUID) -> User:
+async def _customer(db: AsyncSession, user_id: uuid.UUID, changed_by: User | None = None) -> User:
+    """The account; with `changed_by`, one that admin may change (guard_protected:
+    a Sistem Yöneticisi's account is its own and its peers')."""
     user = await db.get(User, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Customer not found")
+    if changed_by is not None:
+        guard_protected(changed_by, user)
     return user
 
 
@@ -193,7 +199,7 @@ async def customer_cities(
     return [city for city in rows.scalars() if city]
 
 
-async def _detail(db: AsyncSession, user_id: uuid.UUID) -> AdminCustomerDetail:
+async def _detail(db: AsyncSession, user_id: uuid.UUID, viewer: User) -> AdminCustomerDetail:
     """One customer in full — everything sign-up collected, plus what they have
     bought and where they stand on a price list."""
     user = await db.scalar(
@@ -222,6 +228,9 @@ async def _detail(db: AsyncSession, user_id: uuid.UUID) -> AdminCustomerDetail:
         account_type=user.account_type,
         is_active=user.is_active,
         is_verified=user.is_verified,
+        # Told to a Sistem Yöneticisi only; the rest of the team learns no more than `can_manage`.
+        is_superadmin=user.is_superadmin and viewer.is_superadmin,
+        can_manage=may_change(viewer, user),
         created_at=user.created_at,
         segment=user.segment.code if user.segment else None,
         order_count=order_count or 0,
@@ -240,17 +249,17 @@ async def _detail(db: AsyncSession, user_id: uuid.UUID) -> AdminCustomerDetail:
 @router.get("/customers/{user_id}", response_model=AdminCustomerDetail)
 async def customer_detail(
     user_id: uuid.UUID,
-    _admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    return await _detail(db, user_id)
+    return await _detail(db, user_id, admin)
 
 
 @router.put("/customers/{user_id}/segment", response_model=AdminCustomerDetail)
 async def assign_segment(
     user_id: uuid.UUID,
     payload: SegmentAssign,
-    _admin: User = Depends(get_current_admin_user),
+    admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Put a customer on a price list.
@@ -260,7 +269,7 @@ async def assign_segment(
     next request: prices are read from the account's segment every time, never
     cached into their token.
     """
-    user = await _customer(db, user_id)
+    user = await _customer(db, user_id, changed_by=admin)
     segment_id = await db.scalar(
         select(CustomerSegment.id).where(CustomerSegment.code == payload.segment)
     )
@@ -268,7 +277,7 @@ async def assign_segment(
         raise HTTPException(status_code=500, detail="Segment not configured")
     user.segment_id = segment_id
     await db.commit()
-    return await _detail(db, user_id)
+    return await _detail(db, user_id, admin)
 
 
 @router.get("/customers/{user_id}/wallet", response_model=WalletRead)
@@ -287,7 +296,7 @@ async def adjust_points(
     db: AsyncSession = Depends(get_db),
 ):
     """Add (expires in 1 year) or remove points, with a reason. Can't go below zero."""
-    await _customer(db, user_id)
+    await _customer(db, user_id, changed_by=admin)
     now = datetime.now(timezone.utc)
     if payload.amount < 0:
         balance = (await get_wallet(db, user_id, now)).balance
@@ -403,6 +412,7 @@ async def approve_b2b_application(
 ):
     """Grant the segment (the requested one unless overridden) and record the company."""
     application, user = await _pending_application(db, application_id)
+    guard_protected(admin, user)
     code = SegmentType(payload.segment or application.requested_segment)
     segment_id = await db.scalar(select(CustomerSegment.id).where(CustomerSegment.code == code))
     user.segment_id = segment_id
