@@ -26,7 +26,8 @@ async def isolate(db_session: AsyncSession):
     )).all()]
     await db_session.execute(BannerPreset.__table__.update().values(is_scheduled=False))
     banner = await db_session.get(SiteAnnouncement, ANNOUNCEMENT_ID)
-    saved = (banner.message, banner.is_active, banner.expires_at) if banner else None
+    look = ("message", "is_active", "expires_at", "background_style", "bg_image_url", "text_color")
+    saved = tuple(getattr(banner, f) for f in look) if banner else None
     await db_session.commit()
     yield
     await db_session.rollback()
@@ -39,7 +40,8 @@ async def isolate(db_session: AsyncSession):
         await db_session.execute(delete(SiteAnnouncement).where(SiteAnnouncement.id == ANNOUNCEMENT_ID))
     else:
         row = await db_session.get(SiteAnnouncement, ANNOUNCEMENT_ID, populate_existing=True)
-        row.message, row.is_active, row.expires_at = saved
+        for field, value in zip(look, saved):
+            setattr(row, field, value)
     await db_session.commit()
 
 
@@ -60,12 +62,13 @@ async def _preset(client: AsyncClient, admin: User, text: str, starts: float | N
     return resp.json()
 
 
-async def _banner(client: AsyncClient, admin: User, message: str, active: bool = True):
+async def _banner(client: AsyncClient, admin: User, message: str, active: bool = True, **look):
     resp = await client.put(
         "/api/v1/admin/announcement", headers=auth_header(admin),
-        json={"message": message, "is_active": active, "background_style": "dark_luxury"},
+        json={"message": message, "is_active": active, "background_style": "dark_luxury", **look},
     )
     assert resp.status_code == 200, resp.text
+    return resp.json()
 
 
 async def test_presets_are_listed_edited_and_deleted(client: AsyncClient, admin_user: User):
@@ -154,6 +157,11 @@ async def test_the_banner_falls_back_to_the_default_when_a_preset_ends(client: A
         {"message": "x", "starts_at": _at(2), "ends_at": _at(1)},                           # end first
         {"message": "x", "starts_at": "2026-10-14T10:00:00", "ends_at": _at(1)},             # no zone
         {"message": "x", "icon_type": "fireworks"},
+        {"message": "x", "background_style": "black"},
+        {"message": "x", "background_style": "#12345"},
+        {"message": "x", "text_color": "white"},
+        {"message": "x", "text_color": "#fffffff"},
+        {"message": "x", "title": "t" * 81},
     ],
 )
 async def test_impossible_presets_are_refused(client: AsyncClient, admin_user: User, body: dict):
@@ -165,3 +173,90 @@ async def test_only_an_admin_manages_presets(client: AsyncClient, customer_user:
     assert (await client.get(URL, headers=h)).status_code == 403
     assert (await client.post(URL, headers=h, json={"message": "x"})).status_code == 403
     assert (await client.delete(f"{URL}/1", headers=h)).status_code == 403
+
+
+# ── Colours ──────────────────────────────────────────────────────────────────
+
+
+async def test_a_future_preset_keeps_its_own_colours(client: AsyncClient, admin_user: User):
+    """Dated ahead, a preset is saved with its look, and edited it keeps it."""
+    made = await _preset(
+        client, admin_user, "Anma", 24, 48, title="  Anma günü  ",
+        background_style="#0A0A0A", text_color="#FFFFFF", icon_type="memorial",
+    )
+    assert (made["title"], made["background_style"], made["text_color"]) == ("Anma günü", "#0a0a0a", "#ffffff")
+
+    h = auth_header(admin_user)
+    edited = await client.put(f"{URL}/{made['id']}", headers=h, json={**made, "background_style": "dark_luxury", "text_color": ""})
+    assert edited.status_code == 200, edited.text
+    assert (edited.json()["background_style"], edited.json()["text_color"]) == ("dark_luxury", None)
+    # Not yet: its day has not come.
+    assert ((await client.get(ACTIVE)).json() or {}).get("message") != made["message"]
+
+
+async def test_a_live_preset_is_drawn_in_its_own_colours(client: AsyncClient, admin_user: User):
+    """Its background replaces the banner's, image and text colour included."""
+    await _banner(
+        client, admin_user, "Varsayılan", background_style="crimson_gradient",
+        bg_image_url="https://example.com/desen.jpg", text_color="#fde68a",
+    )
+    await _preset(client, admin_user, "Anma", -1, 1, background_style="#000000", text_color="#ffffff")
+    shown = (await client.get(ACTIVE)).json()
+    assert (shown["background_style"], shown["text_color"], shown["bg_image_url"]) == ("#000000", "#ffffff", None)
+
+
+async def test_a_preset_without_a_look_wears_the_banners(client: AsyncClient, admin_user: User):
+    await _banner(client, admin_user, "Varsayılan", background_style="#7c2d12", text_color="#fde68a")
+    plain = await _preset(client, admin_user, "Düz", -1, 1)
+    shown = (await client.get(ACTIVE)).json()
+    assert (shown["message"], shown["background_style"], shown["text_color"]) == (plain["message"], "#7c2d12", "#fde68a")
+
+    # Only a text colour of its own: on the banner's background.
+    h = auth_header(admin_user)
+    await client.put(f"{URL}/{plain['id']}", headers=h, json={**plain, "text_color": "#ffffff"})
+    shown = (await client.get(ACTIVE)).json()
+    assert (shown["background_style"], shown["text_color"]) == ("#7c2d12", "#ffffff")
+
+
+async def test_the_banner_keeps_a_text_colour(client: AsyncClient, admin_user: User):
+    saved = await _banner(client, admin_user, "Varsayılan", text_color="#FDE68A")
+    assert saved["text_color"] == "#fde68a"
+    assert (await client.get(ACTIVE)).json()["text_color"] == "#fde68a"
+    automatic = await _banner(client, admin_user, "Varsayılan", text_color="")
+    assert automatic["text_color"] is None
+    refused = await client.put(
+        "/api/v1/admin/announcement", headers=auth_header(admin_user),
+        json={"message": "x", "is_active": False, "text_color": "beyaz"},
+    )
+    assert refused.status_code == 422
+
+
+# ── Special-day templates ────────────────────────────────────────────────────
+
+
+async def test_the_templates_are_written_once(db_session: AsyncSession):
+    """Added or adopted on the first run, nothing on the second; 10 Kasım is
+    black, white and automatic for its whole day. Rolled back afterwards."""
+    from sqlalchemy import select
+
+    from app.services import banner_templates
+
+    try:
+        first = await banner_templates.apply(db_session)
+        assert {c.title for c in first} == {t.title for t in banner_templates.TEMPLATES}
+        second = await banner_templates.apply(db_session)
+        assert all(c.action == "unchanged" for c in second), second
+
+        anma = await db_session.scalar(select(BannerPreset).where(BannerPreset.title == "10 Kasım Atatürk'ü Anma Günü"))
+        assert (anma.background_style, anma.text_color, anma.icon_type, anma.is_scheduled) == ("#000000", "#ffffff", "memorial", True)
+        tr = banner_templates.TR
+        assert anma.starts_at.astimezone(tr).isoformat() == "2026-11-10T00:00:00+03:00"
+        assert anma.ends_at.astimezone(tr).isoformat() == "2026-11-10T23:59:59+03:00"
+        # The migration's 10 Kasım was adopted, not doubled.
+        assert len((await db_session.scalars(select(BannerPreset).where(BannerPreset.message.like("%10 Kasım%")))).all()) == 1
+        # Every other template waits, off.
+        others = (await db_session.scalars(select(BannerPreset).where(BannerPreset.title.is_not(None)))).all()
+        assert [p.title for p in others if p.is_scheduled] == ["10 Kasım Atatürk'ü Anma Günü"]
+        assert all(len(p.message) <= 200 and p.starts_at < p.ends_at for p in others)
+    finally:
+        await db_session.rollback()

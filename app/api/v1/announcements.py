@@ -27,8 +27,9 @@ async def get_active_announcement(db: AsyncSession = Depends(get_db)):
     """The live banner, or null when none is active or it has expired.
 
     A scheduled "Hazır metin" whose range covers now comes first — the latest
-    to start, when two overlap — in the banner's look, counting down to nothing
-    and hiding at its end. Otherwise the banner as typed, while it is live.
+    to start, when two overlap — in its own colours when it has them (the
+    banner's look otherwise), counting down to nothing and hiding at its end.
+    Otherwise the banner as typed, while it is live.
     """
     now = datetime.now(timezone.utc)
     row = await db.get(SiteAnnouncement, ANNOUNCEMENT_ID)
@@ -44,6 +45,12 @@ async def get_active_announcement(db: AsyncSession = Depends(get_db)):
     )
     if preset is not None:
         look = AnnouncementRead.model_validate(row) if row else AnnouncementRead(message="", is_active=False)
+        own: dict = {}
+        if preset.background_style:
+            # Its own background replaces the banner's, image and text colour included.
+            own = {"background_style": preset.background_style, "bg_image_url": None, "text_color": None}
+        if preset.text_color:
+            own["text_color"] = preset.text_color
         return look.model_copy(
             update={
                 "message": preset.message,
@@ -52,6 +59,7 @@ async def get_active_announcement(db: AsyncSession = Depends(get_db)):
                 "show_countdown": False,
                 "icon_type": preset.icon_type,
                 "updated_at": preset.updated_at,
+                **own,
             }
         )
     if row is None or not row.is_live(now):

@@ -6,6 +6,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 from app.models.site import (
     BANNER_MESSAGE_MAX,
+    BANNER_PRESET_TITLE_MAX,
     BANNER_STYLE_PRESETS,
     DEFAULT_BANNER_ICON,
     DEFAULT_BANNER_STYLE,
@@ -22,6 +23,24 @@ _URL_UNSAFE = re.compile(r"[\s\"'()<>\\]")
 BannerIcon = Literal["celebration", "memorial", "campaign", "none"]
 
 
+def banner_style(value: str) -> str:
+    """A style preset, or a "#rrggbb" colour (lower-cased)."""
+    if value in BANNER_STYLE_PRESETS:
+        return value
+    if _HEX_COLOUR.match(value):
+        return value.lower()
+    raise ValueError(f"Must be one of {', '.join(BANNER_STYLE_PRESETS)} or a #RRGGBB colour")
+
+
+def text_colour(value: str | None) -> str | None:
+    """A "#rrggbb" colour (lower-cased); blank = automatic."""
+    if value is None or not value.strip():
+        return None
+    if _HEX_COLOUR.match(value.strip()):
+        return value.strip().lower()
+    raise ValueError("Must be a #RRGGBB colour")
+
+
 class AnnouncementRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -31,6 +50,7 @@ class AnnouncementRead(BaseModel):
     show_countdown: bool = False
     background_style: str = DEFAULT_BANNER_STYLE
     bg_image_url: str | None = None
+    text_color: str | None = None
     icon_type: BannerIcon = DEFAULT_BANNER_ICON
     updated_at: datetime | None = None
 
@@ -43,16 +63,18 @@ class AnnouncementUpdate(BaseModel):
     show_countdown: bool = False
     background_style: str = DEFAULT_BANNER_STYLE
     bg_image_url: str | None = Field(default=None, max_length=500, pattern=IMAGE_URL_PATTERN)
+    text_color: str | None = None
     icon_type: BannerIcon = DEFAULT_BANNER_ICON
 
     @field_validator("background_style")
     @classmethod
     def _known_style(cls, value: str) -> str:
-        if value in BANNER_STYLE_PRESETS:
-            return value
-        if _HEX_COLOUR.match(value):
-            return value.lower()
-        raise ValueError(f"Must be one of {', '.join(BANNER_STYLE_PRESETS)} or a #RRGGBB colour")
+        return banner_style(value)
+
+    @field_validator("text_color")
+    @classmethod
+    def _text_colour(cls, value: str | None) -> str | None:
+        return text_colour(value)
 
     @field_validator("bg_image_url", mode="before")
     @classmethod
@@ -107,8 +129,11 @@ class BannerPresetRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    title: str | None = None
     message: str
     icon_type: BannerIcon = DEFAULT_BANNER_ICON
+    background_style: str | None = None
+    text_color: str | None = None
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     is_scheduled: bool = False
@@ -117,16 +142,31 @@ class BannerPresetRead(BaseModel):
 
 
 class BannerPresetWrite(BaseModel):
+    title: str | None = Field(default=None, max_length=BANNER_PRESET_TITLE_MAX)
     message: str = Field(max_length=BANNER_MESSAGE_MAX)
     icon_type: BannerIcon = DEFAULT_BANNER_ICON
+    # Null: the banner's look (see BannerPreset).
+    background_style: str | None = None
+    text_color: str | None = None
     # Timezone required, as for the banner's expiry.
     starts_at: AwareDatetime | None = None
     ends_at: AwareDatetime | None = None
     is_scheduled: bool = False
     sort_order: int = Field(default=0, ge=0, le=10_000)
 
+    @field_validator("background_style")
+    @classmethod
+    def _known_style(cls, value: str | None) -> str | None:
+        return banner_style(value) if value else None
+
+    @field_validator("text_color")
+    @classmethod
+    def _text_colour(cls, value: str | None) -> str | None:
+        return text_colour(value)
+
     @model_validator(mode="after")
     def _consistent(self) -> "BannerPresetWrite":
+        self.title = (self.title or "").strip() or None
         self.message = self.message.strip()
         if not self.message:
             raise ValueError("A preset needs a text")

@@ -32,6 +32,8 @@ class SiteAnnouncement(Base):
         String(32), nullable=False, default=DEFAULT_BANNER_STYLE
     )
     bg_image_url: Mapped[str | None] = mapped_column(String(500))
+    # The text's "#rrggbb"; null = white or near-black, whichever reads on the background.
+    text_color: Mapped[str | None] = mapped_column(String(7))
     icon_type: Mapped[str] = mapped_column(String(16), nullable=False, default=DEFAULT_BANNER_ICON)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -85,15 +87,17 @@ class PopupAnnouncement(Base):
 
 
 BANNER_MESSAGE_MAX = 200
+BANNER_PRESET_TITLE_MAX = 80
 
 
 class BannerPreset(Base):
     """A "Hazır metin" for the special-day banner, with its own date range.
 
     With `is_scheduled` on, the banner shows this text by itself from
-    `starts_at` until `ends_at` (see app.api.v1.announcements), in the banner's
-    own look, ahead of the text typed into the banner; afterwards the banner
-    goes back to that text, or to the welcome strip.
+    `starts_at` until `ends_at` (see app.api.v1.announcements), ahead of the
+    text typed into the banner; afterwards the banner goes back to that text,
+    or to the welcome strip. It is drawn in its own colours when it has them,
+    else in the banner's.
     """
 
     __tablename__ = "banner_presets"
@@ -102,8 +106,15 @@ class BannerPreset(Base):
     __table_args__ = (Index("ix_banner_presets_schedule", "is_scheduled", "starts_at", "ends_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    # The admin's name for it ("10 Kasım Atatürk'ü Anma Günü"); the storefront shows only the message.
+    title: Mapped[str | None] = mapped_column(String(BANNER_PRESET_TITLE_MAX))
     message: Mapped[str] = mapped_column(String(BANNER_MESSAGE_MAX), nullable=False)
     icon_type: Mapped[str] = mapped_column(String(16), nullable=False, default=DEFAULT_BANNER_ICON)
+    # Its own look, as the banner's fields: a style preset or "#rrggbb", and
+    # the text's "#rrggbb". Null background = the banner's look (and image);
+    # null text = the banner's text colour on the banner's look, else automatic.
+    background_style: Mapped[str | None] = mapped_column(String(32))
+    text_color: Mapped[str | None] = mapped_column(String(7))
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # "Otomatik yayınla": on, the range publishes and hides it by itself.
