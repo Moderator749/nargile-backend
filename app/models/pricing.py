@@ -9,8 +9,9 @@ it has been applied to the live product, when and what it changed.
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Numeric, String, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -46,6 +47,19 @@ class PricingRecord(Base):
     product_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     # The worksheet as entered, with every column's calculated value.
     sheet: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    # "ERP ve Katalog Fiyatları": the product's ERP price in each currency,
+    # before VAT. The price catalogue shows it for every customer group in
+    # place of the sheet's price; never sent to the site.
+    erp_price_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    erp_price_eur: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    erp_price_tl: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    # How the catalogue shows each group's price: True "KDV dahil göster",
+    # False "KDV hariç göster", None (not chosen) the full split — before VAT,
+    # VAT and total — as it always has.
+    erp_display_bayi: Mapped[bool | None] = mapped_column(Boolean)
+    erp_display_toptan: Mapped[bool | None] = mapped_column(Boolean)
+    erp_display_kafe: Mapped[bool | None] = mapped_column(Boolean)
+    erp_display_perakende: Mapped[bool | None] = mapped_column(Boolean)
     # Set when "Dosya ve Sitede Ürüne Kaydet" wrote it to the live product.
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     applied_summary: Mapped[dict | None] = mapped_column(JSONB)

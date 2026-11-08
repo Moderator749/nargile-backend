@@ -91,6 +91,18 @@ class PricingSheetIn(BaseModel):
     eur_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
     # "Son karar": the TRY retail price decided on, for a USD/EUR sheet.
     final_try: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    # "ERP ve Katalog Fiyatları": the product's ERP price in each currency,
+    # before VAT, shown by the price catalogue in place of the sheet's price.
+    # Kept on the row beside the sheet, never sent to the site.
+    erp_price_usd: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_price_eur: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_price_tl: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    # Per customer group, how the catalogue shows its price: True "KDV dahil",
+    # False "KDV hariç", None the full split (before VAT, VAT, total).
+    erp_display_bayi: bool | None = None
+    erp_display_toptan: bool | None = None
+    erp_display_kafe: bool | None = None
+    erp_display_perakende: bool | None = None
 
     @field_validator("product_code", "product_name")
     @classmethod
@@ -245,6 +257,14 @@ class PricingRecordRead(BaseModel):
     created_at: datetime
     # Last saved; after `applied_at`, the site has its earlier version's prices.
     updated_at: datetime
+    # "ERP ve Katalog Fiyatları", as in PricingSheetIn.
+    erp_price_usd: Decimal | None = None
+    erp_price_eur: Decimal | None = None
+    erp_price_tl: Decimal | None = None
+    erp_display_bayi: bool | None = None
+    erp_display_toptan: bool | None = None
+    erp_display_kafe: bool | None = None
+    erp_display_perakende: bool | None = None
 
 
 class AppliedPrice(BaseModel):

@@ -14,6 +14,8 @@ Covers:
 - "Kaydet ve Siteye Uygula": saved and the green row written to the product,
   all or nothing
 - "Kayıtlar": every row in one list; matching across folders
+- "ERP ve Katalog Fiyatları": kept on the row beside its sheet, replaced on
+  every save, copied with its file, never written to the product
 """
 
 import uuid
@@ -217,3 +219,54 @@ async def test_a_question_creates_no_file(client: AsyncClient, admin_user: User)
     # A file is named only with "file", and "file" needs one.
     assert (await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(), "place": "file"})).status_code == 422
     assert (await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(), "place": "draft", "file_id": 1})).status_code == 422
+
+
+ERP = {
+    "erp_price_usd": "24.50", "erp_price_eur": None, "erp_price_tl": "1100",
+    "erp_display_bayi": False, "erp_display_toptan": True, "erp_display_kafe": None, "erp_display_perakende": True,
+}
+
+
+async def test_erp_prices_are_kept_beside_the_sheet(client: AsyncClient, admin_user: User):
+    h = auth_header(admin_user)
+    code = _new_code()
+    saved = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code, **ERP)})
+    assert saved.status_code == 200, saved.text
+    record = saved.json()["record"]
+    as_values = lambda v: Decimal(v) if isinstance(v, str) else v  # noqa: E731
+    assert {k: as_values(record[k]) for k in ERP} == {k: as_values(v) for k, v in ERP.items()}
+    # Not part of the worksheet: the sheet's own figures are untouched by them.
+    assert "erp_price_tl" not in record["sheet"] and record["sheet"]["retail"]["price"] == "1904.40"
+    listed = next(r for r in (await client.get(f"{BASE}/records", headers=h)).json() if r["id"] == record["id"])
+    assert listed["erp_display_toptan"] is True and listed["erp_price_usd"] == "24.50"
+
+    # Saved again without them: cleared, as a sheet typed again is.
+    again = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code), "record_id": record["id"]})
+    assert again.json()["overwritten"] is True
+    assert all(again.json()["record"][k] is None for k in ERP)
+
+    # A file's copy keeps them.
+    in_file = await client.post(f"{BASE}/file", headers=h, json={"file_name": f"ERP {code}", "sheet": _sheet(product_code=code, **ERP)})
+    copy = await client.post(f"{BASE}/files/{in_file.json()['file_id']}/duplicate", headers=h, json={})
+    rows = (await client.get(f"{BASE}/records", headers=h, params={"file_id": copy.json()["id"]})).json()
+    assert [(r["erp_price_usd"], r["erp_display_bayi"]) for r in rows] == [("24.50", False)]
+
+    # A price must be above zero, with kuruş at most.
+    for bad in ({"erp_price_tl": "0"}, {"erp_price_usd": "-3"}, {"erp_price_eur": "1.234"}):
+        assert (await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(**bad)})).status_code == 422
+
+
+async def test_erp_prices_are_not_written_to_the_product(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog
+):
+    normal_v, _ = catalog
+    code = await _code(db_session, normal_v)
+    resp = await client.post(
+        f"{BASE}/save", headers=auth_header(admin_user),
+        json={"sheet": _sheet(product_code=code, **ERP), "apply": True, "mode": "new"},
+    )
+    assert resp.status_code == 200, resp.text
+    prices = await _prices(db_session, normal_v.id)
+    # The green row, not the ERP price, is what the product gets.
+    assert prices[SegmentType.DEALER][0].price_excl_tax == Decimal("1150.00")
+    assert prices[SegmentType.RETAIL][0].price_incl_tax == Decimal("1904.40")

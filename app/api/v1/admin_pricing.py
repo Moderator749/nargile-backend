@@ -64,6 +64,17 @@ from app.services.pricing_sheet import ApplyError, apply_to_product, compute_she
 router = APIRouter(prefix="/admin/pricing", tags=["admin-pricing"])
 
 
+# "ERP ve Katalog Fiyatları": typed with the sheet, kept on the row beside it.
+ERP_FIELDS = (
+    "erp_price_usd", "erp_price_eur", "erp_price_tl",
+    "erp_display_bayi", "erp_display_toptan", "erp_display_kafe", "erp_display_perakende",
+)
+
+
+def _erp_of(source) -> dict:
+    return {name: getattr(source, name) for name in ERP_FIELDS}
+
+
 def _read(record: PricingRecord, file_name: str | None, image_url: str | None = None) -> PricingRecordRead:
     return PricingRecordRead(
         id=record.id, file_id=record.file_id, file_name=file_name,
@@ -71,7 +82,17 @@ def _read(record: PricingRecord, file_name: str | None, image_url: str | None = 
         sheet=record.sheet,
         applied_at=record.applied_at, applied_summary=record.applied_summary,
         created_at=record.created_at, updated_at=record.updated_at,
+        **_erp_of(record),
     )
+
+
+def _write_sheet(record: PricingRecord, sheet: PricingSheetIn) -> None:
+    """The row's code, name, worksheet and ERP prices, from what was typed."""
+    record.product_code = sheet.product_code
+    record.product_name = sheet.product_name
+    record.sheet = compute_sheet(sheet)
+    for name, value in _erp_of(sheet).items():
+        setattr(record, name, value)
 
 
 async def _images(db: AsyncSession, codes: set[str]) -> dict[str, str]:
@@ -131,9 +152,7 @@ async def _record(
         if record is None:
             raise HTTPException(status_code=404, detail="Üzerine yazılacak kayıt bulunamadı; silinmiş olabilir.")
     record.file_id = file.id if file else None
-    record.product_code = sheet.product_code
-    record.product_name = sheet.product_name
-    record.sheet = compute_sheet(sheet)
+    _write_sheet(record, sheet)
     record.updated_at = now
     return record
 
@@ -237,6 +256,7 @@ async def duplicate_file(
                 product_code=row.product_code,
                 product_name=row.product_name,
                 sheet=dict(row.sheet),
+                **_erp_of(row),
                 created_at=row.created_at,
                 updated_at=row.updated_at,
                 created_by=admin.id,
@@ -468,9 +488,7 @@ async def save(
 
     now = datetime.now(timezone.utc)
     record = target or PricingRecord(created_by=admin.id, created_at=now, file_id=None)
-    record.product_code = sheet.product_code
-    record.product_name = sheet.product_name
-    record.sheet = compute_sheet(sheet)
+    _write_sheet(record, sheet)
     record.updated_at = now
     if payload.place == "draft":
         record.file_id = None
