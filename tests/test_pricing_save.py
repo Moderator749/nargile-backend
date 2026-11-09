@@ -269,10 +269,10 @@ async def test_the_records_list_carries_the_products_erp_prices(
 async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog
 ):
-    """MLZ 154: the blue "ERP fiyatı" row (105, 105, 125; retail 180 on the
-    shelf) is the base the catalogue prices from, not the green row the site
-    gets (105 + 5.26% = 110.52). Applied, it is the product's ERP prices,
-    before VAT; groups the sheet does not price, and other currencies, stay."""
+    """MLZ 154: the blue "ERP fiyatı" row (105, 105, 125; retail 180) is the
+    base the catalogue prices from, not the green row the site gets (105 +
+    5.26% = 110.52). Applied, it is the product's ERP prices as typed, retail's
+    too; groups the sheet does not price, and other currencies, stay."""
     normal_v, _ = catalog
     code = await _code(db_session, normal_v)
     product = await db_session.get(Product, normal_v.product_id)
@@ -298,10 +298,11 @@ async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     )
     await db_session.refresh(product)
     assert product.erp_prices == {
-        "TRY": {"DEALER": "105.00", "CAFE": "125.00", "RETAIL": "150.00", "WHOLESALE": "999.00"},
+        "TRY": {"DEALER": "105.00", "CAFE": "125.00", "RETAIL": "180.00", "WHOLESALE": "999.00"},
         "USD": {"RETAIL": "24.50"},
     }
-    assert product.erp_display_toptan is True
+    # Cetvel 1 leaves each group's "KDV gösterimi" as the product had it.
+    assert (product.erp_display_bayi, product.erp_display_toptan) == (None, True)
 
     # Applied again without an ERP fiyatı for Kafe: the sheet prices it from its own row now.
     sheet["columns"][1].pop("erp_price")
@@ -309,3 +310,43 @@ async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     assert again.status_code == 200, again.text
     await db_session.refresh(product)
     assert "CAFE" not in product.erp_prices["TRY"] and product.erp_prices["TRY"]["DEALER"] == "105.00"
+
+
+async def test_cetvel_2_keeps_the_erp_row_as_typed_and_shows_vat_included(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog
+):
+    """Cetvel 2 (cost after VAT): the blue row is still before VAT — 485, 485,
+    530, 595 at 20% VAT are the product's ERP prices, not 404.17 and the like —
+    and every group's "KDV gösterimi" becomes "KDV dahil göster"."""
+    normal_v, _ = catalog
+    code = await _code(db_session, normal_v)
+    product = await db_session.get(Product, normal_v.product_id)
+    product.erp_prices = None
+    product.erp_display_bayi, product.erp_display_kafe = False, None
+    await db_session.commit()
+
+    sheet = _sheet(
+        product_code=code,
+        vat_mode="INCL",
+        cost="400",
+        columns=[
+            {"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "15", "erp_price": "485"},
+            {"label": "Toptan Fiyatı", "segment": "WHOLESALE", "percent": "0", "erp_price": "485"},
+            {"label": "Kafe Fiyatı", "segment": "CAFE", "percent": "10", "erp_price": "530"},
+        ],
+        retail={"percent": "10", "vat_rate": "20", "erp_price": "595"},
+    )
+    applied = await client.post(f"{BASE}/save", headers=auth_header(admin_user), json={"sheet": sheet, "apply": True, "mode": "new"})
+    assert applied.status_code == 200, applied.text
+    await db_session.refresh(product)
+    assert product.erp_prices == {"TRY": {"DEALER": "485.00", "WHOLESALE": "485.00", "CAFE": "530.00", "RETAIL": "595.00"}}
+    assert (
+        product.erp_display_bayi, product.erp_display_toptan, product.erp_display_kafe, product.erp_display_perakende,
+    ) == (True, True, True, True)
+
+    # The product sheet shows them so.
+    sheet_resp = await client.get(f"/api/v1/admin/products/{product.id}/sheet", headers=auth_header(admin_user))
+    assert sheet_resp.status_code == 200, sheet_resp.text
+    erp = sheet_resp.json()["erp"]
+    assert erp["erp_prices"]["TRY"] == {"DEALER": "485.00", "WHOLESALE": "485.00", "CAFE": "530.00", "RETAIL": "595.00"}
+    assert [erp[f] for f in ("erp_display_bayi", "erp_display_toptan", "erp_display_kafe", "erp_display_perakende")] == [True] * 4

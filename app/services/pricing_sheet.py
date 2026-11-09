@@ -13,7 +13,9 @@ rate: their price is their base as it is. Nothing of this feeds the chain.
 Retail is the last column and, as on the paper sheet ("KDV dahil perakende
 fiyat %KDV"), it is always after VAT: the previous calculated value plus its
 percent, plus VAT when the sheet's cost was before VAT. Its ERP fiyatı and
-uygulanacak fiyat are shelf prices, after VAT too. The VAT rate is also what every price is
+uygulanacak fiyat are shelf prices, after VAT too — except where the ERP
+fiyatı is written to the product (`write_erp`): there the blue row is before
+VAT on every sheet. The VAT rate is also what every price is
 stored with, so the other side (before ↔ after VAT) can be completed.
 
 Between the classes and retail may come "extras" ("Mağaza Fiyatı"), links of
@@ -39,6 +41,7 @@ from sqlalchemy.orm import selectinload
 from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
 from app.models.user import CustomerSegment, SegmentType
 from app.schemas.pricing import AppliedPrice, PricingSheetIn
+from app.schemas.taxonomy import BULK_ERP_DISPLAY
 
 CENT = Decimal("0.01")
 COST_PLACES = Decimal("0.0001")
@@ -146,16 +149,17 @@ def _both_sides(price: Decimal, vat_mode: str, vat_rate: Decimal) -> tuple[Decim
 
 
 def erp_by_group(sheet: PricingSheetIn) -> dict[SegmentType, Decimal | None]:
-    """The sheet's "ERP fiyatı" row per customer group, before VAT — a class's
-    is in the sheet's own basis, retail's after VAT (a shelf price) — None for
-    a group the sheet prices without one. A step with no group is left out."""
-    rate = sheet.retail.vat_rate
+    """The sheet's "ERP fiyatı" row per customer group, None for a group the
+    sheet prices without one. A step with no group is left out.
+
+    The blue row is before VAT on every sheet, retail's too: 485 typed is the
+    485 the product's ERP prices get, never less VAT, whatever the cost basis."""
     erp: dict[SegmentType, Decimal | None] = {}
     for col in sheet.columns:
         if col.segment is not None:
-            erp[col.segment] = None if col.erp_price is None else _both_sides(col.erp_price, sheet.vat_mode, rate)[0]
+            erp[col.segment] = None if col.erp_price is None else col.erp_price.quantize(CENT)
     retail = sheet.retail.erp_price
-    erp[SegmentType.RETAIL] = None if retail is None else _both_sides(retail, "INCL", rate)[0]
+    erp[SegmentType.RETAIL] = None if retail is None else retail.quantize(CENT)
     return erp
 
 
@@ -164,7 +168,10 @@ def write_erp(product: Product, sheet: PricingSheetIn) -> None:
     sheet's "ERP ve Katalog Fiyatları"), in the sheet's currency: each group
     the sheet prices takes its ERP price, or loses the one it had when the
     sheet has none — the sheet now prices it from its own row. Other groups
-    and currencies are left as they are."""
+    and currencies are left as they are.
+
+    A sheet from a cost after VAT ("Cetvel 2 · KDV dahil maliyet") also sets
+    every group's "KDV gösterimi" to "KDV dahil göster"; Cetvel 1 leaves them."""
     matrix = {c: dict(row) for c, row in (product.erp_prices or {}).items()}
     row = matrix.setdefault(sheet.currency.value, {})
     for segment, price in erp_by_group(sheet).items():
@@ -173,6 +180,9 @@ def write_erp(product: Product, sheet: PricingSheetIn) -> None:
         else:
             row[segment.value] = str(price)
     product.erp_prices = {c: r for c, r in matrix.items() if r} or None
+    if sheet.vat_mode == "INCL":
+        for field in BULK_ERP_DISPLAY:  # True is "KDV dahil göster"
+            setattr(product, field, True)
 
 
 def cost_before_vat(cost: Decimal, vat_mode: str, vat_rate: Decimal) -> Decimal:
