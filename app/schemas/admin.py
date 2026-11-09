@@ -4,7 +4,6 @@ import enum
 import uuid
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -139,20 +138,6 @@ class ProductPublishRead(BaseModel):
     is_published: bool
 
 
-class PriceRule(BaseModel):
-    """The pricing worksheet ("Fiyat Hesaplama Cetveli") row last applied to a
-    product, as "Fiyat Giriş Modu" prices from it: a group it has a column for
-    goes on the site at its ERP price plus `applied_percent` (retail at its ERP
-    price, as the worksheet does)."""
-
-    record_id: uuid.UUID
-    applied_at: datetime
-    currency: CurrencyType
-    applied_percent: Decimal | None
-    # The groups the worksheet prices; retail always.
-    segments: list[SegmentType]
-
-
 class AdminProductDetail(BaseModel):
     id: uuid.UUID
     base_code: str
@@ -163,49 +148,6 @@ class AdminProductDetail(BaseModel):
     image_url: str | None
     is_published: bool = True
     variants: list[AdminVariantDetail]
-    # "ERP ve Katalog Fiyatları": per currency and group, before VAT.
-    erp_prices: dict[CurrencyType, dict[SegmentType, Decimal]] | None = None
-    # Only when the list is asked for it (`pricing=true`, "Fiyat Giriş Modu").
-    price_rule: PriceRule | None = None
-
-
-# ── "Fiyat Giriş Modu": TL ERP prices typed in the products list ─────────────
-
-
-ErpTlPrice = Annotated[Decimal, Field(gt=0, le=Decimal("100000000"), decimal_places=2)]
-
-
-class ErpPriceChange(BaseModel):
-    """One cell: a product's TL ERP price for a group, before VAT; null removes it."""
-
-    product_id: uuid.UUID
-    segment: SegmentType
-    price: ErpTlPrice | None
-
-
-class BulkErpPricesWrite(BaseModel):
-    changes: list[ErpPriceChange] = Field(min_length=1, max_length=2000)
-
-
-class ErpPriceApplied(BaseModel):
-    """What a cell wrote: the ERP price, and the site price that followed from it
-    (None when only the ERP price changed: a removal, or a product with no
-    colour on sale)."""
-
-    product_id: uuid.UUID
-    segment: SegmentType
-    erp_price: Decimal | None
-    site_price_excl: Decimal | None = None
-    site_price_incl: Decimal | None = None
-    # The worksheet's "uygulanacak oran" added, when one priced it.
-    applied_percent: Decimal | None = None
-    from_worksheet: bool = False
-
-
-class BulkErpPricesResult(BaseModel):
-    applied: list[ErpPriceApplied]
-    # The products as table rows now, with their rules.
-    products: list[AdminProductDetail]
 
 
 class AdminOrderItemDetail(OrderItemRead):
