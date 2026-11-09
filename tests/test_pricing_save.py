@@ -32,6 +32,9 @@ from tests.conftest import auth_header
 from tests.test_pricing_sheet import BASE, _code, _prices, _sheet
 
 
+SITE = (SegmentType.DEALER, SegmentType.WHOLESALE, SegmentType.CAFE, SegmentType.RETAIL)
+
+
 def _new_code() -> str:
     return f"SV-{uuid.uuid4().hex[:6]}"
 
@@ -316,8 +319,9 @@ async def test_cetvel_2_keeps_the_erp_row_as_typed_and_shows_vat_included(
     client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog
 ):
     """Cetvel 2 (cost after VAT): the blue row is still before VAT — 485, 485,
-    530, 595 at 20% VAT are the product's ERP prices, not 404.17 and the like —
-    and every group's "KDV gösterimi" becomes "KDV dahil göster"."""
+    530, 595 at 20% VAT are the product's ERP prices, not 404.17 and the like,
+    and the site's prices are those plus VAT — and every group's "KDV
+    gösterimi" becomes "KDV dahil göster"."""
     normal_v, _ = catalog
     code = await _code(db_session, normal_v)
     product = await db_session.get(Product, normal_v.product_id)
@@ -338,6 +342,16 @@ async def test_cetvel_2_keeps_the_erp_row_as_typed_and_shows_vat_included(
     )
     applied = await client.post(f"{BASE}/save", headers=auth_header(admin_user), json={"sheet": sheet, "apply": True, "mode": "new"})
     assert applied.status_code == 200, applied.text
+    # The site charges the ERP price plus VAT: 485 → 582, 595 → 714.
+    prices = await _prices(db_session, normal_v.id)
+    assert {
+        seg: (rows[0].price_excl_tax, rows[0].price_incl_tax) for seg, rows in prices.items() if seg in SITE
+    } == {
+        SegmentType.DEALER: (Decimal("485.00"), Decimal("582.00")),
+        SegmentType.WHOLESALE: (Decimal("485.00"), Decimal("582.00")),
+        SegmentType.CAFE: (Decimal("530.00"), Decimal("636.00")),
+        SegmentType.RETAIL: (Decimal("595.00"), Decimal("714.00")),
+    }
     await db_session.refresh(product)
     assert product.erp_prices == {"TRY": {"DEALER": "485.00", "WHOLESALE": "485.00", "CAFE": "530.00", "RETAIL": "595.00"}}
     assert (

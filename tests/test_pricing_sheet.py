@@ -133,6 +133,32 @@ def test_the_applied_percent_goes_on_each_classs_erp_price_else_on_the_calculate
     assert old["columns"][0]["price"] == "1150.00" and old["retail"]["price"] == "1656.00"
 
 
+
+def test_on_cetvel_2_the_erp_price_takes_vat_before_it_is_a_base():
+    """The blue row is before VAT on every sheet; Cetvel 2's green row is after
+    it, so 485 at 20% VAT is 582 there (then the rate), and retail's 595 is 714."""
+    columns = [
+        {"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "15", "erp_price": "485"},
+        {"label": "Toptan Fiyatı", "segment": "WHOLESALE", "percent": "0", "erp_price": "485"},
+        {"label": "Kafe Fiyatı", "segment": "CAFE", "percent": "10", "erp_price": "530"},
+        {"label": "Ara", "segment": None, "percent": "0"},
+    ]
+    extras = [{"label": "Mağaza Fiyatı", "percent": "10", "erp_price": "600"}]
+    retail = {"percent": "10", "vat_rate": "20", "erp_price": "595"}
+    sheet = _sheet(vat_mode="INCL", cost="400", columns=columns, extras=extras, retail=retail)
+    out = compute_sheet(PricingSheetIn.model_validate(sheet))
+    assert [c["price"] for c in out["columns"]] == ["582.00", "582.00", "636.00", "506.00"]
+    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("720.00", "714.00")
+    # The typed ERP fiyatı is kept as typed, and the calculated chain is untouched.
+    assert out["retail"]["erp_price"] == "595" and out["columns"][0]["computed"] == "460.00"
+    # The uygulanacak oran goes on after VAT: 582 + 5% = 611.10, 636 + 5% = 667.80.
+    rated = compute_sheet(PricingSheetIn.model_validate({**sheet, "applied_percent": "5"}))
+    assert [c["price"] for c in rated["columns"][:3]] == ["611.10", "611.10", "667.80"]
+    assert rated["retail"]["price"] == "714.00"  # retail never takes the rate
+    # Cetvel 1 is before VAT already: the ERP fiyatı is the base as it is.
+    excl = compute_sheet(PricingSheetIn.model_validate({**sheet, "vat_mode": "EXCL"}))
+    assert [c["price"] for c in excl["columns"][:3]] == ["485.00", "485.00", "530.00"]
+
 @pytest.mark.parametrize(
     "change",
     [

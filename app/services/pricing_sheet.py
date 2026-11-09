@@ -25,6 +25,9 @@ extra's before-VAT value plus its percent, then VAT — so VAT is added once.
 They are for the admin's reference only: no customer group has such a price,
 so applying a sheet reports them as not written.
 
+On Cetvel 2 (a cost after VAT) the ERP fiyatı, before VAT on every sheet,
+takes VAT before it is a base: 595 at 20% is 714, and 485 plus 5% is 611.10.
+
 The uygulanacak oran is added half a kuruş up, as the panel shows it.
 
 The panel does the same sums live; the server does them again on save, so a
@@ -51,9 +54,13 @@ def _step(previous: Decimal, percent: Decimal) -> Decimal:
     return previous * (1 + percent / 100)
 
 
-def _priced(computed: Decimal, erp_price: Decimal | None, desired: Decimal | None, applied: Decimal | None) -> dict:
-    """A column's figures below its percent: calculated, the ERP base, the typed price, and the price it sends."""
-    base = erp_price if erp_price is not None else computed
+def _priced(
+    computed: Decimal, erp_price: Decimal | None, desired: Decimal | None, applied: Decimal | None, erp_vat: Decimal = Decimal(1)
+) -> dict:
+    """A column's figures below its percent: calculated, the ERP base, the typed price, and the price it sends.
+
+    `erp_vat` brings the ERP fiyatı, before VAT, to the column's own basis: 1 + VAT on Cetvel 2."""
+    base = erp_price * erp_vat if erp_price is not None else computed
     if applied:
         # Half a kuruş up, as the panel shows it (1322.50 + 5% = 1388.63).
         auto = _step(base, applied).quantize(CENT, rounding=ROUND_HALF_UP)
@@ -70,6 +77,9 @@ def _priced(computed: Decimal, erp_price: Decimal | None, desired: Decimal | Non
 def compute_sheet(sheet: PricingSheetIn) -> dict:
     """The worksheet with every column's calculated and final price, as stored."""
     previous = sheet.cost
+    r = sheet.retail
+    # The ERP fiyatı is before VAT; on Cetvel 2 every price around it is after.
+    erp_vat = 1 + r.vat_rate / 100 if sheet.vat_mode == "INCL" else Decimal(1)
     columns = []
     for col in sheet.columns:
         computed = _step(previous, col.percent)
@@ -77,11 +87,10 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "label": col.label,
             "segment": col.segment.value if col.segment else None,
             "percent": str(col.percent),
-            **_priced(computed, col.erp_price, col.desired, sheet.applied_percent),
+            **_priced(computed, col.erp_price, col.desired, sheet.applied_percent, erp_vat),
         })
         previous = computed  # the chain runs on calculated values only
 
-    r = sheet.retail
     with_vat = (lambda v: v * (1 + r.vat_rate / 100)) if sheet.vat_mode == "EXCL" else (lambda v: v)
     extras = []
     for extra in sheet.extras:
@@ -93,12 +102,12 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "vat_rate": str(r.vat_rate),
             "before_vat": str(extra_before.quantize(CENT)),
             # The rate is the classes' only: an extra's price is its base.
-            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None),
+            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None, erp_vat),
         })
         previous = extra_before  # retail builds on it, before VAT
 
     before_vat = _step(previous, r.percent)
-    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None)  # retail never takes the rate
+    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None, erp_vat)  # retail never takes the rate
     retail_price = Decimal(retail["price"])
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
     try_price = (retail_price * rate).quantize(CENT) if rate else None
