@@ -16,6 +16,9 @@ from app.schemas import i18n
 from app.schemas.taxonomy import (
     AdminCategoryRead,
     BrandOrderWrite,
+    CategoryBulkResult,
+    CategoryBulkScope,
+    CategoryBulkSettings,
     BrandRead,
     BrandWrite,
     CategoryProductOrderRow,
@@ -26,7 +29,7 @@ from app.schemas.taxonomy import (
     slugify,
 )
 from app.services import root_slugs, slug_redirects
-from app.services.categories import category_subtree, memberships, placement_error, products_in, ranked_order
+from app.services.categories import category_subtree, category_subtree_ids, memberships, placement_error, products_in, ranked_order
 from app.services.media import MAX_IMAGE_BYTES, WIDE_SIDE, InvalidImage, delete_media, save_image
 from app.services import auto_translate
 
@@ -189,6 +192,43 @@ async def assign_product_category(
         db.add_all(ProductCategory(product_id=pid, category_id=payload.category_id, position=0) for pid in moved)
     await db.commit()
     return ProductCategoryAssignResult(updated=result.rowcount)
+
+
+def _bulk_targets(category_id: int, include_subcategories: bool):
+    """The products a bulk setting writes: listed under the category (and its
+    subcategories, when asked), deleted ones left alone."""
+    categories = category_subtree_ids(category_id) if include_subcategories else [category_id]
+    return select(Product.id).where(Product.id.in_(products_in(categories)), Product.is_deleted.is_(False))
+
+
+@router.get("/categories/{category_id}/bulk-update-settings", response_model=CategoryBulkScope)
+async def category_bulk_scope(
+    category_id: int, _admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
+):
+    """How many products "Tüm Ürünlere Toplu Ayar Uygula" would write, before it does."""
+    await _category(db, category_id)
+    count = lambda subtree: select(func.count()).select_from(_bulk_targets(category_id, subtree).subquery())  # noqa: E731
+    return CategoryBulkScope(products=await db.scalar(count(False)), with_subcategories=await db.scalar(count(True)))
+
+
+@router.post("/categories/{category_id}/bulk-update-settings", response_model=CategoryBulkResult)
+async def category_bulk_update_settings(
+    category_id: int,
+    payload: CategoryBulkSettings,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Write the sent "Genel Kurallar" and "KDV gösterimi" fields on every product
+    of the category, in one statement: all of them or, on an error, none."""
+    await _category(db, category_id)
+    result = await db.execute(
+        update(Product)
+        .where(Product.id.in_(_bulk_targets(category_id, payload.include_subcategories)))
+        .values(**payload.changes())
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    return CategoryBulkResult(updated=result.rowcount)
 
 
 # ── Brands ───────────────────────────────────────────────────────────────────

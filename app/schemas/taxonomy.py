@@ -1,7 +1,7 @@
 import re
 import uuid
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.rich_text import RICH_TEXT_MAX, to_rich_html
 from app.core.slugs import slugify  # noqa: F401 (re-exported to the admin API)
@@ -110,6 +110,82 @@ class ProductCategoryAssign(BaseModel):
 
 
 class ProductCategoryAssignResult(BaseModel):
+    updated: int
+
+
+# ── One category's products, set at once ─────────────────────────────────────
+
+# The "Genel Kurallar" switches of the product sheet (Product's columns).
+BULK_RULE_SWITCHES = (
+    "is_free_shipping",
+    "has_havale_discount",
+    "has_dealer_havale_discount",
+    "has_toptan_havale_discount",
+    "has_cafe_havale_discount",
+    "has_volume_discount",
+    "gives_points",
+    "can_use_points",
+    "is_cart_rule_applied",
+)
+# "KDV gösterimi" of "ERP ve Katalog Fiyatları", a column per customer group.
+BULK_ERP_DISPLAY = ("erp_display_bayi", "erp_display_toptan", "erp_display_kafe", "erp_display_perakende")
+
+
+class CategoryBulkSettings(BaseModel):
+    """"Tüm Ürünlere Toplu Ayar Uygula": the product sheet's "Genel Kurallar" and
+    the catalogue's "KDV gösterimi", written on every product of a category.
+
+    Only the fields sent are written; one left out keeps each product's own
+    value, so a single rule can be switched without resetting the rest. Sent as
+    null, ``free_shipping_min_quantity`` drops the condition and an
+    ``erp_display_*`` the group's choice (the catalogue's full split).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # The subcategories' products too, as the category's page lists them.
+    include_subcategories: bool = True
+
+    is_free_shipping: bool | None = None
+    free_shipping_min_quantity: int | None = Field(default=None, ge=1, le=100000)
+    has_havale_discount: bool | None = None
+    has_dealer_havale_discount: bool | None = None
+    has_toptan_havale_discount: bool | None = None
+    has_cafe_havale_discount: bool | None = None
+    has_volume_discount: bool | None = None
+    gives_points: bool | None = None
+    can_use_points: bool | None = None
+    is_cart_rule_applied: bool | None = None
+
+    erp_display_bayi: bool | None = None
+    erp_display_toptan: bool | None = None
+    erp_display_kafe: bool | None = None
+    erp_display_perakende: bool | None = None
+
+    @model_validator(mode="after")
+    def _switches_are_yes_or_no(self) -> "CategoryBulkSettings":
+        cleared = [f for f in BULK_RULE_SWITCHES if f in self.model_fields_set and getattr(self, f) is None]
+        if cleared:
+            raise ValueError(f"Bir kural Evet ya da Hayır olmalı: {', '.join(cleared)}")
+        if not self.changes():
+            raise ValueError("Uygulanacak bir ayar seçin")
+        return self
+
+    def changes(self) -> dict[str, bool | int | None]:
+        """The product columns to write, and their values."""
+        written = (*BULK_RULE_SWITCHES, "free_shipping_min_quantity", *BULK_ERP_DISPLAY)
+        return {f: getattr(self, f) for f in written if f in self.model_fields_set}
+
+
+class CategoryBulkScope(BaseModel):
+    """How many products a bulk setting reaches: the category's own, and with
+    its subcategories' (each product once)."""
+
+    products: int
+    with_subcategories: int
+
+
+class CategoryBulkResult(BaseModel):
     updated: int
 
 
