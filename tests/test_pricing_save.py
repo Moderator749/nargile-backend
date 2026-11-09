@@ -319,13 +319,13 @@ async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     assert "CAFE" not in product.erp_prices["TRY"] and product.erp_prices["TRY"]["DEALER"] == "105.00"
 
 
-async def test_cetvel_2_keeps_the_erp_row_as_typed_and_shows_vat_included(
+async def test_cetvel_2_takes_its_erp_row_after_vat_and_shows_vat_included(
     client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog
 ):
-    """Cetvel 2 (cost after VAT): the blue row is still before VAT — 485, 485,
-    530, 595 at 20% VAT are the product's ERP prices, not 404.17 and the like,
-    and the site's prices are those plus VAT — and every group's "KDV
-    gösterimi" becomes "KDV dahil göster"."""
+    """Cetvel 2 (cost after VAT): the blue row is typed after VAT. The site
+    gets it plus the rate (115 + 5% = 120.75, after VAT), the product's ERP
+    prices get it less VAT (115 / 1.20 = 95.83), and every group's "KDV
+    gösterimi" becomes "KDV dahil göster", so the catalogue shows 115 again."""
     normal_v, _ = catalog
     code = await _code(db_session, normal_v)
     product = await db_session.get(Product, normal_v.product_id)
@@ -336,28 +336,27 @@ async def test_cetvel_2_keeps_the_erp_row_as_typed_and_shows_vat_included(
     sheet = _sheet(
         product_code=code,
         vat_mode="INCL",
-        cost="400",
+        cost="100",
+        applied_percent="5",
         columns=[
-            {"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "15", "erp_price": "485"},
-            {"label": "Toptan Fiyatı", "segment": "WHOLESALE", "percent": "0", "erp_price": "485"},
-            {"label": "Kafe Fiyatı", "segment": "CAFE", "percent": "10", "erp_price": "530"},
+            {"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "15", "erp_price": "115"},
+            {"label": "Toptan Fiyatı", "segment": "WHOLESALE", "percent": "0", "erp_price": "115"},
+            {"label": "Kafe Fiyatı", "segment": "CAFE", "percent": "10", "erp_price": "132"},
         ],
-        retail={"percent": "10", "vat_rate": "20", "erp_price": "595"},
+        retail={"percent": "10", "vat_rate": "20", "erp_price": "138"},
     )
     applied = await client.post(f"{BASE}/save", headers=auth_header(admin_user), json={"sheet": sheet, "apply": True, "mode": "new"})
     assert applied.status_code == 200, applied.text
-    # The site charges the ERP price plus VAT: 485 → 582, 595 → 714.
     prices = await _prices(db_session, normal_v.id)
-    assert {
-        seg: (rows[0].price_excl_tax, rows[0].price_incl_tax) for seg, rows in prices.items() if seg in SITE
-    } == {
-        SegmentType.DEALER: (Decimal("485.00"), Decimal("582.00")),
-        SegmentType.WHOLESALE: (Decimal("485.00"), Decimal("582.00")),
-        SegmentType.CAFE: (Decimal("530.00"), Decimal("636.00")),
-        SegmentType.RETAIL: (Decimal("595.00"), Decimal("714.00")),
+    assert {seg: rows[0].price_incl_tax for seg, rows in prices.items() if seg in SITE} == {
+        SegmentType.DEALER: Decimal("120.75"),
+        SegmentType.WHOLESALE: Decimal("120.75"),
+        SegmentType.CAFE: Decimal("138.60"),
+        SegmentType.RETAIL: Decimal("138.00"),  # retail never takes the rate
     }
+    assert prices[SegmentType.CAFE][0].price_excl_tax == Decimal("115.50")
     await db_session.refresh(product)
-    assert product.erp_prices == {"TRY": {"DEALER": "485.00", "WHOLESALE": "485.00", "CAFE": "530.00", "RETAIL": "595.00"}}
+    assert product.erp_prices == {"TRY": {"DEALER": "95.83", "WHOLESALE": "95.83", "CAFE": "110.00", "RETAIL": "115.00"}}
     assert (
         product.erp_display_bayi, product.erp_display_toptan, product.erp_display_kafe, product.erp_display_perakende,
     ) == (True, True, True, True)
@@ -366,5 +365,5 @@ async def test_cetvel_2_keeps_the_erp_row_as_typed_and_shows_vat_included(
     sheet_resp = await client.get(f"/api/v1/admin/products/{product.id}/sheet", headers=auth_header(admin_user))
     assert sheet_resp.status_code == 200, sheet_resp.text
     erp = sheet_resp.json()["erp"]
-    assert erp["erp_prices"]["TRY"] == {"DEALER": "485.00", "WHOLESALE": "485.00", "CAFE": "530.00", "RETAIL": "595.00"}
+    assert erp["erp_prices"]["TRY"] == {"DEALER": "95.83", "WHOLESALE": "95.83", "CAFE": "110.00", "RETAIL": "115.00"}
     assert [erp[f] for f in ("erp_display_bayi", "erp_display_toptan", "erp_display_kafe", "erp_display_perakende")] == [True] * 4

@@ -23,11 +23,13 @@ extra's before-VAT value plus its percent, then VAT — so VAT is added once.
 They are for the admin's reference only: no customer group has such a price,
 so applying a sheet reports them as not written.
 
-The ERP fiyatı is before VAT on every sheet, in every column, as the
-product's ERP prices are (`write_erp`). Where the column's price is after VAT
-— retail and the extras on both sheets, everything on Cetvel 2 (a cost after
-VAT) — it takes VAT before it is a base: 595 at 20% is 714, and on Cetvel 2
-485 plus 5% is 611.10.
+The ERP fiyatı is typed in the sheet's own basis. On Cetvel 1 (a cost before
+VAT) it is before VAT in every column: the classes take it as it is, retail
+and the extras — after VAT — add VAT first (595 at 20% is 714). On Cetvel 2
+(a cost after VAT) it is after VAT, rounded from the orange row: every column
+takes it as it is, the classes plus the rate (115 + 5% = 120.75). The
+product's ERP prices are before VAT, so Cetvel 2's lose VAT on the way there
+(`erp_by_group`: 115 at 20% is 95.83).
 
 The uygulanacak oran is added half a kuruş up, as the panel shows it.
 
@@ -60,7 +62,7 @@ def _priced(
 ) -> dict:
     """A column's figures below its percent: calculated, the ERP base, the typed price, and the price it sends.
 
-    `erp_vat` brings the ERP fiyatı, before VAT, to the column's own basis: 1 + VAT where it is after VAT."""
+    `erp_vat` brings the ERP fiyatı to the column's own basis: 1 + VAT on Cetvel 1's retail and extras."""
     base = erp_price * erp_vat if erp_price is not None else computed
     if applied:
         # Half a kuruş up, as the panel shows it (1322.50 + 5% = 1388.63).
@@ -79,10 +81,9 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
     """The worksheet with every column's calculated and final price, as stored."""
     previous = sheet.cost
     r = sheet.retail
-    # The ERP fiyatı is before VAT. Retail and the extras are after VAT on both
-    # sheets; on Cetvel 2 the classes are too.
-    after_vat = 1 + r.vat_rate / 100
-    class_erp_vat = after_vat if sheet.vat_mode == "INCL" else Decimal(1)
+    # The ERP fiyatı is in the sheet's basis: on Cetvel 1 before VAT, so retail
+    # and the extras (after VAT) add it; on Cetvel 2 after VAT already.
+    shelf_erp_vat = 1 + r.vat_rate / 100 if sheet.vat_mode == "EXCL" else Decimal(1)
     columns = []
     for col in sheet.columns:
         computed = _step(previous, col.percent)
@@ -90,7 +91,7 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "label": col.label,
             "segment": col.segment.value if col.segment else None,
             "percent": str(col.percent),
-            **_priced(computed, col.erp_price, col.desired, sheet.applied_percent, class_erp_vat),
+            **_priced(computed, col.erp_price, col.desired, sheet.applied_percent),
         })
         previous = computed  # the chain runs on calculated values only
 
@@ -105,12 +106,12 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "vat_rate": str(r.vat_rate),
             "before_vat": str(extra_before.quantize(CENT)),
             # The rate is the classes' only: an extra's price is its base.
-            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None, after_vat),
+            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None, shelf_erp_vat),
         })
         previous = extra_before  # retail builds on it, before VAT
 
     before_vat = _step(previous, r.percent)
-    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None, after_vat)  # retail never takes the rate
+    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None, shelf_erp_vat)  # retail never takes the rate
     retail_price = Decimal(retail["price"])
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
     try_price = (retail_price * rate).quantize(CENT) if rate else None
@@ -161,17 +162,22 @@ def _both_sides(price: Decimal, vat_mode: str, vat_rate: Decimal) -> tuple[Decim
 
 
 def erp_by_group(sheet: PricingSheetIn) -> dict[SegmentType, Decimal | None]:
-    """The sheet's "ERP fiyatı" row per customer group, None for a group the
-    sheet prices without one. A step with no group is left out.
+    """The sheet's "ERP fiyatı" row per customer group, before VAT as the
+    product keeps it; None for a group the sheet prices without one. A step
+    with no group is left out.
 
-    The blue row is before VAT on every sheet, retail's too: 485 typed is the
-    485 the product's ERP prices get, never less VAT, whatever the cost basis."""
+    Cetvel 1's blue row is before VAT already, retail's too: 485 typed is 485.
+    Cetvel 2's is after VAT, every column: 115 typed at 20% VAT is 95.83."""
+    factor = 1 + sheet.retail.vat_rate / 100 if sheet.vat_mode == "INCL" else Decimal(1)
+
+    def before_vat(price: Decimal | None) -> Decimal | None:
+        return None if price is None else (price / factor).quantize(CENT, rounding=ROUND_HALF_UP)
+
     erp: dict[SegmentType, Decimal | None] = {}
     for col in sheet.columns:
         if col.segment is not None:
-            erp[col.segment] = None if col.erp_price is None else col.erp_price.quantize(CENT)
-    retail = sheet.retail.erp_price
-    erp[SegmentType.RETAIL] = None if retail is None else retail.quantize(CENT)
+            erp[col.segment] = before_vat(col.erp_price)
+    erp[SegmentType.RETAIL] = before_vat(sheet.retail.erp_price)
     return erp
 
 
@@ -183,7 +189,8 @@ def write_erp(product: Product, sheet: PricingSheetIn) -> None:
     and currencies are left as they are.
 
     A sheet from a cost after VAT ("Cetvel 2 · KDV dahil maliyet") also sets
-    every group's "KDV gösterimi" to "KDV dahil göster"; Cetvel 1 leaves them."""
+    every group's "KDV gösterimi" to "KDV dahil göster", so the catalogue shows
+    its 95.83 as the 115 typed; Cetvel 1 leaves them."""
     matrix = {c: dict(row) for c, row in (product.erp_prices or {}).items()}
     row = matrix.setdefault(sheet.currency.value, {})
     for segment, price in erp_by_group(sheet).items():
