@@ -22,10 +22,11 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
-from app.models.catalog import Product, ProductVariant
+from app.models.catalog import Product, ProductVariant, VariantPrice
 from app.api.v1.products import build_price_list
 from app.models.pricing import PriceImportAlias, PricingFile, PricingRecord
 from app.models.user import User
@@ -48,6 +49,7 @@ from app.schemas.pricing import (
     PricingFileRead,
     PricingRecordRead,
     PricingSheetIn,
+    ProductErpCatalog,
     RecordIds,
     RecordsChanged,
     RenameFileRequest,
@@ -58,41 +60,34 @@ from app.schemas.pricing import (
     SaveTarget,
     SaveToFileRequest,
 )
+from app.schemas.product_sheet import SheetErpCatalog
 from app.services.price_import import ImportFileError, apply_matches, match_blocks, normalize, parse_workbook
 from app.services.pricing_sheet import ApplyError, apply_to_product, compute_sheet
 
 router = APIRouter(prefix="/admin/pricing", tags=["admin-pricing"])
 
 
-# "ERP ve Katalog Fiyatları": typed with the sheet, kept on the row beside it.
-ERP_FIELDS = (
-    "erp_price_usd", "erp_price_eur", "erp_price_tl",
-    "erp_display_bayi", "erp_display_toptan", "erp_display_kafe", "erp_display_perakende",
-)
-
-
-def _erp_of(source) -> dict:
-    return {name: getattr(source, name) for name in ERP_FIELDS}
-
-
-def _read(record: PricingRecord, file_name: str | None, image_url: str | None = None) -> PricingRecordRead:
+def _read(
+    record: PricingRecord,
+    file_name: str | None,
+    image_url: str | None = None,
+    product_erp: ProductErpCatalog | None = None,
+) -> PricingRecordRead:
     return PricingRecordRead(
         id=record.id, file_id=record.file_id, file_name=file_name,
         product_code=record.product_code, product_name=record.product_name, image_url=image_url,
         sheet=record.sheet,
         applied_at=record.applied_at, applied_summary=record.applied_summary,
         created_at=record.created_at, updated_at=record.updated_at,
-        **_erp_of(record),
+        product_erp=product_erp,
     )
 
 
 def _write_sheet(record: PricingRecord, sheet: PricingSheetIn) -> None:
-    """The row's code, name, worksheet and ERP prices, from what was typed."""
+    """The row's code, name and worksheet, from what was typed."""
     record.product_code = sheet.product_code
     record.product_name = sheet.product_name
     record.sheet = compute_sheet(sheet)
-    for name, value in _erp_of(sheet).items():
-        setattr(record, name, value)
 
 
 async def _images(db: AsyncSession, codes: set[str]) -> dict[str, str]:
@@ -113,6 +108,36 @@ async def _images(db: AsyncSession, codes: set[str]) -> dict[str, str]:
         )
     )
     found.update({code: url for code, url in by_code})  # the product's own code wins over a SKU
+    return found
+
+
+async def _erp_catalogs(db: AsyncSession, codes: set[str]) -> dict[str, ProductErpCatalog]:
+    """Each code's product's "ERP ve Katalog Fiyatları" (the product sheet's),
+    by product code or a colour's SKU (case-insensitive), with its price
+    table's VAT rate — for the price catalogue. A live product wins over a
+    deleted one, and the product's own code over a SKU."""
+    wanted = {c.strip().lower() for c in codes if c and c.strip()}
+    if not wanted:
+        return {}
+    priced = aliased(ProductVariant)  # its own, not the SKU lookup's colour
+    vat_rate = (
+        select(func.max(VariantPrice.vat_rate))
+        .join(priced, priced.id == VariantPrice.variant_id)
+        .where(priced.product_id == Product.id)
+        .correlate(Product)
+        .scalar_subquery()
+    )
+    found: dict[str, ProductErpCatalog] = {}
+    by_sku = (
+        select(func.lower(ProductVariant.sku), Product, vat_rate)
+        .join(Product, Product.id == ProductVariant.product_id)
+        .where(func.lower(ProductVariant.sku).in_(wanted))
+    )
+    by_code = select(func.lower(Product.base_code), Product, vat_rate).where(func.lower(Product.base_code).in_(wanted))
+    for stmt in (by_sku, by_code):  # deleted first, so a live one overwrites it
+        for code, product, rate in await db.execute(stmt.order_by(Product.is_deleted.desc())):
+            fields = {f: getattr(product, f) for f in SheetErpCatalog.model_fields}
+            found[code] = ProductErpCatalog(**fields, vat_rate=rate)
     return found
 
 
@@ -256,7 +281,6 @@ async def duplicate_file(
                 product_code=row.product_code,
                 product_name=row.product_name,
                 sheet=dict(row.sheet),
-                **_erp_of(row),
                 created_at=row.created_at,
                 updated_at=row.updated_at,
                 created_by=admin.id,
@@ -313,8 +337,13 @@ async def list_records(
         stmt = stmt.where(PricingRecord.file_id == file_id if file_id is not None else PricingRecord.file_id.is_(None))
     limit = ALL_RECORDS_LIMIT if everything else 500
     rows = (await db.execute(stmt.order_by(PricingRecord.updated_at.desc(), PricingRecord.id).limit(limit))).all()
-    images = await _images(db, {r.product_code for r, _ in rows})
-    return [_read(r, name, images.get(r.product_code.strip().lower())) for r, name in rows]
+    codes = {r.product_code for r, _ in rows}
+    images, erp = await _images(db, codes), await _erp_catalogs(db, codes)
+    return [
+        _read(r, name, images.get(key), erp.get(key))
+        for r, name in rows
+        for key in [r.product_code.strip().lower()]
+    ]
 
 
 @router.get("/records/matching", response_model=list[PricingRecordRead])

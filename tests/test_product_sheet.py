@@ -408,6 +408,46 @@ async def test_a_save_without_a_weight_keeps_the_stored_one(client: AsyncClient,
     assert cleared.json()["weight_kg"] is None  # sending null still clears it
 
 
+# ── "ERP ve Katalog Fiyatları" ───────────────────────────────────────────────
+
+ERP = {
+    "erp_price_usd": "24.50", "erp_price_eur": None, "erp_price_tl": "1100.00",
+    "erp_display_bayi": False, "erp_display_toptan": True, "erp_display_kafe": None, "erp_display_perakende": True,
+}
+NO_ERP = dict.fromkeys(ERP)
+
+
+async def test_erp_catalog_prices_round_trip_on_the_product(client: AsyncClient, admin_user: User):
+    """Saved with the sheet, read back with it, kept by a save that leaves the
+    section out, cleared by one that sends it empty, and copied by "Çoğalt"."""
+    h = auth_header(admin_user)
+    created = await _post(client, admin_user, _sheet(erp=ERP))
+    assert created.status_code == 201, created.text
+    sheet = created.json()
+    assert sheet["erp"] == ERP
+    url = f"/api/v1/admin/products/{sheet['id']}/sheet"
+    assert (await client.get(url, headers=h)).json()["erp"] == ERP
+    # Not the price table: the ERP price is no price the storefront charges.
+    assert {row["currency"] for row in sheet["prices"] if row["cells"]} == {"TRY"}
+
+    kept = await client.put(url, headers=h, json=_sheet(base_code=sheet["base_code"]))
+    assert kept.status_code == 200, kept.text
+    assert kept.json()["erp"] == ERP
+
+    copied = await client.post("/api/v1/admin/products/duplicate", headers=h, json={"product_ids": [sheet["id"]]})
+    assert copied.status_code == 201, copied.text
+    copy_sheet = (await client.get(f"/api/v1/admin/products/{copied.json()[0]['id']}/sheet", headers=h)).json()
+    assert copy_sheet["erp"] == ERP
+
+    cleared = await client.put(url, headers=h, json=_sheet(base_code=sheet["base_code"], erp=NO_ERP))
+    assert cleared.json()["erp"] == NO_ERP
+
+
+@pytest.mark.parametrize("bad", [{"erp_price_tl": "0"}, {"erp_price_usd": "-3"}, {"erp_price_eur": "1.234"}])
+async def test_an_erp_price_must_be_a_positive_amount_in_kurus(client: AsyncClient, admin_user: User, bad: dict):
+    assert (await _post(client, admin_user, _sheet(erp=bad))).status_code == 422
+
+
 # ── "Birlikte satılanlar" ────────────────────────────────────────────────────
 
 

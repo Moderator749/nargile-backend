@@ -47,6 +47,7 @@ from app.schemas.product_sheet import (
     CrossSellCard,
     ProductSheetRead,
     ProductSheetWrite,
+    SheetErpCatalog,
     SheetOpportunity,
     SheetPriceCell,
     SheetPriceRow,
@@ -81,6 +82,8 @@ OPPORTUNITY_FIELDS = (
     "opp_gives_points",
     "opp_can_use_points",
 )
+# "ERP ve Katalog Fiyatları": for the price catalogue only (see SheetErpCatalog).
+ERP_FIELDS = tuple(SheetErpCatalog.model_fields)
 PRODUCT_FIELDS = (
     "is_published",
     "base_code",
@@ -208,6 +211,9 @@ async def save(
         setattr(product, field, getattr(payload.rules, field))
     for field in OPPORTUNITY_FIELDS:
         setattr(product, field, getattr(payload.opportunity, field))
+    if payload.erp is not None:
+        for field in ERP_FIELDS:
+            setattr(product, field, getattr(payload.erp, field))
     await db.flush()
 
     variants = await _sync_variants(db, product, payload)
@@ -702,5 +708,6 @@ def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead
         prices=[SheetPriceRow(currency=c, cells=cells) for c, cells in by_currency.items()],
         rules=SheetRules(**{f: getattr(product, f) for f in RULE_FIELDS}),
         opportunity=SheetOpportunity(**{f: getattr(product, f) for f in OPPORTUNITY_FIELDS}),
+        erp=SheetErpCatalog(**{f: getattr(product, f) for f in ERP_FIELDS}),
         **fields,
     )

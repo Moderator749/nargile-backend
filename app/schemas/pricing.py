@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.models.catalog import CurrencyType
 from app.models.user import SegmentType
+from app.schemas.product_sheet import SheetErpCatalog
 
 Money = Decimal
 VatMode = Literal["EXCL", "INCL"]
@@ -91,18 +92,6 @@ class PricingSheetIn(BaseModel):
     eur_rate: Decimal | None = Field(default=None, gt=0, le=1000, decimal_places=4)
     # "Son karar": the TRY retail price decided on, for a USD/EUR sheet.
     final_try: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    # "ERP ve Katalog Fiyatları": the product's ERP price in each currency,
-    # before VAT, shown by the price catalogue in place of the sheet's price.
-    # Kept on the row beside the sheet, never sent to the site.
-    erp_price_usd: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    erp_price_eur: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    erp_price_tl: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    # Per customer group, how the catalogue shows its price: True "KDV dahil",
-    # False "KDV hariç", None the full split (before VAT, VAT, total).
-    erp_display_bayi: bool | None = None
-    erp_display_toptan: bool | None = None
-    erp_display_kafe: bool | None = None
-    erp_display_perakende: bool | None = None
 
     @field_validator("product_code", "product_name")
     @classmethod
@@ -242,6 +231,14 @@ class RecordsChanged(BaseModel):
     file: PricingFileRead | None = None
 
 
+class ProductErpCatalog(SheetErpCatalog):
+    """A product's ERP section, with the VAT rate its price table is at."""
+
+    # The rate of its price table (None with no price): the catalogue adds it
+    # to the ERP price, as the product sheet's preview does.
+    vat_rate: Decimal | None = None
+
+
 class PricingRecordRead(BaseModel):
     id: uuid.UUID
     file_id: int | None
@@ -257,14 +254,10 @@ class PricingRecordRead(BaseModel):
     created_at: datetime
     # Last saved; after `applied_at`, the site has its earlier version's prices.
     updated_at: datetime
-    # "ERP ve Katalog Fiyatları", as in PricingSheetIn.
-    erp_price_usd: Decimal | None = None
-    erp_price_eur: Decimal | None = None
-    erp_price_tl: Decimal | None = None
-    erp_display_bayi: bool | None = None
-    erp_display_toptan: bool | None = None
-    erp_display_kafe: bool | None = None
-    erp_display_perakende: bool | None = None
+    # The product's "ERP ve Katalog Fiyatları" (its sheet, under "Fiyat Tablosu"),
+    # looked up by the code like the photo, for the price catalogue. None when
+    # the code names no product.
+    product_erp: ProductErpCatalog | None = None
 
 
 class AppliedPrice(BaseModel):

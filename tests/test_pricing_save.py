@@ -14,8 +14,8 @@ Covers:
 - "Kaydet ve Siteye Uygula": saved and the green row written to the product,
   all or nothing
 - "Kayıtlar": every row in one list; matching across folders
-- "ERP ve Katalog Fiyatları": kept on the row beside its sheet, replaced on
-  every save, copied with its file, never written to the product
+- "ERP ve Katalog Fiyatları" is the product's (its sheet), not the row's: the
+  records list carries the product's for the price catalogue
 """
 
 import uuid
@@ -25,6 +25,7 @@ from httpx import AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.catalog import Product
 from app.models.pricing import PricingRecord
 from app.models.user import SegmentType, User
 from tests.conftest import auth_header
@@ -222,51 +223,51 @@ async def test_a_question_creates_no_file(client: AsyncClient, admin_user: User)
 
 
 ERP = {
-    "erp_price_usd": "24.50", "erp_price_eur": None, "erp_price_tl": "1100",
+    "erp_price_usd": "24.50", "erp_price_eur": None, "erp_price_tl": "1100.00",
     "erp_display_bayi": False, "erp_display_toptan": True, "erp_display_kafe": None, "erp_display_perakende": True,
 }
 
 
-async def test_erp_prices_are_kept_beside_the_sheet(client: AsyncClient, admin_user: User):
+async def test_the_worksheet_no_longer_keeps_erp_prices(client: AsyncClient, admin_user: User):
+    """The section is the product's now: a sheet sending it (an old panel) saves
+    as if it had not, and the row has no such fields."""
     h = auth_header(admin_user)
-    code = _new_code()
-    saved = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code, **ERP)})
+    saved = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=_new_code(), **ERP)})
     assert saved.status_code == 200, saved.text
     record = saved.json()["record"]
-    as_values = lambda v: Decimal(v) if isinstance(v, str) else v  # noqa: E731
-    assert {k: as_values(record[k]) for k in ERP} == {k: as_values(v) for k, v in ERP.items()}
-    # Not part of the worksheet: the sheet's own figures are untouched by them.
-    assert "erp_price_tl" not in record["sheet"] and record["sheet"]["retail"]["price"] == "1904.40"
-    listed = next(r for r in (await client.get(f"{BASE}/records", headers=h)).json() if r["id"] == record["id"])
-    assert listed["erp_display_toptan"] is True and listed["erp_price_usd"] == "24.50"
-
-    # Saved again without them: cleared, as a sheet typed again is.
-    again = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code), "record_id": record["id"]})
-    assert again.json()["overwritten"] is True
-    assert all(again.json()["record"][k] is None for k in ERP)
-
-    # A file's copy keeps them.
-    in_file = await client.post(f"{BASE}/file", headers=h, json={"file_name": f"ERP {code}", "sheet": _sheet(product_code=code, **ERP)})
-    copy = await client.post(f"{BASE}/files/{in_file.json()['file_id']}/duplicate", headers=h, json={})
-    rows = (await client.get(f"{BASE}/records", headers=h, params={"file_id": copy.json()["id"]})).json()
-    assert [(r["erp_price_usd"], r["erp_display_bayi"]) for r in rows] == [("24.50", False)]
-
-    # A price must be above zero, with kuruş at most.
-    for bad in ({"erp_price_tl": "0"}, {"erp_price_usd": "-3"}, {"erp_price_eur": "1.234"}):
-        assert (await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(**bad)})).status_code == 422
+    assert not any(k in record or k in record["sheet"] for k in ERP)
+    assert record["sheet"]["retail"]["price"] == "1904.40"
 
 
-async def test_erp_prices_are_not_written_to_the_product(
+async def test_the_records_list_carries_the_products_erp_prices(
     client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog
 ):
+    """The price catalogue reads the product's section, looked up by the row's
+    code (any case) — with its price table's VAT rate — never a row's own."""
     normal_v, _ = catalog
     code = await _code(db_session, normal_v)
-    resp = await client.post(
-        f"{BASE}/save", headers=auth_header(admin_user),
-        json={"sheet": _sheet(product_code=code, **ERP), "apply": True, "mode": "new"},
+    product = await db_session.get(Product, normal_v.product_id)
+    for k, v in ERP.items():
+        setattr(product, k, Decimal(v) if isinstance(v, str) else v)
+    await db_session.commit()
+
+    h = auth_header(admin_user)
+    mine = (await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=f" {code.lower()} ")})).json()
+    other = (await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=_new_code())})).json()
+    listed = {r["id"]: r for r in (await client.get(f"{BASE}/records", headers=h, params={"all": True})).json()}
+
+    erp = listed[mine["record"]["id"]]["product_erp"]
+    assert {k: erp[k] for k in ERP} == ERP
+    assert erp["vat_rate"] == "18.00"  # the catalog fixture's retail price
+    assert listed[other["record"]["id"]]["product_erp"] is None  # no such product
+
+    # Applying the row writes its green row, and leaves the product's ERP prices alone.
+    applied = await client.post(
+        f"{BASE}/save", headers=h,
+        json={"sheet": _sheet(product_code=code), "apply": True, "mode": "new"},
     )
-    assert resp.status_code == 200, resp.text
+    assert applied.status_code == 200, applied.text
     prices = await _prices(db_session, normal_v.id)
-    # The green row, not the ERP price, is what the product gets.
     assert prices[SegmentType.DEALER][0].price_excl_tax == Decimal("1150.00")
-    assert prices[SegmentType.RETAIL][0].price_incl_tax == Decimal("1904.40")
+    await db_session.refresh(product)
+    assert (product.erp_price_tl, product.erp_display_toptan) == (Decimal("1100.00"), True)

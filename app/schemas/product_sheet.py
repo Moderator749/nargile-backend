@@ -169,6 +169,25 @@ class SheetOpportunity(BaseModel):
         return self
 
 
+class SheetErpCatalog(BaseModel):
+    """"ERP ve Katalog Fiyatları", under "Fiyat Tablosu": for the price catalogue
+    (PDF) only, never the storefront.
+
+    The ERP price in each currency, before VAT, which the catalogue shows for
+    every customer group in place of the group's own price; and per group how
+    the catalogue shows its price — True "KDV dahil", False "KDV hariç", None
+    (not chosen) the full split: before VAT, VAT and total.
+    """
+
+    erp_price_usd: Decimal | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_price_eur: Decimal | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_price_tl: Decimal | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_display_bayi: bool | None = None
+    erp_display_toptan: bool | None = None
+    erp_display_kafe: bool | None = None
+    erp_display_perakende: bool | None = None
+
+
 MAX_CROSS_SELLS = 4
 # Categories one product can be listed under.
 MAX_CATEGORIES = 20
@@ -238,6 +257,8 @@ class ProductSheetWrite(BaseModel):
     prices: list[SheetPriceRow] = Field(default_factory=list)
     rules: SheetRules = SheetRules()
     opportunity: SheetOpportunity = SheetOpportunity()
+    # Left out = the stored ones stay (a caller that predates the section must not wipe it).
+    erp: SheetErpCatalog | None = None
     # "Birlikte satılanlar", in the order the admin arranged them.
     related_product_ids: list[uuid.UUID] = Field(default_factory=list, max_length=MAX_CROSS_SELLS)
 

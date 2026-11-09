@@ -201,6 +201,21 @@ class Product(Base):
     opp_gives_points: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
     opp_can_use_points: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
 
+    # ── "ERP ve Katalog Fiyatları", under the sheet's "Fiyat Tablosu" ─────────
+    # The product's ERP price in each currency, before VAT. The price catalogue
+    # (PDF) shows it for every customer group in place of the group's own price;
+    # the storefront never reads it.
+    erp_price_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    erp_price_eur: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    erp_price_tl: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    # How the catalogue shows each group's price: True "KDV dahil göster",
+    # False "KDV hariç göster", None (not chosen) the full split — before VAT,
+    # VAT and total.
+    erp_display_bayi: Mapped[bool | None] = mapped_column(Boolean)
+    erp_display_toptan: Mapped[bool | None] = mapped_column(Boolean)
+    erp_display_kafe: Mapped[bool | None] = mapped_column(Boolean)
+    erp_display_perakende: Mapped[bool | None] = mapped_column(Boolean)
+
     # The primary category: the first of the product's categories, the one its
     # page's breadcrumb shows. Membership is this *and* `category_links` (see
     # services/categories.products_in) — a product can sit in several.
