@@ -299,6 +299,10 @@ async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     assert (prices[SegmentType.DEALER][0].price_excl_tax, prices[SegmentType.CAFE][0].price_excl_tax) == (
         Decimal("110.52"), Decimal("131.58"),  # the green row, for the site
     )
+    # Retail's ERP 180 is before VAT: the shelf gets it plus 20% VAT.
+    assert (prices[SegmentType.RETAIL][0].price_excl_tax, prices[SegmentType.RETAIL][0].price_incl_tax) == (
+        Decimal("180.00"), Decimal("216.00"),
+    )
     await db_session.refresh(product)
     assert product.erp_prices == {
         "TRY": {"DEALER": "105.00", "CAFE": "125.00", "RETAIL": "180.00", "WHOLESALE": "999.00"},

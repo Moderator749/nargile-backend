@@ -12,10 +12,8 @@ rate: their price is their base as it is. Nothing of this feeds the chain.
 
 Retail is the last column and, as on the paper sheet ("KDV dahil perakende
 fiyat %KDV"), it is always after VAT: the previous calculated value plus its
-percent, plus VAT when the sheet's cost was before VAT. Its ERP fiyatı and
-uygulanacak fiyat are shelf prices, after VAT too — except where the ERP
-fiyatı is written to the product (`write_erp`): there the blue row is before
-VAT on every sheet. The VAT rate is also what every price is
+percent, plus VAT when the sheet's cost was before VAT. Its uygulanacak
+fiyat is a shelf price, after VAT too. The VAT rate is also what every price is
 stored with, so the other side (before ↔ after VAT) can be completed.
 
 Between the classes and retail may come "extras" ("Mağaza Fiyatı"), links of
@@ -25,8 +23,11 @@ extra's before-VAT value plus its percent, then VAT — so VAT is added once.
 They are for the admin's reference only: no customer group has such a price,
 so applying a sheet reports them as not written.
 
-On Cetvel 2 (a cost after VAT) the ERP fiyatı, before VAT on every sheet,
-takes VAT before it is a base: 595 at 20% is 714, and 485 plus 5% is 611.10.
+The ERP fiyatı is before VAT on every sheet, in every column, as the
+product's ERP prices are (`write_erp`). Where the column's price is after VAT
+— retail and the extras on both sheets, everything on Cetvel 2 (a cost after
+VAT) — it takes VAT before it is a base: 595 at 20% is 714, and on Cetvel 2
+485 plus 5% is 611.10.
 
 The uygulanacak oran is added half a kuruş up, as the panel shows it.
 
@@ -59,7 +60,7 @@ def _priced(
 ) -> dict:
     """A column's figures below its percent: calculated, the ERP base, the typed price, and the price it sends.
 
-    `erp_vat` brings the ERP fiyatı, before VAT, to the column's own basis: 1 + VAT on Cetvel 2."""
+    `erp_vat` brings the ERP fiyatı, before VAT, to the column's own basis: 1 + VAT where it is after VAT."""
     base = erp_price * erp_vat if erp_price is not None else computed
     if applied:
         # Half a kuruş up, as the panel shows it (1322.50 + 5% = 1388.63).
@@ -78,8 +79,10 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
     """The worksheet with every column's calculated and final price, as stored."""
     previous = sheet.cost
     r = sheet.retail
-    # The ERP fiyatı is before VAT; on Cetvel 2 every price around it is after.
-    erp_vat = 1 + r.vat_rate / 100 if sheet.vat_mode == "INCL" else Decimal(1)
+    # The ERP fiyatı is before VAT. Retail and the extras are after VAT on both
+    # sheets; on Cetvel 2 the classes are too.
+    after_vat = 1 + r.vat_rate / 100
+    class_erp_vat = after_vat if sheet.vat_mode == "INCL" else Decimal(1)
     columns = []
     for col in sheet.columns:
         computed = _step(previous, col.percent)
@@ -87,7 +90,7 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "label": col.label,
             "segment": col.segment.value if col.segment else None,
             "percent": str(col.percent),
-            **_priced(computed, col.erp_price, col.desired, sheet.applied_percent, erp_vat),
+            **_priced(computed, col.erp_price, col.desired, sheet.applied_percent, class_erp_vat),
         })
         previous = computed  # the chain runs on calculated values only
 
@@ -102,12 +105,12 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "vat_rate": str(r.vat_rate),
             "before_vat": str(extra_before.quantize(CENT)),
             # The rate is the classes' only: an extra's price is its base.
-            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None, erp_vat),
+            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None, after_vat),
         })
         previous = extra_before  # retail builds on it, before VAT
 
     before_vat = _step(previous, r.percent)
-    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None, erp_vat)  # retail never takes the rate
+    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None, after_vat)  # retail never takes the rate
     retail_price = Decimal(retail["price"])
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
     try_price = (retail_price * rate).quantize(CENT) if rate else None

@@ -116,8 +116,8 @@ def test_the_applied_percent_goes_on_each_classs_erp_price_else_on_the_calculate
         ("1322.50", None, "1388.63"),
     ]
     # Mağaza Fiyatı and retail never take the rate: the calculated 1745.70, and
-    # retail's ERP 2000, as they are.
-    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("1745.70", "2000.00")
+    # retail's ERP 2000 (before VAT) plus only its 20% VAT.
+    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("1745.70", "2400.00")
     # The chain runs on calculated values only: retail is still 2094.84.
     assert out["retail"]["computed"] == "2094.84"
     # A typed uygulanacak fiyat still wins over all of it.
@@ -134,9 +134,10 @@ def test_the_applied_percent_goes_on_each_classs_erp_price_else_on_the_calculate
 
 
 
-def test_on_cetvel_2_the_erp_price_takes_vat_before_it_is_a_base():
+def test_an_erp_price_takes_vat_where_its_column_is_after_vat():
     """The blue row is before VAT on every sheet; Cetvel 2's green row is after
-    it, so 485 at 20% VAT is 582 there (then the rate), and retail's 595 is 714."""
+    it, so 485 at 20% VAT is 582 there (then the rate), and retail's 595 is 714
+    on both sheets."""
     columns = [
         {"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "15", "erp_price": "485"},
         {"label": "Toptan Fiyatı", "segment": "WHOLESALE", "percent": "0", "erp_price": "485"},
@@ -155,9 +156,14 @@ def test_on_cetvel_2_the_erp_price_takes_vat_before_it_is_a_base():
     rated = compute_sheet(PricingSheetIn.model_validate({**sheet, "applied_percent": "5"}))
     assert [c["price"] for c in rated["columns"][:3]] == ["611.10", "611.10", "667.80"]
     assert rated["retail"]["price"] == "714.00"  # retail never takes the rate
-    # Cetvel 1 is before VAT already: the ERP fiyatı is the base as it is.
+    # Cetvel 1's classes are before VAT already: the ERP fiyatı is the base as
+    # it is. Its retail and Mağaza Fiyatı are after VAT: 595 → 714, 600 → 720.
     excl = compute_sheet(PricingSheetIn.model_validate({**sheet, "vat_mode": "EXCL"}))
     assert [c["price"] for c in excl["columns"][:3]] == ["485.00", "485.00", "530.00"]
+    assert (excl["extras"][0]["price"], excl["retail"]["price"]) == ("720.00", "714.00")
+    rated = compute_sheet(PricingSheetIn.model_validate({**sheet, "vat_mode": "EXCL", "applied_percent": "5"}))
+    assert [c["price"] for c in rated["columns"][:3]] == ["509.25", "509.25", "556.50"]
+    assert rated["retail"]["price"] == "714.00"
 
 @pytest.mark.parametrize(
     "change",
