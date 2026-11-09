@@ -259,6 +259,8 @@ async def test_the_records_list_carries_the_products_erp_prices(
     erp = listed[mine["record"]["id"]]["product_erp"]
     assert {k: erp[k] for k in ERP} == ERP
     assert erp["vat_rate"] == "18.00"  # the catalog fixture's retail price
+    # Its price table, KDV hariç, for groups without an ERP price.
+    assert erp["prices_excl"] == {"TRY": {"RETAIL": "4237.29"}}
     assert listed[other["record"]["id"]]["product_erp"] is None  # no such product
 
     # Applying the row writes its green row, and leaves the product's ERP prices alone.

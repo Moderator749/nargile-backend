@@ -17,19 +17,19 @@ push their prices to the live product.
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import aliased
 
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
-from app.models.catalog import Product, ProductVariant, VariantPrice
+from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
 from app.api.v1.products import build_price_list
 from app.models.pricing import PriceImportAlias, PricingFile, PricingRecord
-from app.models.user import User
+from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.catalog import AdminCatalogRequest, PriceListItem
 from app.schemas.pricing import (
     ApplyResult,
@@ -113,32 +113,53 @@ async def _images(db: AsyncSession, codes: set[str]) -> dict[str, str]:
 
 async def _erp_catalogs(db: AsyncSession, codes: set[str]) -> dict[str, ProductErpCatalog]:
     """Each code's product's "ERP ve Katalog Fiyatları" (the product sheet's),
-    by product code or a colour's SKU (case-insensitive), with its price
-    table's VAT rate — for the price catalogue. A live product wins over a
-    deleted one, and the product's own code over a SKU."""
+    by product code or a colour's SKU (case-insensitive), with its price table
+    — for the price catalogue. A live product wins over a deleted one, and the
+    product's own code over a SKU."""
     wanted = {c.strip().lower() for c in codes if c and c.strip()}
     if not wanted:
         return {}
-    priced = aliased(ProductVariant)  # its own, not the SKU lookup's colour
-    vat_rate = (
-        select(func.max(VariantPrice.vat_rate))
-        .join(priced, priced.id == VariantPrice.variant_id)
-        .where(priced.product_id == Product.id)
-        .correlate(Product)
-        .scalar_subquery()
-    )
-    found: dict[str, ProductErpCatalog] = {}
+    products: dict[str, Product] = {}
     by_sku = (
-        select(func.lower(ProductVariant.sku), Product, vat_rate)
+        select(func.lower(ProductVariant.sku), Product)
         .join(Product, Product.id == ProductVariant.product_id)
         .where(func.lower(ProductVariant.sku).in_(wanted))
     )
-    by_code = select(func.lower(Product.base_code), Product, vat_rate).where(func.lower(Product.base_code).in_(wanted))
+    by_code = select(func.lower(Product.base_code), Product).where(func.lower(Product.base_code).in_(wanted))
     for stmt in (by_sku, by_code):  # deleted first, so a live one overwrites it
-        for code, product, rate in await db.execute(stmt.order_by(Product.is_deleted.desc())):
-            fields = {f: getattr(product, f) for f in SheetErpCatalog.model_fields}
-            found[code] = ProductErpCatalog(**fields, vat_rate=rate)
-    return found
+        for code, product in await db.execute(stmt.order_by(Product.is_deleted.desc())):
+            products[code] = product
+
+    # The price table as the product sheet shows it: its first live colour's
+    # (every colour carries the same matrix).
+    first: dict[uuid.UUID, uuid.UUID] = {}
+    vat_rates: dict[uuid.UUID, Decimal] = {}
+    tables: dict[uuid.UUID, dict[CurrencyType, dict[SegmentType, Decimal]]] = {}
+    rows = await db.execute(
+        select(ProductVariant.product_id, ProductVariant.id, CustomerSegment.code, VariantPrice)
+        .join(VariantPrice, VariantPrice.variant_id == ProductVariant.id)
+        .join(CustomerSegment, CustomerSegment.id == VariantPrice.segment_id)
+        .where(
+            ProductVariant.product_id.in_({p.id for p in products.values()}),
+            ProductVariant.is_active.is_(True),
+        )
+        .order_by(ProductVariant.position, ProductVariant.sku)
+    )
+    for product_id, variant_id, segment, price in rows:
+        if first.setdefault(product_id, variant_id) != variant_id:
+            continue
+        vat_rates.setdefault(product_id, price.vat_rate)
+        row = tables.setdefault(product_id, {}).setdefault(CurrencyType(price.currency), {})
+        row[SegmentType(segment)] = price.price_excl_tax
+
+    return {
+        code: ProductErpCatalog(
+            **{f: getattr(product, f) for f in SheetErpCatalog.model_fields},
+            vat_rate=vat_rates.get(product.id),
+            prices_excl=tables.get(product.id, {}),
+        )
+        for code, product in products.items()
+    }
 
 
 async def _image_for(db: AsyncSession, code: str) -> str | None:

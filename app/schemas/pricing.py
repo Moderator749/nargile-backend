@@ -232,11 +232,14 @@ class RecordsChanged(BaseModel):
 
 
 class ProductErpCatalog(SheetErpCatalog):
-    """A product's ERP section, with the VAT rate its price table is at."""
+    """A product's ERP section, with its price table: what the price catalogue
+    prices a group from — the ERP price, else the table's KDV hariç price."""
 
-    # The rate of its price table (None with no price): the catalogue adds it
-    # to the ERP price, as the product sheet's preview does.
+    # The rate of its price table (None with no price): the catalogue adds it,
+    # as the product sheet's preview does.
     vat_rate: Decimal | None = None
+    # "Fiyat Tablosu", KDV hariç: [currency][group]; a cell left empty is absent.
+    prices_excl: dict[CurrencyType, dict[SegmentType, Decimal]] = Field(default_factory=dict)
 
 
 class PricingRecordRead(BaseModel):
