@@ -20,6 +20,7 @@ That keeps one writer, so the storefront price and the sheet can't drift apart.
 import re
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -83,7 +84,7 @@ OPPORTUNITY_FIELDS = (
     "opp_can_use_points",
 )
 # "ERP ve Katalog Fiyatları": for the price catalogue only (see SheetErpCatalog).
-ERP_FIELDS = tuple(SheetErpCatalog.model_fields)
+ERP_DISPLAY_FIELDS = ("erp_display_bayi", "erp_display_toptan", "erp_display_kafe", "erp_display_perakende")
 PRODUCT_FIELDS = (
     "is_published",
     "base_code",
@@ -212,7 +213,8 @@ async def save(
     for field in OPPORTUNITY_FIELDS:
         setattr(product, field, getattr(payload.opportunity, field))
     if payload.erp is not None:
-        for field in ERP_FIELDS:
+        product.erp_prices = stored_erp_prices(payload.erp.erp_prices)
+        for field in ERP_DISPLAY_FIELDS:
             setattr(product, field, getattr(payload.erp, field))
     await db.flush()
 
@@ -610,6 +612,23 @@ async def duplicate(db: AsyncSession, product: Product, segments: dict[int, Segm
     return await save(db, payload)
 
 
+def stored_erp_prices(prices: dict[CurrencyType, dict[SegmentType, Decimal]]) -> dict | None:
+    """The ERP matrix as the product keeps it: strings to the kuruş, no empty currency; None when empty."""
+    stored = {
+        CurrencyType(c).value: {SegmentType(s).value: str(Decimal(v).quantize(Decimal("0.01"))) for s, v in row.items()}
+        for c, row in prices.items()
+        if row
+    }
+    return stored or None
+
+
+def erp_catalog(product: Product) -> SheetErpCatalog:
+    """The product's "ERP ve Katalog Fiyatları"."""
+    return SheetErpCatalog(
+        erp_prices=product.erp_prices or {}, **{f: getattr(product, f) for f in ERP_DISPLAY_FIELDS}
+    )
+
+
 # A product code is 30 characters; its colours' stock codes add "-<RENK>" on top.
 BASE_CODE_MAX = 30
 
@@ -708,6 +727,6 @@ def read(product: Product, segments: dict[int, SegmentType]) -> ProductSheetRead
         prices=[SheetPriceRow(currency=c, cells=cells) for c, cells in by_currency.items()],
         rules=SheetRules(**{f: getattr(product, f) for f in RULE_FIELDS}),
         opportunity=SheetOpportunity(**{f: getattr(product, f) for f in OPPORTUNITY_FIELDS}),
-        erp=SheetErpCatalog(**{f: getattr(product, f) for f in ERP_FIELDS}),
+        erp=erp_catalog(product),
         **fields,
     )

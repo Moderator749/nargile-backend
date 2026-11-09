@@ -202,12 +202,12 @@ class Product(Base):
     opp_can_use_points: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=sa_true())
 
     # ── "ERP ve Katalog Fiyatları", under the sheet's "Fiyat Tablosu" ─────────
-    # The product's ERP price in each currency, before VAT. The price catalogue
-    # (PDF) shows it for every customer group in place of the group's own price;
-    # the storefront never reads it.
-    erp_price_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
-    erp_price_eur: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
-    erp_price_tl: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    # The product's ERP price per currency and customer group, before VAT:
+    # {"TRY": {"DEALER": "105.00", "RETAIL": "150.00"}, "USD": {...}}. Typed on
+    # the product sheet, or written from a pricing worksheet's "ERP fiyatı" row
+    # when it is applied. The price catalogue (PDF) prices a group from it in
+    # place of the group's own price; the storefront never reads it.
+    erp_prices: Mapped[dict | None] = mapped_column(JSONB)
     # How the catalogue shows each group's price: True "KDV dahil göster",
     # False "KDV hariç göster", None (not chosen) the full split — before VAT,
     # VAT and total.

@@ -145,6 +145,36 @@ def _both_sides(price: Decimal, vat_mode: str, vat_rate: Decimal) -> tuple[Decim
     return price.quantize(CENT), (price * factor).quantize(CENT)
 
 
+def erp_by_group(sheet: PricingSheetIn) -> dict[SegmentType, Decimal | None]:
+    """The sheet's "ERP fiyatı" row per customer group, before VAT — a class's
+    is in the sheet's own basis, retail's after VAT (a shelf price) — None for
+    a group the sheet prices without one. A step with no group is left out."""
+    rate = sheet.retail.vat_rate
+    erp: dict[SegmentType, Decimal | None] = {}
+    for col in sheet.columns:
+        if col.segment is not None:
+            erp[col.segment] = None if col.erp_price is None else _both_sides(col.erp_price, sheet.vat_mode, rate)[0]
+    retail = sheet.retail.erp_price
+    erp[SegmentType.RETAIL] = None if retail is None else _both_sides(retail, "INCL", rate)[0]
+    return erp
+
+
+def write_erp(product: Product, sheet: PricingSheetIn) -> None:
+    """The sheet's "ERP fiyatı" row onto the product's ERP prices (the product
+    sheet's "ERP ve Katalog Fiyatları"), in the sheet's currency: each group
+    the sheet prices takes its ERP price, or loses the one it had when the
+    sheet has none — the sheet now prices it from its own row. Other groups
+    and currencies are left as they are."""
+    matrix = {c: dict(row) for c, row in (product.erp_prices or {}).items()}
+    row = matrix.setdefault(sheet.currency.value, {})
+    for segment, price in erp_by_group(sheet).items():
+        if price is None:
+            row.pop(segment.value, None)
+        else:
+            row[segment.value] = str(price)
+    product.erp_prices = {c: r for c, r in matrix.items() if r} or None
+
+
 def cost_before_vat(cost: Decimal, vat_mode: str, vat_rate: Decimal) -> Decimal:
     """A sheet's cost before VAT: as typed on an EXCL sheet, less the retail
     VAT rate on an INCL one (the rate every price is stored with)."""
@@ -171,7 +201,8 @@ async def find_product(db: AsyncSession, code: str) -> Product | None:
 
 async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: dict) -> Applied:
     """Write the sheet's prices — and its cost — to every active colour of the
-    product it names.
+    product it names, and its "ERP fiyatı" row to the product's ERP prices
+    (`write_erp`), which the price catalogue goes by.
 
     One price per customer group, in the sheet's currency — except retail on a
     USD/EUR sheet with a "son karar", which is that TRY figure. A group's rows
@@ -215,6 +246,7 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
             label=label, segment=segment, currency=currency, price_excl_tax=excl, price_incl_tax=incl,
         ))
     await write_prices(db, variants, rows, vat_rate)
+    write_erp(product, sheet)
     cost = cost_before_vat(sheet.cost, sheet.vat_mode, sheet.retail.vat_rate)
     for variant in variants:
         variant.cost_price, variant.cost_currency = cost, sheet.currency

@@ -411,10 +411,10 @@ async def test_a_save_without_a_weight_keeps_the_stored_one(client: AsyncClient,
 # ── "ERP ve Katalog Fiyatları" ───────────────────────────────────────────────
 
 ERP = {
-    "erp_price_usd": "24.50", "erp_price_eur": None, "erp_price_tl": "1100.00",
+    "erp_prices": {"TRY": {"DEALER": "105.00", "WHOLESALE": "105.00", "CAFE": "125.00"}, "USD": {"RETAIL": "24.50"}},
     "erp_display_bayi": False, "erp_display_toptan": True, "erp_display_kafe": None, "erp_display_perakende": True,
 }
-NO_ERP = dict.fromkeys(ERP)
+NO_ERP = {"erp_prices": {}, **dict.fromkeys(k for k in ERP if k != "erp_prices")}
 
 
 async def test_erp_catalog_prices_round_trip_on_the_product(client: AsyncClient, admin_user: User):
@@ -443,7 +443,16 @@ async def test_erp_catalog_prices_round_trip_on_the_product(client: AsyncClient,
     assert cleared.json()["erp"] == NO_ERP
 
 
-@pytest.mark.parametrize("bad", [{"erp_price_tl": "0"}, {"erp_price_usd": "-3"}, {"erp_price_eur": "1.234"}])
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"erp_prices": {"TRY": {"DEALER": "0"}}},
+        {"erp_prices": {"USD": {"CAFE": "-3"}}},
+        {"erp_prices": {"EUR": {"RETAIL": "1.234"}}},
+        {"erp_prices": {"GBP": {"RETAIL": "10"}}},
+        {"erp_prices": {"TRY": {"VIP": "10"}}},
+    ],
+)
 async def test_an_erp_price_must_be_a_positive_amount_in_kurus(client: AsyncClient, admin_user: User, bad: dict):
     assert (await _post(client, admin_user, _sheet(erp=bad))).status_code == 422
 

@@ -60,9 +60,9 @@ from app.schemas.pricing import (
     SaveTarget,
     SaveToFileRequest,
 )
-from app.schemas.product_sheet import SheetErpCatalog
 from app.services.price_import import ImportFileError, apply_matches, match_blocks, normalize, parse_workbook
 from app.services.pricing_sheet import ApplyError, apply_to_product, compute_sheet
+from app.services.product_blueprint import erp_catalog
 
 router = APIRouter(prefix="/admin/pricing", tags=["admin-pricing"])
 
@@ -154,7 +154,7 @@ async def _erp_catalogs(db: AsyncSession, codes: set[str]) -> dict[str, ProductE
 
     return {
         code: ProductErpCatalog(
-            **{f: getattr(product, f) for f in SheetErpCatalog.model_fields},
+            **erp_catalog(product).model_dump(),
             vat_rate=vat_rates.get(product.id),
             prices_excl=tables.get(product.id, {}),
         )

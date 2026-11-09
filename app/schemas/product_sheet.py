@@ -18,6 +18,7 @@ import re
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -169,19 +170,21 @@ class SheetOpportunity(BaseModel):
         return self
 
 
+ErpPrice = Annotated[Decimal, Field(gt=0, le=Decimal("100000000"), decimal_places=2)]
+
+
 class SheetErpCatalog(BaseModel):
     """"ERP ve Katalog Fiyatları", under "Fiyat Tablosu": for the price catalogue
     (PDF) only, never the storefront.
 
-    The ERP price in each currency, before VAT, which the catalogue shows for
-    every customer group in place of the group's own price; and per group how
-    the catalogue shows its price — True "KDV dahil", False "KDV hariç", None
-    (not chosen) the full split: before VAT, VAT and total.
+    The ERP price per currency and customer group, before VAT, which the
+    catalogue shows for that group in place of its own price (a pricing
+    worksheet's "ERP fiyatı" row is written here when it is applied); and per
+    group how the catalogue shows its price — True "KDV dahil", False "KDV
+    hariç", None (not chosen) the full split: before VAT, VAT and total.
     """
 
-    erp_price_usd: Decimal | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    erp_price_eur: Decimal | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
-    erp_price_tl: Decimal | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_prices: dict[CurrencyType, dict[SegmentType, ErpPrice]] = Field(default_factory=dict)
     erp_display_bayi: bool | None = None
     erp_display_toptan: bool | None = None
     erp_display_kafe: bool | None = None

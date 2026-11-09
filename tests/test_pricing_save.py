@@ -223,7 +223,7 @@ async def test_a_question_creates_no_file(client: AsyncClient, admin_user: User)
 
 
 ERP = {
-    "erp_price_usd": "24.50", "erp_price_eur": None, "erp_price_tl": "1100.00",
+    "erp_prices": {"TRY": {"DEALER": "105.00", "CAFE": "125.00"}, "USD": {"RETAIL": "24.50"}},
     "erp_display_bayi": False, "erp_display_toptan": True, "erp_display_kafe": None, "erp_display_perakende": True,
 }
 
@@ -248,7 +248,7 @@ async def test_the_records_list_carries_the_products_erp_prices(
     code = await _code(db_session, normal_v)
     product = await db_session.get(Product, normal_v.product_id)
     for k, v in ERP.items():
-        setattr(product, k, Decimal(v) if isinstance(v, str) else v)
+        setattr(product, k, v)
     await db_session.commit()
 
     h = auth_header(admin_user)
@@ -263,13 +263,49 @@ async def test_the_records_list_carries_the_products_erp_prices(
     assert erp["prices_excl"] == {"TRY": {"RETAIL": "4237.29"}}
     assert listed[other["record"]["id"]]["product_erp"] is None  # no such product
 
-    # Applying the row writes its green row, and leaves the product's ERP prices alone.
-    applied = await client.post(
-        f"{BASE}/save", headers=h,
-        json={"sheet": _sheet(product_code=code), "apply": True, "mode": "new"},
+
+
+
+async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog
+):
+    """MLZ 154: the blue "ERP fiyatı" row (105, 105, 125; retail 180 on the
+    shelf) is the base the catalogue prices from, not the green row the site
+    gets (105 + 5.26% = 110.52). Applied, it is the product's ERP prices,
+    before VAT; groups the sheet does not price, and other currencies, stay."""
+    normal_v, _ = catalog
+    code = await _code(db_session, normal_v)
+    product = await db_session.get(Product, normal_v.product_id)
+    product.erp_prices = {"TRY": {"WHOLESALE": "999.00"}, "USD": {"RETAIL": "24.50"}}
+    product.erp_display_toptan = True
+    await db_session.commit()
+
+    sheet = _sheet(
+        product_code=code,
+        cost="100",
+        applied_percent="5.26",
+        columns=[
+            {"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "0", "erp_price": "105"},
+            {"label": "Kafe Fiyatı", "segment": "CAFE", "percent": "0", "erp_price": "125"},
+        ],
+        retail={"percent": "20", "vat_rate": "20", "erp_price": "180"},
     )
+    applied = await client.post(f"{BASE}/save", headers=auth_header(admin_user), json={"sheet": sheet, "apply": True, "mode": "new"})
     assert applied.status_code == 200, applied.text
     prices = await _prices(db_session, normal_v.id)
-    assert prices[SegmentType.DEALER][0].price_excl_tax == Decimal("1150.00")
+    assert (prices[SegmentType.DEALER][0].price_excl_tax, prices[SegmentType.CAFE][0].price_excl_tax) == (
+        Decimal("110.52"), Decimal("131.58"),  # the green row, for the site
+    )
     await db_session.refresh(product)
-    assert (product.erp_price_tl, product.erp_display_toptan) == (Decimal("1100.00"), True)
+    assert product.erp_prices == {
+        "TRY": {"DEALER": "105.00", "CAFE": "125.00", "RETAIL": "150.00", "WHOLESALE": "999.00"},
+        "USD": {"RETAIL": "24.50"},
+    }
+    assert product.erp_display_toptan is True
+
+    # Applied again without an ERP fiyatı for Kafe: the sheet prices it from its own row now.
+    sheet["columns"][1].pop("erp_price")
+    again = await client.post(f"{BASE}/save", headers=auth_header(admin_user), json={"sheet": sheet, "apply": True, "mode": "new"})
+    assert again.status_code == 200, again.text
+    await db_session.refresh(product)
+    assert "CAFE" not in product.erp_prices["TRY"] and product.erp_prices["TRY"]["DEALER"] == "105.00"
