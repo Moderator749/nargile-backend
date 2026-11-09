@@ -56,8 +56,10 @@ def _sheet_erp(sheet: dict) -> dict[str, str]:
 
 
 def upgrade() -> None:
-    op.add_column("products", sa.Column("erp_prices", JSONB(), nullable=True))
     bind = op.get_bind()
+    # Everything is read and matched first, in Python: `ALTER TABLE products`
+    # locks the table for the rest of the transaction, and the storefront's
+    # product reads queue behind it, so only the quick writes come after it.
     matrices: dict = {}
     old = bind.execute(sa.text(f"SELECT id, {', '.join(OLD.values())} FROM products WHERE "
                                + " OR ".join(f"{c} IS NOT NULL" for c in OLD.values()))).mappings()
@@ -67,27 +69,39 @@ def upgrade() -> None:
             if row[column] is not None:
                 matrix[currency] = {g: str(Decimal(row[column]).quantize(CENT)) for g in GROUPS}
 
-    # The last applied worksheet row per product: its code, else a colour's SKU.
+    by_code: dict[str, list] = {}
+    for product_id, code in bind.execute(sa.text("SELECT id, lower(base_code) FROM products")):
+        by_code.setdefault(code, []).append(product_id)
+    by_sku = {sku: product_id for product_id, sku in bind.execute(
+        sa.text("SELECT product_id, lower(sku) FROM product_variants WHERE sku IS NOT NULL"))}
     applied = bind.execute(sa.text("""
-        SELECT DISTINCT ON (p.id) p.id, r.sheet
-        FROM pricing_records r
-        JOIN products p ON lower(p.base_code) = lower(trim(r.product_code))
-            OR p.id IN (SELECT v.product_id FROM product_variants v WHERE lower(v.sku) = lower(trim(r.product_code)))
-        WHERE r.applied_at IS NOT NULL AND trim(r.product_code) <> ''
-        ORDER BY p.id, (lower(p.base_code) = lower(trim(r.product_code))) DESC, r.applied_at DESC
-    """)).mappings()
-    for row in applied:
-        sheet = row["sheet"] if isinstance(row["sheet"], dict) else json.loads(row["sheet"])
+        SELECT lower(trim(product_code)) AS code, sheet FROM pricing_records
+        WHERE applied_at IS NOT NULL AND trim(product_code) <> ''
+        ORDER BY applied_at DESC
+    """)).all()
+    # The last applied worksheet row per product: one naming its code, else a colour's SKU.
+    latest: dict = {}
+    for code, sheet in applied:
+        for product_id in by_code.get(code, []):
+            latest.setdefault(product_id, sheet)
+    for code, sheet in applied:
+        if code not in by_code and code in by_sku:
+            latest.setdefault(by_sku[code], sheet)
+    for product_id, sheet in latest.items():
+        sheet = sheet if isinstance(sheet, dict) else json.loads(sheet)
         erp = _sheet_erp(sheet)
         if erp:
-            current = matrices.setdefault(row["id"], {}).setdefault(sheet.get("currency", "TRY"), {})
+            current = matrices.setdefault(product_id, {}).setdefault(sheet.get("currency", "TRY"), {})
             for group, price in erp.items():
                 current.setdefault(group, price)
 
-    for product_id, matrix in matrices.items():
+    # Fail rather than wait behind a long query with the storefront queued behind us.
+    op.execute("SET LOCAL lock_timeout = '5s'")
+    op.add_column("products", sa.Column("erp_prices", JSONB(), nullable=True))
+    if matrices:
         bind.execute(
             sa.text("UPDATE products SET erp_prices = CAST(:m AS jsonb) WHERE id = :id"),
-            {"m": json.dumps(matrix), "id": product_id},
+            [{"m": json.dumps(matrix), "id": product_id} for product_id, matrix in matrices.items() if matrix],
         )
     for column in OLD.values():
         op.drop_column("products", column)
