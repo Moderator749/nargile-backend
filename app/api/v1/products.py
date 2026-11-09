@@ -34,6 +34,7 @@ from app.schemas.catalog import (
     CatalogVariantRead,
     FlashSaleInfo,
     PriceListItem,
+    PriceListPrice,
     PriceListRequest,
     ProductRead,
     SultanPuanShowcase,
@@ -532,6 +533,27 @@ async def price_list(
     return await build_price_list(db, payload.product_ids, payload.groups)
 
 
+# "ERP ve Katalog Fiyatları": each group's display choice on the product.
+ERP_DISPLAY_FIELD = {
+    SegmentType.DEALER: "erp_display_bayi",
+    SegmentType.WHOLESALE: "erp_display_toptan",
+    SegmentType.CAFE: "erp_display_kafe",
+    SegmentType.RETAIL: "erp_display_perakende",
+}
+
+
+def _erp_for(product: Product, group: SegmentType, currency: CurrencyType) -> tuple[Decimal | None, CurrencyType | None]:
+    """The group's ERP price (before VAT) for a catalogue in `currency`: the
+    group's in it, else its first of TRY, USD, EUR — as the admin's price
+    catalogue picks it (lib/erpCatalog.ts `erpPriceFor`)."""
+    matrix = product.erp_prices or {}
+    for code in dict.fromkeys((CurrencyType(currency).value, "TRY", "USD", "EUR")):
+        value = (matrix.get(code) or {}).get(group.value)
+        if value is not None:
+            return Decimal(value), CurrencyType(code)
+    return None, None
+
+
 async def build_price_list(
     db: AsyncSession, product_ids: list[uuid.UUID], groups: list[SegmentType]
 ) -> list[PriceListItem]:
@@ -539,7 +561,8 @@ async def build_price_list(
     order given (each once), with each group's regular list price (no flash
     sales: a catalogue outlives a sale). A group the product is not sold to is
     left out of its prices. Who may ask for which group is the caller's to
-    decide.
+    decide. Each group's price comes with the product's ERP price and display
+    choice for it, which the catalogue prices from in place of the list price.
 
     A business group's price (Bayi, Toptan, Kafe) is given as it was entered:
     one priced in USD or EUR stays in USD or EUR, as that buyer is quoted it.
@@ -570,9 +593,18 @@ async def build_price_list(
             for group in groups:
                 price, entered = _price_for(variant, segments[group], rates)
                 if entered is not None and group != SegmentType.RETAIL:
-                    prices[group] = entered  # the foreign figure, as entered
+                    listed = entered  # the foreign figure, as entered
                 elif price is not None and price.currency == CurrencyType.TRY:
-                    prices[group] = price
+                    listed = price
+                else:
+                    continue
+                erp_price, erp_currency = _erp_for(product, group, listed.currency)
+                prices[group] = PriceListPrice(
+                    **listed.model_dump(),
+                    erp_price=erp_price,
+                    erp_currency=erp_currency,
+                    vat_display=getattr(product, ERP_DISPLAY_FIELD[group]),
+                )
         items.append(PriceListItem(
             product_id=product.id, code=product.base_code, name=product.name,
             image_url=product.image_url, prices=prices,

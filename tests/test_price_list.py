@@ -224,3 +224,46 @@ async def test_with_tcmb_down_business_dollars_still_come_and_retail_waits(
     [item] = resp.json()
     assert list(item["prices"]) == ["CAFE"]
     assert item["prices"]["CAFE"]["currency"] == "USD"
+
+
+async def test_each_group_comes_with_its_erp_price_and_display_only(
+    client: AsyncClient, db_session: AsyncSession, segments, admin_user: User
+):
+    """MLZ 160: the catalogue prices a group from its ERP price (Kafe 375 against
+    the list's marked-up 394.73) and shows it as the product chose. An account
+    gets the ERP figures of the groups it asked for, never another group's."""
+    product = await _product(db_session, segments)
+    product.erp_prices = {
+        "TRY": {"DEALER": "325.00", "WHOLESALE": "325.00", "CAFE": "375.00", "RETAIL": "412.50"},
+        "USD": {"CAFE": "9.00"},
+    }
+    product.erp_display_toptan, product.erp_display_kafe, product.erp_display_perakende = False, False, True
+    await db_session.commit()
+
+    dealer = await _account(db_session, segments, SegmentType.DEALER)
+    rows = (await client.post(URL, headers=auth_header(dealer), json={"product_ids": [str(product.id)], "groups": ["CAFE", "RETAIL"]})).json()
+    prices = rows[0]["prices"]
+    assert set(prices) == {"CAFE", "RETAIL"}  # no Bayi/Toptan figures at all
+    assert (prices["CAFE"]["erp_price"], prices["CAFE"]["erp_currency"], prices["CAFE"]["vat_display"]) == ("375.00", "TRY", False)
+    assert (prices["RETAIL"]["erp_price"], prices["RETAIL"]["vat_display"]) == ("412.50", True)
+    assert prices["CAFE"]["price_incl_tax"] == "1440.00"  # the list price is still there, untouched
+
+    # The admin's catalogue, Bayi: an ERP price with no display chosen.
+    bayi = (await client.post(ADMIN_URL, headers=auth_header(admin_user), json={"product_ids": [str(product.id)], "segment": "DEALER"})).json()
+    assert (bayi[0]["prices"]["DEALER"]["erp_price"], bayi[0]["prices"]["DEALER"]["vat_display"]) == ("325.00", None)
+
+    # Without ERP prices: as before.
+    plain = await _product(db_session, segments)
+    rows = (await client.post(ADMIN_URL, headers=auth_header(admin_user), json={"product_ids": [str(plain.id)], "segment": "CAFE"})).json()
+    assert (rows[0]["prices"]["CAFE"]["erp_price"], rows[0]["prices"]["CAFE"]["vat_display"]) == (None, None)
+
+
+async def test_a_dollar_priced_group_takes_its_dollar_erp_price(
+    client: AsyncClient, db_session: AsyncSession, segments, admin_user: User
+):
+    product = await _product(db_session, segments, currency="USD", prices={SegmentType.CAFE: Decimal("12.00")})
+    product.erp_prices = {"TRY": {"CAFE": "375.00"}, "USD": {"CAFE": "9.00"}}
+    await db_session.commit()
+    rows = (await client.post(ADMIN_URL, headers=auth_header(admin_user), json={"product_ids": [str(product.id)], "segment": "CAFE"})).json()
+    cafe = rows[0]["prices"]["CAFE"]
+    assert (cafe["currency"], cafe["erp_price"], cafe["erp_currency"]) == ("USD", "9.00", "USD")

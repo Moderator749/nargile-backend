@@ -198,14 +198,30 @@ class SultanPuanShowcase(BaseModel):
     products: list[CatalogProductRead] = []
 
 
+class PriceListPrice(CatalogPrice):
+    """A group's price in a price catalogue: its list price, with the product's
+    "ERP ve Katalog Fiyatları" for that group (the product sheet's)."""
+
+    # The group's ERP price, before VAT, for a catalogue in this currency — the
+    # group's in it, else its first of TRY, USD, EUR — which the catalogue shows
+    # in place of the list price. None without one.
+    erp_price: Decimal | None = None
+    erp_currency: CurrencyType | None = None
+    # How the catalogue shows the group's price: True only after VAT ("KDV
+    # dahil göster"), False only before it ("KDV hariç göster"), None as it
+    # always has.
+    vat_display: bool | None = None
+
+
 class PriceListItem(BaseModel):
     product_id: uuid.UUID
     code: str
     name: str
     image_url: str | None
     # One entry per requested group the product is sold to: a business group's
-    # in the currency it was entered in, retail's always in TRY.
-    prices: dict[SegmentType, CatalogPrice]
+    # in the currency it was entered in, retail's always in TRY. Only the
+    # requested groups: an account never receives another group's figures.
+    prices: dict[SegmentType, PriceListPrice]
 
 
 class SuggestedCategory(BaseModel):
