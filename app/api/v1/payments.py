@@ -213,7 +213,6 @@ async def paytr_callback(
             await order_lifecycle.mark_paid(db, order, now)
             # A card order is placed now that it is paid: "Siparişiniz alınmıştır".
             background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_PLACED)
-            background.add_task(order_sms.notify_staff, factory, order.id)
         else:
             # Paid after the order was released (it timed out or was cancelled):
             # the money is in, the stock is not held. A person has to decide.

@@ -3,11 +3,11 @@
 import re
 import uuid
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
@@ -16,7 +16,16 @@ from app.api.deps import get_current_admin_user, get_session_factory
 from app.core.database import get_db
 from app.models.catalog import Product, ProductVariant, VariantPrice
 from app.core.config import settings
-from app.models.order import PENDING_STATUSES, VOID_STATUSES, Carrier, Order, OrderItem, OrderStatus, ShippingMethod
+from app.models.order import (
+    PENDING_STATUSES,
+    VOID_STATUSES,
+    Carrier,
+    Order,
+    OrderItem,
+    OrderStatus,
+    PaymentMethod,
+    ShippingMethod,
+)
 from app.models.payment import PaymentTransaction
 from app.models.user import AddressKind, User
 from app.core.countries import TURKEY, country_name
@@ -103,6 +112,72 @@ async def order_status_counts(
         stmt = stmt.where(Order.shipping_method == shipping_method)
     counts = dict((await db.execute(stmt)).all())
     return {status: counts.get(status, 0) for status in OrderStatus}
+
+
+#: How far back a poll looks past its cursor: an order is stamped when its
+#: transaction starts, and may commit after a poll that ran in between.
+LATEST_OVERLAP = timedelta(minutes=2)
+LATEST_LIMIT = 20
+
+
+class PlacedOrder(BaseModel):
+    id: uuid.UUID
+    order_number: str
+    total_amount: Decimal
+    customer_name: str
+    placed_at: datetime
+
+
+class PlacedOrders(BaseModel):
+    #: The server's clock: the next poll's `since`.
+    now: datetime
+    orders: list[PlacedOrder]
+
+
+@router.get("/orders/latest", response_model=PlacedOrders)
+async def latest_orders(
+    since: AwareDatetime | None = Query(None),
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """The orders placed since `since`, oldest first, for the panel's new-order
+    chime. Placed as the customer's "Sipariş alındı" SMS is: at checkout for a
+    transfer or a quote, a card order once it is paid. Each poll looks
+    LATEST_OVERLAP further back, so an order may come twice: the panel keeps
+    the ids it has announced. Without `since`, none — only the clock to start
+    from, so opening the panel never chimes for old orders. Declared before
+    ``/orders/{order_id}``."""
+    now = datetime.now(timezone.utc)
+    if since is None:
+        return PlacedOrders(now=now, orders=[])
+    placed_at = case((Order.payment_method == PaymentMethod.CREDIT_CARD, Order.paid_at), else_=Order.created_at)
+    rows = (
+        await db.execute(
+            select(Order, User, placed_at.label("placed_at"))
+            .join(User, User.id == Order.user_id)
+            .where(placed_at > since - LATEST_OVERLAP)
+            .order_by(placed_at)
+            .limit(LATEST_LIMIT)
+        )
+    ).all()
+    return PlacedOrders(
+        now=now,
+        orders=[
+            PlacedOrder(
+                id=order.id,
+                order_number=order.order_number,
+                total_amount=order.total_amount,
+                customer_name=(
+                    user.full_name
+                    or order.invoice_company_title
+                    or (order.shipping_address or {}).get("full_name")
+                    or user.email
+                ),
+                placed_at=at,
+            )
+            for order, user, at in rows
+        ],
+    )
 
 
 async def _payment_failures(db: AsyncSession, orders: Sequence[Order]) -> dict[uuid.UUID, PaymentFailureRead]:

@@ -78,9 +78,6 @@ class Settings(BaseSettings):
     SMS_WEBHOOK_URL: str | None = None
     SMS_WEBHOOK_TOKEN: str | None = None
     SMS_TIMEOUT: int = 15
-    # The mobile that gets "Yeni Siparis Geldi!" for every order placed
-    # (app.services.order_sms.notify_staff): the store manager's. Blank: none.
-    ADMIN_ORDER_NOTIFICATION_PHONE: str = "05305443020"
     # Claude writes a product's or category's English and Arabic when it is
     # saved without them (app.services.auto_translate) — as drafts an admin
     # approves before they are indexed. Off without a key.

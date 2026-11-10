@@ -245,9 +245,6 @@ async def test_a_signed_success_marks_the_order_paid_once(
     # Placed now that it is paid: "Siparişiniz alınmıştır", once, repeats or not.
     texted = (await db_session.scalars(select(NotificationLog).where(NotificationLog.purpose == "order_placed"))).all()
     assert [log.status for log in texted if (log.meta or {}).get("order_id") == order["id"]] == ["sent"]
-    # And the store manager hears of it, once.
-    alerted = (await db_session.scalars(select(NotificationLog).where(NotificationLog.purpose == "order_alert"))).all()
-    assert [log.status for log in alerted if (log.meta or {}).get("order_id") == order["id"]] == ["sent"]
 
 
 async def test_a_bad_hash_is_refused_and_changes_nothing(
