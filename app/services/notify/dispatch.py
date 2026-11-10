@@ -21,7 +21,8 @@ def text_to_html(text: str) -> str:
     return "".join(f"<p>{html_lib.escape(p).replace(chr(10), '<br>')}</p>" for p in paragraphs)
 
 
-def _settle(log: NotificationLog, delivery: Delivery) -> None:
+def settle(log: NotificationLog, delivery: Delivery) -> None:
+    """A log row as its driver left it: sent (and when) or failed (and why)."""
     log.provider = delivery.provider
     log.status = SENT if delivery.ok else FAILED
     log.error = delivery.error
@@ -40,6 +41,7 @@ async def send_email(
     purpose: str,
     user_id: uuid.UUID | None = None,
     campaign_id: int | None = None,
+    headers: dict[str, str] | None = None,
 ) -> NotificationLog:
     """One e-mail, logged. The caller commits."""
     driver = email_driver()
@@ -49,7 +51,7 @@ async def send_email(
     )
     db.add(log)
     await db.flush()
-    _settle(log, await driver.send(to, subject, text, html or text_to_html(text)))
+    settle(log, await driver.send(to, subject, text, html or text_to_html(text), headers))
     return log
 
 
@@ -86,6 +88,6 @@ async def send_sms(
         await db.flush()
         delivery = await driver.send([n for n, _ in batch], text)
         for row in rows:
-            _settle(row, delivery)
+            settle(row, delivery)
         logs += rows
     return logs

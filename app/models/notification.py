@@ -36,6 +36,12 @@ class NotificationCampaign(Base):
     sms_segments: Mapped[int | None] = mapped_column(Integer)
     # queued → sending → done (or failed when nothing could be sent).
     status: Mapped[str] = mapped_column(String(12), nullable=False, default="queued")
+    # Typed-in addresses ("manual"), kept so an interrupted send can pick up
+    # where it stopped; an audience is worked out again instead.
+    manual_recipients: Mapped[list[str] | None] = mapped_column(JSONB)
+    # Touched as each batch is saved while it sends: a "sending" campaign whose
+    # heartbeat has gone quiet was cut off (a restart) and is resumed.
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     total: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     sent: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -92,4 +98,21 @@ class PasswordResetToken(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)
+
+
+class EmailOptOut(Base):
+    """An address that asked for no more campaign e-mail ("Abonelikten Çık").
+
+    A customer's own consent (`users.marketing_email_consent_at`) is cleared
+    as well, and is what counts for them: given again in "Hesabım", it holds.
+    This row is for addresses typed into a campaign, which have no account to
+    clear: they are left out of every typed-in list from now on.
+    """
+
+    __tablename__ = "email_opt_outs"
+
+    email: Mapped[str] = mapped_column(String(255), primary_key=True)  # lower-cased
+    # How it came: "link" (the footer / the page), "one_click" (the mail app's button).
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=_now)

@@ -12,7 +12,7 @@ from app.core.database import async_session
 from app.core.media_files import MediaFiles
 from app.core.media_rewrite import LocalMediaRewriteMiddleware
 from app.core.trailing_slash import StripTrailingSlashMiddleware
-from app.services import auto_translate
+from app.services import auto_translate, campaigns
 from app.services.order_tasks import cancel_expired_pending_orders
 from app.services.shipping.sync import sync_shipments
 
@@ -61,6 +61,14 @@ async def _run_shipment_sync() -> None:
             logger.exception("Shipment sync failed")
 
 
+async def _run_campaign_resume() -> None:
+    """Scheduled job: finish the e-mail campaigns a restart cut off."""
+    try:
+        await campaigns.resume_stale(async_session)
+    except Exception:
+        logger.exception("Campaign resume failed")
+
+
 async def _run_translation_sweep() -> None:
     """Scheduled job: English and Arabic drafts for what was saved without them."""
     try:
@@ -84,6 +92,7 @@ def build_scheduler() -> AsyncIOScheduler:
     scheduler = AsyncIOScheduler(job_defaults=JOB_DEFAULTS)
     scheduler.add_job(_run_sla_check, "interval", hours=1, id="sla_check")
     scheduler.add_job(_run_shipment_sync, "interval", hours=1, id="shipment_sync")
+    scheduler.add_job(_run_campaign_resume, "interval", minutes=5, id="campaign_resume")
     if auto_translate.enabled():
         scheduler.add_job(
             _run_translation_sweep,

@@ -9,7 +9,7 @@ being sent, so the notice can be read off the console in development.
 import asyncio
 import logging
 import smtplib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from email.utils import formataddr
 
@@ -24,6 +24,8 @@ class Mail:
     subject: str
     text: str
     html: str
+    # Extra headers (a campaign's List-Unsubscribe pair); none on a transactional mail.
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 def _build(mail: Mail) -> EmailMessage:
@@ -31,6 +33,8 @@ def _build(mail: Mail) -> EmailMessage:
     msg["Subject"] = mail.subject
     msg["From"] = formataddr((settings.MAIL_FROM_NAME, settings.MAIL_FROM))
     msg["To"] = mail.to
+    for name, value in mail.headers.items():
+        msg[name] = value
     msg.set_content(mail.text)
     msg.add_alternative(mail.html, subtype="html")
     return msg

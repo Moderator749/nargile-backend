@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     MAIL_FROM_NAME: str = "Nargile Malzemesi"
     SHOP_NAME: str = "Nargile Malzemesi"
     SHOP_URL: str = "https://nargilemalzemesi.com"
+    # Where a campaign e-mail's "Abonelikten Çık" goes: the storefront's own
+    # origin, for its page (/abonelikten-cik) and its API proxy (/api/backend),
+    # which the mail app's one-click button POSTs to. The canonical host
+    # exactly — the bare domain answers with a redirect, and a mail provider
+    # does not follow one with its POST.
+    UNSUBSCRIBE_BASE_URL: str = "https://www.nargilemalzemesi.com"
     SHOP_SUPPORT_PHONE: str = "0850 000 00 00"
     # The category every "Fırsat Ürünü" is listed under while its flag is on
     # (kept in step by the product sheet's save). No such category: no sync.

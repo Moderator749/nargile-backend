@@ -21,7 +21,7 @@ PRODUCT_SLUG_MAX = 255
 # here. An old address that is a live category's or brand's slug now
 # (/siseler, /oduman, /wd-hookah) is that page, not a redirect, and is not listed.
 STOREFRONT_PAGES = frozenset({
-    "en", "ar", "tr", "api", "_next", "_", "account", "admin", "bilgi", "blog", "cart", "catalog", "checkout",
+    "en", "ar", "tr", "api", "_next", "_", "abonelikten-cik", "account", "admin", "bilgi", "blog", "cart", "catalog", "checkout",
     "firsat-urunleri", "fiyat-katalogu", "images", "kargo-takip", "login", "magazalar", "marka", "onizleme", "orders",
     "product", "register", "sifre-yenile", "sifremi-unuttum", "sozlesmeler", "sss", "opengraph-image",
     "robots.txt", "sitemap.xml", "llms.txt", "favicon.ico", "icon.png", "apple-icon.png", "index.php",

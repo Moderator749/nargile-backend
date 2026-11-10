@@ -28,6 +28,7 @@ from app.api.v1.legal import router as legal_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.exchange_rates import router as exchange_rates_router
 from app.api.v1.payments import router as payments_router
+from app.api.v1.newsletter import router as newsletter_router
 
 api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(auth_router)
@@ -58,3 +59,4 @@ api_router.include_router(password_reset_router)
 api_router.include_router(admin_uploads_router)
 api_router.include_router(legal_router)
 api_router.include_router(settings_router)
+api_router.include_router(newsletter_router)

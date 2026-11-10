@@ -64,6 +64,7 @@ async def create_campaign(
         subject=payload.subject,
         body=payload.body,
         body_format=payload.body_format,
+        manual_recipients=payload.manual_recipients if payload.audience == "manual" else None,
         sms_segments=campaigns.segments_for(payload.channel, payload.body),
         total=len(targets),
         created_by=admin.id,
@@ -72,6 +73,29 @@ async def create_campaign(
     await db.commit()
     await db.refresh(campaign)
     background.add_task(campaigns.run_campaign, factory, campaign.id, targets)
+    return campaign
+
+
+@router.post("/campaigns/{campaign_id}/resume", response_model=CampaignRead, status_code=status.HTTP_202_ACCEPTED)
+async def resume_campaign(
+    campaign_id: int,
+    background: BackgroundTasks,
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+    factory: async_sessionmaker = Depends(get_session_factory),
+):
+    """"Kalanlara gönder": an e-mail campaign sent again to whoever it has not
+    reached — those that failed (a provider's daily cap, an outage) and anyone
+    who has since joined its audience; never to an address it already reached."""
+    campaign = await db.get(NotificationCampaign, campaign_id)
+    if campaign is None:
+        raise HTTPException(status_code=404, detail="Kampanya bulunamadı")
+    if campaign.channel != "email":
+        raise HTTPException(status_code=422, detail="Yalnızca e-posta kampanyaları kaldığı yerden sürdürülebilir.")
+    if not await campaigns.claim(db, campaign_id):
+        raise HTTPException(status_code=409, detail="Bu kampanya şu anda gönderiliyor.")
+    await db.refresh(campaign)
+    background.add_task(campaigns.run_campaign, factory, campaign.id)
     return campaign
 
 

@@ -33,7 +33,7 @@ class Delivery:
 class MockEmail:
     name = "mock"
 
-    async def send(self, to: str, subject: str, text: str, html: str) -> Delivery:
+    async def send(self, to: str, subject: str, text: str, html: str, headers: dict[str, str] | None = None) -> Delivery:
         logger.info("E-MAIL [mock, gönderilmedi] To: %s | Subject: %s\n%s", to, subject, text)
         return Delivery(True, self.name)
 
@@ -41,9 +41,10 @@ class MockEmail:
 class SmtpEmail:
     name = "smtp"
 
-    async def send(self, to: str, subject: str, text: str, html: str) -> Delivery:
+    async def send(self, to: str, subject: str, text: str, html: str, headers: dict[str, str] | None = None) -> Delivery:
         try:
-            await asyncio.to_thread(mailer._send_blocking, mailer.Mail(to=to, subject=subject, text=text, html=html))
+            mail = mailer.Mail(to=to, subject=subject, text=text, html=html, headers=headers or {})
+            await asyncio.to_thread(mailer._send_blocking, mail)
             return Delivery(True, self.name)
         except Exception as exc:  # noqa: BLE001 — any SMTP failure is a failed delivery
             logger.warning("SMTP to %s failed: %s", to, exc)
@@ -53,25 +54,101 @@ class SmtpEmail:
 class ResendEmail:
     name = "resend"
 
-    async def send(self, to: str, subject: str, text: str, html: str) -> Delivery:
+    async def send(self, to: str, subject: str, text: str, html: str, headers: dict[str, str] | None = None) -> Delivery:
         try:
             async with httpx.AsyncClient(timeout=settings.SMTP_TIMEOUT) as client:
                 resp = await client.post(
                     "https://api.resend.com/emails",
                     headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}"},
-                    json={
-                        "from": f"{settings.MAIL_FROM_NAME} <{settings.MAIL_FROM}>",
-                        "to": [to],
-                        "subject": subject,
-                        "text": text,
-                        "html": html,
-                    },
+                    json=resend_message(to, subject, text, html, headers),
                 )
             if resp.status_code >= 300:
                 return Delivery(False, self.name, error=f"HTTP {resp.status_code}: {resp.text[:300]}")
             return Delivery(True, self.name, ref=str(resp.json().get("id") or "") or None)
         except httpx.HTTPError as exc:
             return Delivery(False, self.name, error=f"{type(exc).__name__}: {exc}"[:500])
+
+
+def resend_message(to: str, subject: str, text: str, html: str, headers: dict[str, str] | None = None) -> dict:
+    """One message as Resend's API takes it, alone or in a batch."""
+    message = {
+        "from": f"{settings.MAIL_FROM_NAME} <{settings.MAIL_FROM}>",
+        "to": [to],
+        "subject": subject,
+        "text": text,
+        "html": html,
+    }
+    if headers:
+        message["headers"] = headers
+    return message
+
+
+RESEND_BATCH_URL = "https://api.resend.com/emails/batch"
+#: Messages per batch call: Resend's own limit.
+RESEND_BATCH_MAX = 100
+#: A batch refused for the rate (429) or by Resend's side (5xx, a dropped
+#: connection) is tried again this many times, waiting longer each time.
+RESEND_RETRIES = 4
+#: Seconds before the first retry, doubling after; a Retry-After wins.
+RESEND_BACKOFF = 2.0
+RESEND_TIMEOUT = 30
+
+
+async def _resend_post(url: str, *, headers: dict, json: list) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=RESEND_TIMEOUT) as client:
+        return await client.post(url, headers=headers, json=json)
+
+
+def _retry_after(resp: httpx.Response | None, attempt: int) -> float:
+    try:
+        return max(0.0, float(resp.headers["retry-after"]))  # type: ignore[union-attr]
+    except (AttributeError, KeyError, ValueError):
+        return RESEND_BACKOFF * 2**attempt
+
+
+async def resend_batch(key: str, messages: list[dict], idempotency_key: str) -> list[Delivery]:
+    """Up to RESEND_BATCH_MAX messages in one call to Resend's batch endpoint,
+    a Delivery for each, in order. Resend takes the batch whole or not at all.
+
+    The idempotency key makes a repeat harmless: a batch sent again with the
+    same key (a retry here, or a resumed campaign re-sending the batch it was
+    cut off in) is not delivered twice by Resend within 24 hours.
+    """
+    error = "not sent"
+    for attempt in range(RESEND_RETRIES + 1):
+        resp = None
+        try:
+            resp = await _resend_post(
+                RESEND_BATCH_URL,
+                headers={"Authorization": f"Bearer {key}", "Idempotency-Key": idempotency_key},
+                json=messages,
+            )
+        except httpx.HTTPError as exc:
+            error = f"{type(exc).__name__}: {exc}"[:500]
+        else:
+            if resp.status_code < 300:
+                data = resp.json().get("data") or []
+                refs = [str(item.get("id") or "") or None for item in data if isinstance(item, dict)]
+                return [Delivery(True, "resend", ref=refs[i] if i < len(refs) else None) for i in range(len(messages))]
+            error = f"HTTP {resp.status_code}: {resp.text[:300]}"
+            if resp.status_code != 429 and resp.status_code < 500:
+                break  # the batch itself was refused: sending it again changes nothing
+        if attempt < RESEND_RETRIES:
+            logger.warning("Resend batch: %s; trying again (%d/%d)", error, attempt + 1, RESEND_RETRIES)
+            await asyncio.sleep(_retry_after(resp, attempt))
+    return [Delivery(False, "resend", error=error) for _ in messages]
+
+
+def resend_api_key() -> str | None:
+    """A key for Resend's API: RESEND_API_KEY, else the SMTP password when the
+    SMTP server is Resend's own — over SMTP, Resend takes an API key as the
+    password, so a shop sending through smtp.resend.com already has one."""
+    if settings.RESEND_API_KEY:
+        return settings.RESEND_API_KEY
+    host = (settings.SMTP_HOST or "").lower()
+    if (host == "resend.com" or host.endswith(".resend.com")) and settings.SMTP_PASSWORD:
+        return settings.SMTP_PASSWORD
+    return None
 
 
 def email_driver():
