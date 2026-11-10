@@ -137,6 +137,7 @@ class BannerPresetRead(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     is_scheduled: bool = False
+    show_countdown: bool = False
     sort_order: int = 0
     updated_at: datetime | None = None
 
@@ -152,6 +153,8 @@ class BannerPresetWrite(BaseModel):
     starts_at: AwareDatetime | None = None
     ends_at: AwareDatetime | None = None
     is_scheduled: bool = False
+    # Counts down to `ends_at`, so it needs one (see _consistent).
+    show_countdown: bool = False
     sort_order: int = Field(default=0, ge=0, le=10_000)
 
     @field_validator("background_style")
@@ -174,4 +177,6 @@ class BannerPresetWrite(BaseModel):
             raise ValueError("The end must come after the start")
         if self.is_scheduled and not (self.starts_at and self.ends_at):
             raise ValueError("Automatic publishing needs a start and an end")
+        if self.show_countdown and not self.ends_at:
+            raise ValueError("A countdown needs an end")
         return self

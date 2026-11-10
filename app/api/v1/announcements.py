@@ -28,7 +28,8 @@ async def get_active_announcement(db: AsyncSession = Depends(get_db)):
 
     A scheduled "Hazır metin" whose range covers now comes first — the latest
     to start, when two overlap — in its own colours when it has them (the
-    banner's look otherwise), counting down to nothing and hiding at its end.
+    banner's look otherwise), counting down to its end when it says so (a
+    sale; never a memorial day) and hiding there.
     Otherwise the banner as typed, while it is live.
     """
     now = datetime.now(timezone.utc)
@@ -56,7 +57,7 @@ async def get_active_announcement(db: AsyncSession = Depends(get_db)):
                 "message": preset.message,
                 "is_active": True,
                 "expires_at": preset.ends_at,
-                "show_countdown": False,
+                "show_countdown": preset.show_countdown,
                 "icon_type": preset.icon_type,
                 "updated_at": preset.updated_at,
                 **own,

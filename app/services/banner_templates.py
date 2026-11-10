@@ -2,14 +2,18 @@
 
 The Turkish national days, the two bayrams and the shop calendar's own days,
 each with its range (Europe/Istanbul, the whole day unless said otherwise),
-its text and its look. Only 10 Kasım publishes by itself; the rest wait, off,
-for the admin to switch them on.
+its text and its look — the next one to come, so 2026's last days and 2027's
+first. Only 10 Kasım publishes by itself; the rest wait, off, for the admin to
+switch them on. The sales days count down to their end; a memorial day never
+does.
 
 `apply` writes them idempotently, by title. A preset seeded before titles
 existed (a8d2f6b31c74) is recognised by its original text and adopted, and on
 a preset already there only what is empty is filled in — the admin's text,
 dates and switch stay as they are — except for 10 Kasım, whose solemn look,
-day and automatic publishing are made sure of.
+day and automatic publishing are made sure of. A template that `replaces`
+another (Hayırlı Cumalar for Efsane Cuma) takes that preset over whole: its
+title, text, look, range and countdown, the switch kept.
 """
 
 from dataclasses import dataclass
@@ -27,6 +31,7 @@ BLACK, WHITE = "#000000", "#ffffff"
 # Night colours for the commemorations; the bayrams in the palace's green and gold.
 MOURNING = "#111827"
 SULTAN_GREEN, SULTAN_GOLD = "#14532d", "#fde68a"
+SPRING_GREEN, SCHOOL_BLUE, ROSE, PLUM = "#166534", "#1e3a8a", "#9d174d", "#6b21a8"
 
 
 def _day(date: str, last: str | None = None) -> tuple[datetime, datetime]:
@@ -48,6 +53,10 @@ class Template:
     scheduled: bool = False
     # Kept as it is on an existing preset: look, range and switch.
     enforced: bool = False
+    # The banner counts down to the range's end (a sale).
+    countdown: bool = False
+    # The title of a preset this one takes the place of, rewritten whole.
+    replaces: str | None = None
     # The text a8d2f6b31c74 seeded it with, before presets had titles.
     seeded_as: str | None = None
 
@@ -65,11 +74,38 @@ TEMPLATES: tuple[Template, ...] = (
         seeded_as="10 Kasım: Ulu Önder Mustafa Kemal Atatürk'ü saygı, sevgi ve özlemle anıyoruz.",
     ),
     Template(
-        "Efsane Cuma (Black Friday)",
-        "Efsane Cuma Sultan Nargile'de: seçili nargile takımları ve aksesuarlarda kaçırılmayacak fırsatlar!",
+        "11.11 Alışveriş Festivali",
+        "11.11 Alışveriş Festivali Sultan Nargile'de: seçili nargile takımlarında bugüne özel fırsatlar!",
         "campaign",
-        _day("2026-11-27", "2026-11-30"),
-        "dark_luxury",
+        _day("2026-11-11"),
+        "festive_red",
+        countdown=True,
+    ),
+    Template(
+        "24 Kasım Öğretmenler Günü",
+        "24 Kasım Öğretmenler Günü Kutlu Olsun! Emeği geçen tüm öğretmenlerimize teşekkürler.",
+        "celebration",
+        _day("2026-11-24"),
+        SCHOOL_BLUE,
+        WHITE,
+    ),
+    Template(
+        "Hayırlı Cumalar",
+        "Hayırlı Cumalar! Kasım'ın son cumasına özel fırsatlar Sultan Nargile'de!",
+        "campaign",
+        _day("2026-11-27"),
+        SULTAN_GREEN,
+        SULTAN_GOLD,
+        countdown=True,
+        replaces="Efsane Cuma (Black Friday)",
+    ),
+    Template(
+        "22 Aralık Sarıkamış Şehitlerini Anma Günü",
+        "Sarıkamış Harekâtı'nda donarak şehit düşen kahraman askerlerimizi rahmet ve minnetle anıyoruz.",
+        "memorial",
+        _day("2026-12-22"),
+        MOURNING,
+        WHITE,
     ),
     Template(
         "Yılbaşı",
@@ -85,6 +121,22 @@ TEMPLATES: tuple[Template, ...] = (
         "campaign",
         _day("2027-02-10", "2027-02-14"),
         "#9f1239",
+        countdown=True,
+    ),
+    Template(
+        "8 Mart Dünya Kadınlar Günü",
+        "8 Mart Dünya Kadınlar Günü Kutlu Olsun!",
+        "celebration",
+        _day("2027-03-08"),
+        PLUM,
+        WHITE,
+    ),
+    Template(
+        "12 Mart İstiklal Marşı'nın Kabulü",
+        "İstiklal Marşı'mızın kabulünün yıl dönümünde milli şairimiz Mehmet Akif Ersoy'u rahmet ve saygıyla anıyoruz.",
+        "memorial",
+        _day("2027-03-12"),
+        "crimson_gradient",
     ),
     Template(
         "Ramazan Bayramı",
@@ -104,12 +156,43 @@ TEMPLATES: tuple[Template, ...] = (
         WHITE,
     ),
     Template(
+        "21 Mart Nevruz Bayramı",
+        "Baharın müjdecisi Nevruz Bayramınız Kutlu Olsun!",
+        "celebration",
+        _day("2027-03-21"),
+        SPRING_GREEN,
+        WHITE,
+    ),
+    Template(
         "23 Nisan Ulusal Egemenlik ve Çocuk Bayramı",
         "23 Nisan Ulusal Egemenlik ve Çocuk Bayramı Kutlu Olsun!",
         "memorial",
         _day("2027-04-23"),
         "crimson_gradient",
         seeded_as="23 Nisan Ulusal Egemenlik ve Çocuk Bayramı Kutlu Olsun!",
+    ),
+    Template(
+        "29 Nisan Kut'ül Amare Zaferi",
+        "Kut'ül Amare Zaferi'nin yıl dönümünde kahraman şehitlerimizi rahmet ve minnetle anıyoruz.",
+        "memorial",
+        _day("2027-04-29"),
+        "crimson_gradient",
+    ),
+    Template(
+        "1 Mayıs Emek ve Dayanışma Günü",
+        "1 Mayıs Emek ve Dayanışma Günü Kutlu Olsun!",
+        "celebration",
+        _day("2027-05-01"),
+        "dark_luxury",
+    ),
+    Template(
+        "Anneler Günü",
+        "Anneler Günü'ne özel: annenize yakışan hediyelik nargile takımları Sultan Nargile'de!",
+        "campaign",
+        _day("2027-05-03", "2027-05-09"),
+        ROSE,
+        WHITE,
+        countdown=True,
     ),
     Template(
         "Kurban Bayramı",
@@ -129,11 +212,19 @@ TEMPLATES: tuple[Template, ...] = (
         seeded_as="19 Mayıs Atatürk'ü Anma, Gençlik ve Spor Bayramı Kutlu Olsun!",
     ),
     Template(
+        "29 Mayıs İstanbul'un Fethi",
+        "İstanbul'un Fethi'nin yıl dönümü kutlu olsun! Fatih Sultan Mehmet Han'ı ve şehitlerimizi rahmetle anıyoruz.",
+        "memorial",
+        _day("2027-05-29"),
+        "crimson_gradient",
+    ),
+    Template(
         "Babalar Günü",
         "Babalar Günü'ne özel: babanıza yakışan nargile takımları ve aksesuarlar Sultan Nargile'de.",
         "campaign",
         _day("2027-06-14", "2027-06-20"),
         "#1e293b",
+        countdown=True,
     ),
     Template(
         "15 Temmuz Demokrasi ve Milli Birlik Günü",
@@ -142,6 +233,13 @@ TEMPLATES: tuple[Template, ...] = (
         _day("2027-07-15"),
         MOURNING,
         WHITE,
+    ),
+    Template(
+        "26 Ağustos Malazgirt Zaferi",
+        "Anadolu'nun kapılarını açan Malazgirt Zaferi'nin yıl dönümü kutlu olsun!",
+        "memorial",
+        _day("2027-08-26"),
+        "crimson_gradient",
     ),
     Template(
         "30 Ağustos Zafer Bayramı",
@@ -177,6 +275,9 @@ async def apply(db: AsyncSession) -> list[Change]:
         row = next((r for r in rows if r.title == t.title), None) or next(
             (r for r in rows if r.title is None and t.seeded_as and r.message == t.seeded_as), None
         )
+        replaced = row is None and t.replaces is not None
+        if replaced:
+            row = next((r for r in rows if r.title == t.replaces), None)
         if row is None:
             row = BannerPreset(
                 title=t.title,
@@ -187,6 +288,7 @@ async def apply(db: AsyncSession) -> list[Change]:
                 background_style=t.background,
                 text_color=t.text,
                 is_scheduled=t.scheduled,
+                show_countdown=t.countdown,
                 sort_order=next_order,
             )
             next_order += 1
@@ -196,6 +298,17 @@ async def apply(db: AsyncSession) -> list[Change]:
             continue
 
         wanted: dict = {}
+        if replaced:
+            wanted = {
+                "title": t.title,
+                "message": t.message,
+                "icon_type": t.icon,
+                "background_style": t.background,
+                "text_color": t.text,
+                "starts_at": t.days[0],
+                "ends_at": t.days[1],
+                "show_countdown": t.countdown,
+            }
         if row.title is None:
             wanted["title"] = t.title
         if t.enforced or (row.background_style is None and row.text_color is None):

@@ -108,6 +108,18 @@ async def test_a_scheduled_preset_takes_the_banner_over_within_its_range(client:
     assert (await client.get(ACTIVE)).json()["message"] == "Elle yazılan duyuru"
 
 
+async def test_a_sales_preset_counts_down_to_its_end(client: AsyncClient, admin_user: User):
+    """"Geri sayım" on: the banner ticks to the preset's end; off (a memorial day), no timer."""
+    sale = await _preset(client, admin_user, "11.11", -1, 5, show_countdown=True)
+    assert sale["show_countdown"] is True
+    shown = (await client.get(ACTIVE)).json()
+    assert (shown["show_countdown"], shown["expires_at"]) == (True, sale["ends_at"])
+
+    h = auth_header(admin_user)
+    await client.put(f"{URL}/{sale['id']}", headers=h, json={**sale, "show_countdown": False})
+    assert (await client.get(ACTIVE)).json()["show_countdown"] is False
+
+
 @pytest.mark.parametrize(("starts", "ends"), [(1, 3), (-3, -1)])
 async def test_a_preset_outside_its_range_is_not_shown(client: AsyncClient, admin_user: User, starts: int, ends: int):
     await _banner(client, admin_user, "Elle yazılan duyuru", active=False)
@@ -162,6 +174,7 @@ async def test_the_banner_falls_back_to_the_default_when_a_preset_ends(client: A
         {"message": "x", "text_color": "white"},
         {"message": "x", "text_color": "#fffffff"},
         {"message": "x", "title": "t" * 81},
+        {"message": "x", "show_countdown": True, "starts_at": _at(1)},                      # a countdown to nothing
     ],
 )
 async def test_impossible_presets_are_refused(client: AsyncClient, admin_user: User, body: dict):
@@ -258,5 +271,32 @@ async def test_the_templates_are_written_once(db_session: AsyncSession):
         others = (await db_session.scalars(select(BannerPreset).where(BannerPreset.title.is_not(None)))).all()
         assert [p.title for p in others if p.is_scheduled] == ["10 Kasım Atatürk'ü Anma Günü"]
         assert all(len(p.message) <= 200 and p.starts_at < p.ends_at for p in others)
+        # The sales days count down; no memorial day does.
+        counting = {p.title for p in others if p.show_countdown}
+        assert counting == {"11.11 Alışveriş Festivali", "Hayırlı Cumalar", "Sevgililer Günü", "Anneler Günü", "Babalar Günü"}
+        assert not any(p.show_countdown for p in others if p.icon_type == "memorial")
+    finally:
+        await db_session.rollback()
+
+
+async def test_hayirli_cumalar_takes_efsane_cumas_place(db_session: AsyncSession):
+    """The Black Friday preset already there is rewritten as Hayırlı Cumalar, not
+    doubled; its switch stays the admin's. Rolled back afterwards."""
+    from sqlalchemy import select
+
+    from app.services import banner_templates
+
+    try:
+        await db_session.execute(delete(BannerPreset).where(BannerPreset.title.in_(["Hayırlı Cumalar", "Efsane Cuma (Black Friday)"])))
+        old = BannerPreset(title="Efsane Cuma (Black Friday)", message="Efsane Cuma!", icon_type="campaign", is_scheduled=True)
+        db_session.add(old)
+        await db_session.flush()
+
+        await banner_templates.apply(db_session)
+        rows = (await db_session.scalars(select(BannerPreset).where(BannerPreset.title.in_(["Hayırlı Cumalar", "Efsane Cuma (Black Friday)"])))).all()
+        assert [r.id for r in rows] == [old.id]
+        assert (old.title, old.show_countdown, old.is_scheduled) == ("Hayırlı Cumalar", True, True)
+        assert old.message.startswith("Hayırlı Cumalar!")
+        assert old.starts_at.astimezone(banner_templates.TR).date().isoformat() == "2026-11-27"
     finally:
         await db_session.rollback()

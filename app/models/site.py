@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, false
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -119,6 +119,9 @@ class BannerPreset(Base):
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # "Otomatik yayınla": on, the range publishes and hides it by itself.
     is_scheduled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # "Geri sayım": while live, the banner counts down to `ends_at` — for a
+    # sale; off for a memorial day, which shows its text alone.
+    show_countdown: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
