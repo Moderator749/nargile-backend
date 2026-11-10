@@ -116,8 +116,8 @@ def test_the_applied_percent_goes_on_each_classs_erp_price_else_on_the_calculate
         ("1322.50", None, "1388.63"),
     ]
     # Mağaza Fiyatı and retail never take the rate: the calculated 1745.70, and
-    # retail's ERP 2000 (before VAT) plus only its 20% VAT.
-    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("1745.70", "2400.00")
+    # retail's ERP 2000 — a shelf price, after VAT — as it is.
+    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("1745.70", "2000.00")
     # The chain runs on calculated values only: retail is still 2094.84.
     assert out["retail"]["computed"] == "2094.84"
     # A typed uygulanacak fiyat still wins over all of it.
@@ -137,7 +137,8 @@ def test_the_applied_percent_goes_on_each_classs_erp_price_else_on_the_calculate
 def test_the_erp_price_is_in_the_sheets_own_basis():
     """Cetvel 2's blue row is after VAT, rounded from the orange row: the green
     row is it plus the rate, no VAT added (115 + 5% = 120.75). Cetvel 1's is
-    before VAT: its classes take it as it is, retail adds VAT (595 → 714)."""
+    before VAT for the classes, which take it as it is; Mağaza Fiyatı's and
+    retail's are shelf prices, after VAT, taken as typed (595 → 595)."""
     columns = [
         {"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "15", "erp_price": "115"},
         {"label": "Toptan Fiyatı", "segment": "WHOLESALE", "percent": "0", "erp_price": "115"},
@@ -161,7 +162,7 @@ def test_the_erp_price_is_in_the_sheets_own_basis():
     }
 
     # Cetvel 1: the classes take the ERP fiyatı as it is (then the rate);
-    # retail and Mağaza Fiyatı are after VAT: 595 → 714, 600 → 720.
+    # retail's and Mağaza Fiyatı's are after VAT already: no VAT added.
     excl = {
         **sheet,
         "vat_mode": "EXCL",
@@ -171,11 +172,32 @@ def test_the_erp_price_is_in_the_sheets_own_basis():
     }
     out = compute_sheet(PricingSheetIn.model_validate(excl))
     assert [c["price"] for c in out["columns"][:3]] == ["509.25", "509.25", "556.50"]
-    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("720.00", "714.00")
+    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("600.00", "595.00")
+    # The product keeps ERP prices before VAT: retail's 595 / 1.20 = 495.83.
     assert erp_by_group(PricingSheetIn.model_validate(excl)) == {
         SegmentType.DEALER: Decimal("485.00"), SegmentType.WHOLESALE: Decimal("485.00"),
-        SegmentType.CAFE: Decimal("530.00"), SegmentType.RETAIL: Decimal("595.00"),
+        SegmentType.CAFE: Decimal("530.00"), SegmentType.RETAIL: Decimal("495.83"),
     }
+
+
+def test_cetvel_1_shelf_erp_prices_apply_as_typed_without_vat():
+    """Mağaza Fiyatı 250 and perakende 275 typed on Cetvel 1 are what applies:
+    250.00 and 275.00, not 300.00 and 330.00. Left empty, both come from the
+    chain with VAT added, as before."""
+    extras = [{"label": "Mağaza Fiyatı", "percent": "10"}]
+    retail = {"percent": "20", "vat_rate": "20"}
+    blank = compute_sheet(PricingSheetIn.model_validate(_sheet(vat_mode="EXCL", cost="100", columns=[], extras=extras, retail=retail)))
+    # 100 + 10% = 110, + 20% VAT = 132; retail 110 + 20% = 132, + 20% VAT = 158.40.
+    assert (blank["extras"][0]["price"], blank["retail"]["price"]) == ("132.00", "158.40")
+
+    typed = _sheet(
+        vat_mode="EXCL", cost="100", columns=[], applied_percent="5",
+        extras=[{**extras[0], "erp_price": "250"}], retail={**retail, "erp_price": "275"},
+    )
+    out = compute_sheet(PricingSheetIn.model_validate(typed))
+    assert (out["extras"][0]["price"], out["retail"]["price"]) == ("250.00", "275.00")
+    # The chain under them is unchanged.
+    assert (out["extras"][0]["computed"], out["retail"]["computed"]) == ("132.00", "158.40")
 
 
 @pytest.mark.parametrize(

@@ -23,13 +23,14 @@ extra's before-VAT value plus its percent, then VAT — so VAT is added once.
 They are for the admin's reference only: no customer group has such a price,
 so applying a sheet reports them as not written.
 
-The ERP fiyatı is typed in the sheet's own basis. On Cetvel 1 (a cost before
-VAT) it is before VAT in every column: the classes take it as it is, retail
-and the extras — after VAT — add VAT first (595 at 20% is 714). On Cetvel 2
-(a cost after VAT) it is after VAT, rounded from the orange row: every column
-takes it as it is, the classes plus the rate (115 + 5% = 120.75). The
-product's ERP prices are before VAT, so Cetvel 2's lose VAT on the way there
-(`erp_by_group`: 115 at 20% is 95.83).
+The ERP fiyatı is typed in its column's own basis, and every column takes it
+as it is — no VAT is ever added to it. The classes' is the sheet's basis:
+before VAT on Cetvel 1 (a cost before VAT), after VAT on Cetvel 2 (rounded
+from the orange row), the classes then adding the rate (115 + 5% = 120.75).
+Mağaza Fiyatı and retail are shelf prices, after VAT on both sheets, and so
+is their ERP fiyatı: 250 typed is 250.00 to apply, never 300. The product's
+ERP prices are before VAT, so whatever was typed after VAT loses VAT on the
+way there (`erp_by_group`: 115 at 20% is 95.83).
 
 The uygulanacak oran is added half a kuruş up, as the panel shows it.
 
@@ -57,13 +58,11 @@ def _step(previous: Decimal, percent: Decimal) -> Decimal:
     return previous * (1 + percent / 100)
 
 
-def _priced(
-    computed: Decimal, erp_price: Decimal | None, desired: Decimal | None, applied: Decimal | None, erp_vat: Decimal = Decimal(1)
-) -> dict:
+def _priced(computed: Decimal, erp_price: Decimal | None, desired: Decimal | None, applied: Decimal | None) -> dict:
     """A column's figures below its percent: calculated, the ERP base, the typed price, and the price it sends.
 
-    `erp_vat` brings the ERP fiyatı to the column's own basis: 1 + VAT on Cetvel 1's retail and extras."""
-    base = erp_price * erp_vat if erp_price is not None else computed
+    The ERP fiyatı is in the column's own basis already, and taken as it is."""
+    base = erp_price if erp_price is not None else computed
     if applied:
         # Half a kuruş up, as the panel shows it (1322.50 + 5% = 1388.63).
         auto = _step(base, applied).quantize(CENT, rounding=ROUND_HALF_UP)
@@ -81,9 +80,6 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
     """The worksheet with every column's calculated and final price, as stored."""
     previous = sheet.cost
     r = sheet.retail
-    # The ERP fiyatı is in the sheet's basis: on Cetvel 1 before VAT, so retail
-    # and the extras (after VAT) add it; on Cetvel 2 after VAT already.
-    shelf_erp_vat = 1 + r.vat_rate / 100 if sheet.vat_mode == "EXCL" else Decimal(1)
     columns = []
     for col in sheet.columns:
         computed = _step(previous, col.percent)
@@ -105,13 +101,15 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "percent": str(extra.percent),
             "vat_rate": str(r.vat_rate),
             "before_vat": str(extra_before.quantize(CENT)),
-            # The rate is the classes' only: an extra's price is its base.
-            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None, shelf_erp_vat),
+            # The rate is the classes' only: an extra's price is its base. Its
+            # ERP fiyatı is a shelf price, after VAT: taken as typed.
+            **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None),
         })
         previous = extra_before  # retail builds on it, before VAT
 
     before_vat = _step(previous, r.percent)
-    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None, shelf_erp_vat)  # retail never takes the rate
+    # Retail never takes the rate, and its ERP fiyatı is after VAT: as typed.
+    retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None)
     retail_price = Decimal(retail["price"])
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
     try_price = (retail_price * rate).quantize(CENT) if rate else None
@@ -166,18 +164,20 @@ def erp_by_group(sheet: PricingSheetIn) -> dict[SegmentType, Decimal | None]:
     product keeps it; None for a group the sheet prices without one. A step
     with no group is left out.
 
-    Cetvel 1's blue row is before VAT already, retail's too: 485 typed is 485.
-    Cetvel 2's is after VAT, every column: 115 typed at 20% VAT is 95.83."""
-    factor = 1 + sheet.retail.vat_rate / 100 if sheet.vat_mode == "INCL" else Decimal(1)
+    The classes' blue row is in the sheet's basis: on Cetvel 1 before VAT
+    already (485 typed is 485), on Cetvel 2 after VAT (115 at 20% is 95.83).
+    Retail's is after VAT on both (240 typed at 20% is 200)."""
+    vat = 1 + sheet.retail.vat_rate / 100
 
-    def before_vat(price: Decimal | None) -> Decimal | None:
+    def before_vat(price: Decimal | None, factor: Decimal) -> Decimal | None:
         return None if price is None else (price / factor).quantize(CENT, rounding=ROUND_HALF_UP)
 
+    classes = vat if sheet.vat_mode == "INCL" else Decimal(1)
     erp: dict[SegmentType, Decimal | None] = {}
     for col in sheet.columns:
         if col.segment is not None:
-            erp[col.segment] = before_vat(col.erp_price)
-    erp[SegmentType.RETAIL] = before_vat(sheet.retail.erp_price)
+            erp[col.segment] = before_vat(col.erp_price, classes)
+    erp[SegmentType.RETAIL] = before_vat(sheet.retail.erp_price, vat)
     return erp
 
 
