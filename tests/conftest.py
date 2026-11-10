@@ -35,6 +35,8 @@ settings.PAYTR_MERCHANT_ID = "100000"
 settings.PAYTR_MERCHANT_KEY = "test-merchant-key"
 settings.PAYTR_MERCHANT_SALT = "test-merchant-salt"
 settings.PAYTR_TEST_MODE = True
+# The store manager's order alert goes to a stand-in mobile, never the real one.
+settings.ADMIN_ORDER_NOTIFICATION_PHONE = "0532 999 99 99"
 # Never Yurtiçi's real accounts, whatever .env holds: the suite runs as an
 # unconfigured shop, and the tests that ship through the web service use a
 # stand-in provider (tests/test_shipping.py).

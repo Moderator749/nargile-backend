@@ -215,6 +215,7 @@ async def checkout(
     # placed once PayTR reports it paid (payments.paytr_callback).
     if order.payment_method != PaymentMethod.CREDIT_CARD:
         background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_PLACED)
+        background.add_task(order_sms.notify_staff, factory, order.id)
     return order
 
 

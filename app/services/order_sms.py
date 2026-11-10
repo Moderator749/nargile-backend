@@ -1,6 +1,7 @@
 """The customer's SMS about their order: "Sipariş alındı" once it is placed,
 "Kargoya verildi" once it leaves. Texts and switches are "SMS Ayarları"
-(app.services.sms_settings).
+(app.services.sms_settings). And the shop's own: "Yeni Siparis Geldi!" to the
+store manager (ADMIN_ORDER_NOTIFICATION_PHONE) for every order placed.
 
 Sent after the request has answered, in a session of its own, so a slow or
 failing gateway never holds up a checkout or a dispatch, and never raises:
@@ -12,9 +13,14 @@ whose payment then fails.
 
 import logging
 import uuid
+from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
+from sqlalchemy.orm import selectinload
 
+from app.core.config import settings
+from app.models.notification import SENT
 from app.models.order import Carrier, Order
 from app.models.user import User
 from app.services import sms_settings
@@ -24,6 +30,11 @@ from app.services.notify.phone import normalize_tr_mobile
 logger = logging.getLogger("notify")
 
 CARRIER_NAMES = {Carrier.YURTICI: "Yurtiçi Kargo", Carrier.OWN: "Mağaza aracı"}
+
+#: The notification log's purpose for the store manager's alert (SMS & Mail › Geçmiş).
+STAFF_ALERT = "order_alert"
+#: An account without a segment buys at retail prices.
+NO_SEGMENT = "Perakende"
 
 
 def _phone(order: Order, user: User) -> str | None:
@@ -76,3 +87,53 @@ async def notify(factory: async_sessionmaker, order_id: uuid.UUID, event: str) -
             await db.commit()
     except Exception:  # noqa: BLE001 — an SMS must never surface as an order error
         logger.exception("%s SMS for order %s failed", event, order_id)
+
+
+def _tl(amount: Decimal) -> str:
+    """1234.5 → '1.234,50', as a Turkish price reads."""
+    return f"{amount:,.2f}".replace(",", "_").replace(".", ",").replace("_", ".")
+
+
+def staff_text(order: Order, user: User) -> str:
+    """"Yeni Siparis Geldi!" with the order's number, total, customer and line count."""
+    name = (user.full_name or (order.shipping_address or {}).get("full_name") or user.email or "").strip()
+    group = user.segment.label if user.segment else NO_SEGMENT
+    return (
+        "Yeni Siparis Geldi!\n"
+        f"Siparis No: #{order.order_number}\n"
+        f"Tutar: {_tl(order.total_amount)} TL\n"
+        f"Musteri: {name} ({group})\n"
+        f"Urun: {len(order.items)} kalem"
+    )
+
+
+async def notify_staff(factory: async_sessionmaker, order_id: uuid.UUID) -> None:
+    """Text the store manager that an order has been placed. Called where the
+    customer's "Sipariş alındı" is, so at the same moment; never raises."""
+    number = normalize_tr_mobile(settings.ADMIN_ORDER_NOTIFICATION_PHONE)
+    if number is None:
+        if settings.ADMIN_ORDER_NOTIFICATION_PHONE.strip():
+            logger.error("ADMIN_ORDER_NOTIFICATION_PHONE is not a Turkish mobile; no order alert sent")
+        return
+    try:
+        async with factory() as db:
+            order = await db.scalar(select(Order).where(Order.id == order_id).options(selectinload(Order.items)))
+            user = (
+                await db.scalar(select(User).where(User.id == order.user_id).options(selectinload(User.segment)))
+                if order
+                else None
+            )
+            if order is None or user is None:
+                return
+            [log] = await dispatch.send_sms(
+                db,
+                recipients=[(number, None)],
+                text=staff_text(order, user),
+                purpose=STAFF_ALERT,
+                meta={"order_id": str(order.id), "order_number": order.order_number},
+            )
+            await db.commit()
+            if log.status != SENT:
+                logger.error("Order alert SMS for %s failed: %s", order.order_number, log.error)
+    except Exception:  # noqa: BLE001 — an SMS must never surface as an order error
+        logger.exception("Order alert SMS for order %s failed", order_id)

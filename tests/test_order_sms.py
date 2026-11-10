@@ -1,6 +1,8 @@
-"""SMS Ayarları and the order SMS: "Sipariş alındı" and "Kargoya verildi"."""
+"""SMS Ayarları and the order SMS: "Sipariş alındı" and "Kargoya verildi" to
+the customer, "Yeni Siparis Geldi!" to the store manager."""
 
 import logging
+from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
@@ -10,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.notification import NotificationLog
 from app.models.settings import ShopSetting
 from app.models.user import User
-from app.services import sms_settings
+from app.core.config import settings
+from app.services import order_sms, sms_settings
 from app.services.notify import drivers
 from tests.conftest import ADDRESS, CONSENTS, auth_header
 
@@ -200,3 +203,56 @@ async def test_the_test_sms_goes_through_the_panels_netgsm_account(
 
     bad = await client.post(f"{SETTINGS}/test", headers=h, json={"phone": "0212 123 45 67"})
     assert bad.status_code == 422  # a landline cannot take an SMS
+
+
+# ── The store manager's alert ────────────────────────────────────────────────
+
+MANAGER_MOBILE = "905329999999"  # conftest's stand-in for ADMIN_ORDER_NOTIFICATION_PHONE
+
+
+async def test_the_manager_is_texted_for_a_new_order(
+    client: AsyncClient, customer_user: User, db_session: AsyncSession, catalog, caplog
+):
+    with caplog.at_level(logging.INFO, logger="notify"):
+        order = await _checkout(client, customer_user, catalog[0])
+    [log] = await _logs(db_session, order["order_number"], order_sms.STAFF_ALERT)
+    assert (log.recipient, log.status, log.user_id) == (MANAGER_MOBILE, "sent", None)
+    total = order_sms._tl(Decimal(order["total_amount"]))
+    assert (
+        "Yeni Siparis Geldi!\n"
+        f"Siparis No: #{order['order_number']}\n"
+        f"Tutar: {total} TL\n"
+    ) in caplog.text
+    assert "(Perakende)\nUrun: 1 kalem" in caplog.text
+
+
+async def test_a_card_order_alerts_the_manager_only_once_paid(
+    client: AsyncClient, customer_user: User, db_session: AsyncSession, catalog
+):
+    order = await _checkout(client, customer_user, catalog[0], payment="CREDIT_CARD")
+    assert await _logs(db_session, order["order_number"], order_sms.STAFF_ALERT) == []
+
+
+async def test_a_failing_gateway_never_fails_the_order(
+    client: AsyncClient, customer_user: User, db_session: AsyncSession, catalog, monkeypatch, caplog
+):
+    async def down(*_args, **_kwargs):
+        raise TimeoutError("netgsm timed out")
+
+    monkeypatch.setattr(order_sms.dispatch, "send_sms", down)
+    with caplog.at_level(logging.ERROR, logger="notify"):
+        await _checkout(client, customer_user, catalog[0])  # 201, as ever
+    assert "Order alert SMS for order" in caplog.text and "netgsm timed out" in caplog.text
+
+
+async def test_no_alert_without_a_number(
+    client: AsyncClient, customer_user: User, db_session: AsyncSession, catalog, monkeypatch
+):
+    monkeypatch.setattr(settings, "ADMIN_ORDER_NOTIFICATION_PHONE", "")
+    order = await _checkout(client, customer_user, catalog[0])
+    assert await _logs(db_session, order["order_number"], order_sms.STAFF_ALERT) == []
+
+
+@pytest.mark.parametrize(("amount", "text"), [("1234.5", "1.234,50"), ("25000", "25.000,00"), ("0.99", "0,99")])
+def test_amounts_read_as_turkish_lira(amount: str, text: str):
+    assert order_sms._tl(Decimal(amount)) == text
