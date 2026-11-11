@@ -350,3 +350,54 @@ async def test_yedek_cam_finds_the_bottles_and_still_the_glass_parts(client: Asy
         if made:
             await db_session.execute(delete(Category).where(Category.id == bottles.id))
         await db_session.commit()
+
+
+@pytest.mark.parametrize(
+    ("query", "means"),
+    [
+        ("nargile hortumu", ["marpuclar"]), ("silikon hortum", ["marpuclar"]), ("hortum yayı", []),
+        ("ağızlık", ["ozel-sipsiler", "plastik-ve-slikon-sipsiler"]), ("nargile ağızlığı", ["ozel-sipsiler", "plastik-ve-slikon-sipsiler"]),
+        ("hmd", ["kozlukler"]), ("kaloud lotus", ["kozlukler"]), ("copper balance hmd", ["kozlukler"]),
+        ("şişe lastiği", ["contalar"]), ("lüle lastiği", ["contalar"]), ("plastik", []), ("plastik sipsi", []),
+        ("nargile kafası", ["luleler"]), ("başlık", ["luleler"]), ("marpuç başlığı", []),
+        ("köz makinesi", ["elektrikli-ocaklar", "gazli-ocaklar"]), ("kömür yakıcı", ["elektrikli-ocaklar", "gazli-ocaklar"]),
+        ("köz ocağı", ["elektrikli-ocaklar", "gazli-ocaklar"]),
+        ("mr wood", []), ("darkside", []), ("lüle", []), ("kafatası", []),
+    ],
+)
+def test_colloquial_words_mean_their_shelves(query, means):
+    from app.api.v1.products import _fold_tr
+    from app.services.search_synonyms import synonym_categories
+
+    assert synonym_categories(_fold_tr(query)) == means
+
+
+@pytest.mark.parametrize(
+    ("name", "query"),
+    [("Mr.Wood Prisma Nargile Takımı", "mr wood"), ("Mr Wood Prisma", "mr.wood"), ("Darkside D-Shot Lüle", "dark side"),
+     ("Black Coco's 26 er Kömür", "black coco"), ("Black Coco's 26 er Kömür", "blackcoco"), ("One Nation 27 er Kömür", "onenation")],
+)
+async def test_brand_spellings_meet_whatever_the_spaces_and_dots(client: AsyncClient, db_session: AsyncSession, name, query):
+    suffix = uuid.uuid4().hex[:6]
+    product = Product(base_code=f"SP-{suffix}", name=f"{name} {suffix}", tags=[])
+    db_session.add(product)
+    await db_session.commit()
+    try:
+        assert str(product.id) in await _ids(client, q=query)
+    finally:
+        await db_session.execute(delete(Product).where(Product.id == product.id))
+        await db_session.commit()
+
+
+async def test_a_short_query_is_not_squashed_across_words(client: AsyncClient, db_session: AsyncSession):
+    """"a.b" squashed is "ab": too short to stand for anything, so "Kara Bulut" is not found by it
+    (as typed, "a.b" is in no name either)."""
+    suffix = uuid.uuid4().hex[:6]
+    product = Product(base_code=f"KB-{suffix}", name=f"Kara Bulut {suffix}", tags=[])
+    db_session.add(product)
+    await db_session.commit()
+    try:
+        assert str(product.id) not in await _ids(client, q="a.b")
+    finally:
+        await db_session.execute(delete(Product).where(Product.id == product.id))
+        await db_session.commit()

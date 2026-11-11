@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from pydantic import BaseModel
 
 from app.api.deps import get_current_user, get_optional_user
 from app.core.database import get_db
@@ -43,7 +44,7 @@ from app.schemas.cart import CartLineInfo, StockCheckLine, StockCheckRequest
 from app.schemas.i18n import Locale
 from app.services import localize, slug_redirects
 from app.services.categories import category_subtree, memberships, products_in, ranked_order
-from app.services.search_synonyms import synonym_categories, synonym_subtree
+from app.services.search_synonyms import squashed, synonym_categories, synonym_subtree
 from app.services.checkout_engine import CENTRAL_STOCK, HAVALE_SWITCH, shows_stock_count, stock_on_hand
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
@@ -68,6 +69,27 @@ def _fold_tr(text: str) -> str:
 
 def _folded(column):
     return func.lower(func.translate(column, _TR_FROM, _TR_TO))
+
+
+def _squashed_col(column):
+    """A column folded and stripped of spaces and punctuation ("Mr.Wood" → "mrwood"): search_synonyms.squashed."""
+    return func.regexp_replace(_folded(column), "[^0-9a-z]", "", "g")
+
+
+#: A squashed query shorter than this would match across words by accident.
+SQUASHED_MIN = 4
+
+
+def _name_matches(column, folded_query: str):
+    """`column` holds the query: as typed (folded), or with spaces and
+    punctuation dropped on both sides, so "mr wood" finds "Mr.Wood" and
+    "dark side" finds "Darkside"."""
+    pattern = f"%{_escape_like(folded_query)}%"
+    tight = squashed(folded_query)
+    plain = _folded(column).like(pattern, escape="\\")
+    if len(tight) < SQUASHED_MIN:
+        return plain
+    return or_(plain, _squashed_col(column).like(f"%{tight}%"))
 
 
 def _escape_like(term: str) -> str:
@@ -140,16 +162,16 @@ def apply_catalog_filters(
         # A brand's page (/<brand-slug>): its products, by the brand they belong to.
         stmt = stmt.where(Product.brand_id == select(Brand.id).where(Brand.slug == brand).scalar_subquery())
     if q and q.strip():
-        pattern = f"%{_escape_like(_fold_tr(q.strip()))}%"
+        folded = _fold_tr(q.strip())
         # A category's name finds what is filed under it: "lule" lists the Lüleler.
-        named = select(Category.id).where(_folded(Category.name).like(pattern, escape="\\"))
+        named = select(Category.id).where(_name_matches(Category.name, folded))
         # And a word the shop does not use, the category it means: "yedek cam"
         # lists the Nargile Şişeleri too (app.services.search_synonyms).
-        also = synonym_categories(_fold_tr(q.strip()))
+        also = synonym_categories(folded)
         stmt = stmt.where(
             or_(
                 *(
-                    _folded(col).like(pattern, escape="\\")
+                    _name_matches(col, folded)
                     for col in (
                         Product.name,
                         Product.brand,
@@ -482,16 +504,16 @@ async def suggest(
             .limit(SUGGESTED_PRODUCTS)
         )
     ).scalars().all()
-    pattern = f"%{_escape_like(_fold_tr(q.strip()))}%"
+    folded = _fold_tr(q.strip())
     categories = (
         await db.execute(
             select(Category)
             .where(
                 Category.is_active.is_(True),
                 or_(
-                    _folded(Category.name).like(pattern, escape="\\"),
+                    _name_matches(Category.name, folded),
                     # "yedek cam" suggests the Nargile Şişeleri (search_synonyms).
-                    Category.slug.in_(synonym_categories(_fold_tr(q.strip()))),
+                    Category.slug.in_(synonym_categories(folded)),
                 ),
             )
             .order_by(Category.sort_order, Category.name)
@@ -732,6 +754,69 @@ async def list_sultanpuan_products(lang: Locale | None = LANG, db: AsyncSession 
     ]
     showcase.products = [product for _, product in sorted(priced, key=lambda pair: pair[0])]
     return showcase
+
+
+class ProductShelf(BaseModel):
+    """Where a product the shop no longer shows sends its visitors."""
+
+    category_slug: str
+
+
+@router.get("/{product_ref}/shelf", response_model=ProductShelf)
+async def product_shelf(
+    product_ref: str = Path(max_length=255, description="The product's slug (current or old), or its id"),
+    db: AsyncSession = Depends(get_db),
+):
+    """For a product that exists but is not on the storefront (unpublished, or
+    deleted in the panel): the category its page now leads to, so its address
+    — indexed, shared, bookmarked — keeps somewhere to go (the storefront
+    answers it with a 308). Read like the product's own page: by slug, an old
+    slug, or id.
+
+    The category is one a shopper can open — live, and every category above
+    it live too: its primary category, else the nearest such one above it,
+    else another it is listed under. 404 for a product on sale (its own page
+    answers), for one with nowhere to go, and for an address no product ever
+    had."""
+    try:
+        match = Product.id == uuid.UUID(product_ref)
+    except ValueError:
+        slug = product_ref.lower()
+        renamed = await slug_redirects.product_id_for(db, slug)
+        match = or_(Product.slug == slug, Product.id == renamed) if renamed else Product.slug == slug
+    product = await db.scalar(
+        select(Product)
+        .where(match)
+        .order_by(Product.on_storefront().desc(), (Product.slug == product_ref.lower()).desc())
+        .options(selectinload(Product.category_links))
+        .limit(1)
+    )
+    if product is None or (product.is_published and not product.is_deleted):
+        raise HTTPException(status_code=404, detail="Product not found")
+
+    tree = {c.id: c for c in (await db.scalars(select(Category))).all()}
+
+    def open_to_shoppers(category_id: int | None) -> bool:
+        seen: set[int] = set()
+        while category_id is not None:
+            category = tree.get(category_id)
+            if category is None or not category.is_active or category_id in seen:
+                return False
+            seen.add(category_id)
+            category_id = category.parent_id
+        return True
+
+    # The primary category, then each one above it; then the others it is listed under.
+    candidates: list[int] = []
+    current = product.category_id
+    while current is not None and current not in candidates:
+        candidates.append(current)
+        current = tree[current].parent_id if current in tree else None
+    candidates += [link.category_id for link in product.category_links if link.category_id not in candidates]
+    for category_id in candidates:
+        if open_to_shoppers(category_id):
+            return ProductShelf(category_slug=tree[category_id].slug)
+    raise HTTPException(status_code=404, detail="No category to send this product's visitors to")
 
 
 @router.get("/{product_ref}", response_model=CatalogProductDetail)
