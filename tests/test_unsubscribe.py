@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import settings
@@ -250,3 +250,107 @@ async def test_without_a_resend_key_mail_goes_one_by_one_with_the_headers(
 
 async def test_only_admins_resume(client: AsyncClient, customer_user: User):
     assert (await client.post(f"{CAMPAIGNS}/1/resume", headers=auth_header(customer_user))).status_code == 403
+
+
+#: Pass the loose "is it an address" check, but Resend refuses them (HTTP 422).
+UNDELIVERABLE = [
+    "kampanya99.@gmail.com",  # trailing dot in the local part: 11.11 batch 2
+    ".nokta@gmail.com",
+    "iki..nokta@gmail.com",
+    "kuş@gmail.com",
+    "ali@gmaıl.com",  # dotless ı: folds to i under IGNORECASE without ASCII
+    "ali@ſite.com",
+    "ali@-tire.com",
+    "ali@tire-.com",
+    "ali@ornek.c0m",
+    "ali@ornek..com",
+    "a<b>@gmail.com",
+    "ali,veli@gmail.com",
+    "x" * 65 + "@gmail.com",
+]
+
+
+@pytest.mark.parametrize("address", UNDELIVERABLE)
+def test_an_address_the_provider_refuses_is_not_deliverable(address):
+    assert campaigns._EMAIL.match(address)  # still counted in the campaign...
+    assert not campaigns.deliverable(address)  # ...but never sent
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["ali@gmail.com", "ali.veli+11.11@ornek.com.tr", "a_b-c@alt.ornek-site.co", "x@xn--nargile-5ya.com", "o'neil@ornek.org"],
+)
+def test_ordinary_addresses_are_deliverable(address):
+    assert campaigns.deliverable(address)
+
+
+async def test_undeliverable_addresses_fail_one_by_one_and_the_batch_still_goes(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, resend
+):
+    good = [f"iyi-{n}-{uuid.uuid4().hex[:4]}@test.com" for n in range(4)]
+    bad = UNDELIVERABLE[:3]
+    h = auth_header(admin_user)
+    resp = await client.post(CAMPAIGNS, headers=h, json={
+        "channel": "email", "audience": "manual", "manual_recipients": [*good[:2], *bad, *good[2:]],
+        "consent_confirmed": True, "subject": "11.11", "body": "Fırsatlar başladı",
+    })
+    assert resp.status_code == 202, resp.text
+
+    # One batch call, with only the addresses Resend takes.
+    (call,) = resend["calls"]
+    assert [m["to"] for m in call["json"]] == [[a] for a in good]
+
+    db_session.expire_all()
+    campaign_id = resp.json()["id"]
+    campaign = await db_session.get(NotificationCampaign, campaign_id)
+    assert (campaign.status, campaign.sent, campaign.failed, campaign.total) == ("done", 4, 3, 7)
+    logs = (await db_session.execute(select(NotificationLog).where(NotificationLog.campaign_id == campaign_id))).scalars().all()
+    failed = {log.recipient: log for log in logs if log.status == "failed"}
+    assert set(failed) == set(bad)
+    assert all(log.error == campaigns.UNDELIVERABLE and log.provider == "none" for log in failed.values())
+
+    # "Kalanlara gönder": nothing left that can go, and the bad ones are not logged again.
+    assert (await client.post(f"{CAMPAIGNS}/{campaign_id}/resume", headers=h)).status_code == 202
+    assert len(resend["calls"]) == 1
+    count = await db_session.scalar(
+        select(func.count()).select_from(NotificationLog).where(NotificationLog.campaign_id == campaign_id)
+    )
+    assert count == 7
+    db_session.expire_all()
+    again = await db_session.get(NotificationCampaign, campaign_id)
+    assert (again.status, again.sent, again.failed) == ("done", 4, 3)
+
+
+async def test_only_undeliverable_addresses_fail_without_calling_resend(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, resend
+):
+    resp = await client.post(CAMPAIGNS, headers=auth_header(admin_user), json={
+        "channel": "email", "audience": "manual", "manual_recipients": ["kampanya99.@gmail.com"],
+        "consent_confirmed": True, "subject": "11.11", "body": "Fırsatlar başladı",
+    })
+    assert resp.status_code == 202, resp.text
+    assert resend["calls"] == []
+    db_session.expire_all()
+    campaign = await db_session.get(NotificationCampaign, resp.json()["id"])
+    assert (campaign.status, campaign.sent, campaign.failed) == ("failed", 0, 1)
+
+
+async def test_without_a_resend_key_undeliverable_addresses_are_not_sent_either(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, monkeypatch
+):
+    sent = []
+
+    async def capture(self, to, subject, text, html, headers=None):
+        sent.append(to)
+        return drivers.Delivery(True, "mock")
+
+    monkeypatch.setattr(drivers.MockEmail, "send", capture)
+    resp = await client.post(CAMPAIGNS, headers=auth_header(admin_user), json={
+        "channel": "email", "audience": "manual", "manual_recipients": ["tek@test.com", "kuş@gmail.com"],
+        "consent_confirmed": True, "subject": "Merhaba", "body": "Yeni ürünler",
+    })
+    assert resp.status_code == 202
+    assert sent == ["tek@test.com"]
+    db_session.expire_all()
+    campaign = await db_session.get(NotificationCampaign, resp.json()["id"])
+    assert (campaign.sent, campaign.failed) == (1, 1)

@@ -42,7 +42,20 @@ AUDIENCES = {
     "WHOLESALE": "Toptan",
     "DEALER": "Bayi",
 }
+#: Looks like an address at all: who is in a campaign (and counted in it).
 _EMAIL = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+#: An address the mail provider takes: ASCII dot-atom local part (no leading,
+#: trailing or doubled dot), hostname labels, a letter or punycode TLD.
+#: Resend refuses a whole batch for one address outside this (HTTP 422,
+#: "Invalid `to` field": 11.11 batch 2 lost all 90 to one "...99.@gmail.com").
+_DELIVERABLE = re.compile(
+    r"^[a-z0-9!#$%&'*+/=?^_`{|}~-]+(\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*"
+    r"@([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+([a-z]{2,63}|xn--[a-z0-9-]{1,59})$",
+    # ASCII: Unicode case-folding would let "ı" (and "ſ", "K") pass for i, s, k.
+    re.IGNORECASE | re.ASCII,
+)
+#: The log's error for an address left out of the send as undeliverable.
+UNDELIVERABLE = "Geçersiz e-posta adresi: gönderilmedi"
 PURPOSE = "campaign"
 #: Stands in the e-mail for its recipient's own "Abonelikten Çık" address.
 UNSUBSCRIBE_MARK = "%%UNSUBSCRIBE_URL%%"
@@ -97,6 +110,12 @@ async def recipients(db: AsyncSession, channel: str, audience: str, manual: list
             if address and (channel != EMAIL or _EMAIL.match(address)):
                 found.setdefault(address, user.id)
     return list(found.items())
+
+
+def deliverable(address: str) -> bool:
+    """Whether the mail provider will take this address (see _DELIVERABLE)."""
+    local, _, domain = address.rpartition("@")
+    return len(address) <= 254 and len(local) <= 64 and len(domain) <= 253 and bool(_DELIVERABLE.match(address))
 
 
 def sms_text(body: str) -> str:
@@ -171,13 +190,31 @@ async def run_campaign(
 
 
 async def _send_emails(db: AsyncSession, campaign: NotificationCampaign, targets: list[tuple[str, object]]) -> None:
-    reached = set(
-        await db.scalars(
-            select(NotificationLog.recipient).where(NotificationLog.campaign_id == campaign.id, NotificationLog.status == SENT)
+    logged = (
+        await db.execute(
+            select(NotificationLog.recipient, NotificationLog.status, NotificationLog.error).where(
+                NotificationLog.campaign_id == campaign.id
+            )
         )
-    )
-    todo = [(address, user_id) for address, user_id in targets if address not in reached]
+    ).all()
+    reached = {recipient for recipient, status, _ in logged if status == SENT}
+    refused = {recipient for recipient, status, error in logged if status == FAILED and error == UNDELIVERABLE}
     subject = campaign.subject or ""
+    todo = []
+    for address, user_id in targets:
+        if address in reached:
+            continue
+        if deliverable(address):
+            todo.append((address, user_id))
+        elif address not in refused:
+            # Its own failed row, once: never in a batch, which Resend would refuse whole.
+            db.add(
+                NotificationLog(
+                    channel=EMAIL, recipient=address, subject=subject[:200], purpose=PURPOSE, user_id=user_id,
+                    campaign_id=campaign.id, provider="none", status=FAILED, error=UNDELIVERABLE,
+                )
+            )
+    await db.commit()
     text, html = email_parts(campaign.body, campaign.body_format)
 
     key = resend_api_key()
