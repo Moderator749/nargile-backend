@@ -163,6 +163,12 @@ async def checkout(
     # with everything else if this checkout fails.
     await _supersede_open_card_orders(db, user)
 
+    # A guest who gave only an e-mail and a phone up front is named by the
+    # delivery address (which asks for the name anyway): the order list, the
+    # e-mails and the SMS greet them by it. Saved with the order, or not at all.
+    if user.is_guest and not (user.full_name or "").strip():
+        user.full_name = " ".join(payload.shipping_address.full_name.split())[:150]
+
     engine = CheckoutEngine(db)
     try:
         # A firm ships to the address it registered; the details are editable,

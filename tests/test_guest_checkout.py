@@ -178,3 +178,46 @@ async def test_a_reset_and_a_phone_check_never_reach_a_guest(client: AsyncClient
     assert (await password_reset.find_by_phone(db_session, phone)).id == account.id
     guests = (await db_session.scalars(select(User).where(User.email == email))).all()
     assert [g.is_guest for g in guests] == [True]
+
+
+async def test_a_guest_can_start_with_an_address_and_a_number_and_is_named_by_the_delivery(
+    client: AsyncClient, db_session: AsyncSession, segments
+):
+    # "Üye olmadan devam et" asks only for the e-mail and the phone now.
+    resp = await client.post(GUEST, json={"email": _email(), "phone": _mobile()})
+    assert resp.status_code == 201, resp.text
+    token = resp.json()["access_token"]
+    me = (await client.get(ME, headers=_bearer(token))).json()
+    assert (me["is_guest"], me["full_name"]) == (True, None)
+
+    # The delivery address carries the name; the order and the guest both get it.
+    normal_v = await _variant(db_session, segments)
+    body = {
+        "distance_sales_accepted": True, "terms_accepted": True, "payment_method": "BANK_TRANSFER",
+        "shipping_consent": True, "items": [{"variant_id": str(normal_v.id), "quantity": 1}],
+        "shipping_address": {"full_name": "  Ayşe   Yılmaz ", "phone": "0532 000 00 00", "city": "Ankara", "district": "Çankaya", "line": "Atatürk Bulvarı No: 1"},
+    }
+    placed = await client.post("/api/v1/orders/checkout", headers=_bearer(token), json=body)
+    assert placed.status_code == 201, placed.text
+    me = (await client.get(ME, headers=_bearer(token))).json()
+    assert me["full_name"] == "Ayşe Yılmaz"
+
+
+async def test_a_guest_name_given_up_front_is_kept_whatever_the_delivery_says(
+    client: AsyncClient, db_session: AsyncSession, segments
+):
+    _, token = await _guest(client)  # named "Misafir Alıcı"
+    normal_v = await _variant(db_session, segments)
+    body = {
+        "distance_sales_accepted": True, "terms_accepted": True, "payment_method": "BANK_TRANSFER",
+        "shipping_consent": True, "items": [{"variant_id": str(normal_v.id), "quantity": 1}],
+        "shipping_address": {"full_name": "Hediye Alan Kişi", "phone": "0532 000 00 00", "city": "Ankara", "district": "Çankaya", "line": "Atatürk Bulvarı No: 1"},
+    }
+    assert (await client.post("/api/v1/orders/checkout", headers=_bearer(token), json=body)).status_code == 201
+    assert (await client.get(ME, headers=_bearer(token))).json()["full_name"] == "Misafir Alıcı"
+
+
+@pytest.mark.parametrize("name", [None, "", "   "])
+async def test_a_blank_name_up_front_is_no_name(client: AsyncClient, name):
+    resp = await client.post(GUEST, json={"email": _email(), "full_name": name, "phone": _mobile()})
+    assert resp.status_code == 201, resp.text

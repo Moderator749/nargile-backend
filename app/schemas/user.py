@@ -78,10 +78,15 @@ class PasswordChange(BaseModel):
 
 
 class GuestStart(BaseModel):
-    """"Üye olmadan devam et": who is buying, so the order has someone to reach."""
+    """"Üye olmadan devam et": who is buying, so the order has someone to reach.
+
+    E-mail and phone up front; the name may wait for the delivery address,
+    which asks for it anyway (orders.checkout names the guest from it). A name
+    that is given must still be one.
+    """
 
     email: str = Field(max_length=255)
-    full_name: str = Field(min_length=2, max_length=150)
+    full_name: str | None = Field(default=None, max_length=150)
     phone: str = Field(max_length=30)
 
     @field_validator("email")
@@ -94,7 +99,9 @@ class GuestStart(BaseModel):
 
     @field_validator("full_name")
     @classmethod
-    def _name(cls, v: str) -> str:
+    def _name(cls, v: str | None) -> str | None:
+        if v is None or not v.strip():
+            return None
         name = " ".join(v.split())
         if len(name) < 2:
             raise ValueError("Ad soyad girilmeli")
