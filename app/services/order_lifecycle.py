@@ -94,6 +94,44 @@ class StockShortage(Exception):
     """A closed order's goods have been sold since: it cannot take them back."""
 
 
+# An unpaid card order the customer walked away from, released at once rather
+# than held until PayTR's page times out half an hour later (and then logged
+# as a failed payment it never was):
+#: "Ödeme yöntemini değiştir" on the payment page (POST /orders/{id}/release-payment).
+RELEASED_BY_CUSTOMER = "Ödeme yöntemi değiştirildi (müşteri)"
+#: A new checkout by the same customer while it was still open (a reload, the
+#: browser's back button, another tab): the new order replaces it.
+SUPERSEDED = "Yeni siparişle değiştirildi (müşteri)"
+#: The hourly job's, for a payment page left open past its time (order_tasks).
+TIMED_OUT = "Kart ödemesi tamamlanmadı (otomatik)"
+
+
+async def release_card_order(db: AsyncSession, order: Order, user: User, reason: str, now: datetime) -> None:
+    """An unpaid card order (AWAITING_PAYMENT) the customer left: its stock and
+    points back now, the order CANCELLED with `reason` — not PAYMENT_FAILED, as
+    no payment failed. Nothing is sent to the customer, who is still at
+    checkout with the same cart. `order.items` must be loaded."""
+    await _release(db, order, user, reason, now, OrderStatus.CANCELLED)
+
+
+def revives_on_payment(order: Order) -> bool:
+    """Whether PayTR's word that an order was paid, arriving after the shop
+    released it on its own (the customer left the page, a new checkout replaced
+    it, or its time ran out), brings it back paid. An order a person cancelled
+    stays theirs to decide."""
+    if order.payment_method != PaymentMethod.CREDIT_CARD or order.paid_at is not None:
+        return False
+    if order.status == OrderStatus.PAYMENT_FAILED:
+        return True
+    return order.status == OrderStatus.CANCELLED and order.cancel_reason in (RELEASED_BY_CUSTOMER, SUPERSEDED)
+
+
+def add_internal_note(order: Order, note: str, now: datetime) -> None:
+    """A line on the order's "Gizli Mağaza Notu", dated, after any already there."""
+    stamped = f"[{now.strftime('%d.%m.%Y %H:%M')} UTC] {note}"
+    order.internal_note = f"{order.internal_note}\n{stamped}" if order.internal_note else stamped
+
+
 def recovered_status(order: Order) -> OrderStatus:
     """Where "Siparişi Kurtar" puts an unpaid order: waiting for the transfer it
     is waiting for, or for an admin (a card order, whose payment page is long

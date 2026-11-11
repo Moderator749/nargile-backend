@@ -13,12 +13,12 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_user, get_session_factory
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.order import Order, PaymentMethod
+from app.models.order import Order, OrderStatus, PaymentMethod
 from app.models.user import User
 from app.api.v1.payments import CARD_OFF
 from app.schemas.cart import CartCalculateResponse, CartItemBreakdown, ShippingBreakdown, VolumeTier
 from app.schemas.order import CartItemInput, CheckoutRequest, OrderLookup, OrderRead
-from app.services import marketing_consent, order_sms, sms_settings
+from app.services import marketing_consent, order_lifecycle, order_sms, sms_settings
 from app.services.contact_phone import fill_missing_phone
 from app.services.delivery import check_delivery_address
 from app.services.checkout_engine import CheckoutEngine, shows_stock_count
@@ -156,6 +156,13 @@ async def checkout(
     user = await _with_segment(db, current_user)
     variant_quantities = _quantities(payload.items)
 
+    # A card order of theirs still waiting on PayTR's page is one they have
+    # left — a reload, the browser's back button, another tab — and this order
+    # replaces it: its stock and points come back first, in this transaction,
+    # so the new order can have them (the last one in stock included). Undone
+    # with everything else if this checkout fails.
+    await _supersede_open_card_orders(db, user)
+
     engine = CheckoutEngine(db)
     try:
         # A firm ships to the address it registered; the details are editable,
@@ -215,6 +222,58 @@ async def checkout(
     # placed once PayTR reports it paid (payments.paytr_callback).
     if order.payment_method != PaymentMethod.CREDIT_CARD:
         background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_PLACED)
+    return order
+
+
+async def _supersede_open_card_orders(db: AsyncSession, user: User) -> None:
+    open_orders = (
+        await db.scalars(
+            select(Order)
+            .where(
+                Order.user_id == user.id,
+                Order.payment_method == PaymentMethod.CREDIT_CARD,
+                Order.status == OrderStatus.AWAITING_PAYMENT,
+            )
+            .options(selectinload(Order.items))
+            .with_for_update()
+        )
+    ).all()
+    now = datetime.now(timezone.utc)
+    for order in open_orders:
+        await order_lifecycle.release_card_order(db, order, user, order_lifecycle.SUPERSEDED, now)
+        logger.info("Order %s superseded by a new checkout", order.order_number)
+    if open_orders:
+        await db.flush()
+
+
+@router.post("/{order_id}/release-payment", response_model=OrderRead)
+async def release_payment(
+    order_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Ödeme yöntemini değiştir": the customer leaves PayTR's page of an
+    unpaid card order — to pay another way, or change the cart. Its stock and
+    points go back now (CANCELLED), not when the page times out half an hour
+    later; the cart is still in the browser, and the next checkout is a new
+    order. Answers the order as it now stands: one PayTR has meanwhile paid is
+    left as it is (the page then shows its confirmation). Repeating it changes
+    nothing."""
+    order = await db.scalar(
+        select(Order)
+        .where(Order.id == order_id, Order.user_id == current_user.id)
+        .options(selectinload(Order.items))
+        .with_for_update()
+    )
+    if order is None:
+        raise HTTPException(status_code=404, detail="Sipariş bulunamadı")
+    if order.payment_method == PaymentMethod.CREDIT_CARD and order.status == OrderStatus.AWAITING_PAYMENT:
+        user = await _with_segment(db, current_user)
+        await order_lifecycle.release_card_order(
+            db, order, user, order_lifecycle.RELEASED_BY_CUSTOMER, datetime.now(timezone.utc)
+        )
+        await db.commit()
+        await db.refresh(order, attribute_names=["items"])
     return order
 
 

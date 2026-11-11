@@ -19,7 +19,7 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1 import payments
@@ -30,6 +30,7 @@ from app.models.notification import NotificationLog
 from app.models.order import Order
 from app.models.payment import PaymentStatus, PaymentTransaction
 from app.models.user import User
+from app.services import order_lifecycle
 from app.services.order_tasks import cancel_expired_pending_orders
 from app.services.payment_failures import FailureSource, classify
 from app.services.paytr_service import (
@@ -391,3 +392,137 @@ async def test_a_refused_payment_page_is_the_shops_to_fix(
     await client.post("/api/v1/payments/paytr/token", headers=auth_header(customer_user), json={"order_id": order["id"]})
     record = (await client.get(f"/api/v1/admin/orders/{order['id']}", headers=auth_header(admin_user))).json()["payment_failure"]
     assert record["source"] == "SYSTEM_STORE" and record["code"] is None and "açılamadı" in record["message"]
+
+
+# ── Leaving the payment page (no zombie orders) ──────────────────────────────
+
+
+async def _release(client, user, order_id):
+    return await client.post(f"/api/v1/orders/{order_id}/release-payment", headers=auth_header(user))
+
+
+async def _set_stock(db: AsyncSession, variant: ProductVariant, quantity: int) -> None:
+    await db.execute(
+        update(Inventory)
+        .where(Inventory.variant_id == variant.id, Inventory.warehouse_type == WarehouseType.RETAIL_STOCK)
+        .values(quantity=quantity)
+    )
+    await db.commit()
+
+
+async def test_changing_the_payment_method_releases_the_order_at_once(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, admin_user: User, catalog, fake_paytr
+):
+    normal_v, _ = catalog
+    before = await _stock(db_session, normal_v)
+    order, _page = await _opened(client, customer_user, normal_v, qty=2)
+    assert await _stock(db_session, normal_v) == before - 2
+
+    # Someone else's order is not theirs to release.
+    assert (await _release(client, admin_user, order["id"])).status_code == 404
+
+    resp = await _release(client, customer_user, order["id"])
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "CANCELLED"
+    released = await db_session.get(Order, order["id"], populate_existing=True)
+    assert released.cancel_reason == order_lifecycle.RELEASED_BY_CUSTOMER
+    # Back on the shelf now, not in half an hour; and it is no failed payment.
+    assert await _stock(db_session, normal_v) == before
+    assert released.status != "PAYMENT_FAILED"
+
+    # Pressed twice (or after the page closed): nothing more happens.
+    again = await _release(client, customer_user, order["id"])
+    assert again.status_code == 200 and again.json()["status"] == "CANCELLED"
+    assert await _stock(db_session, normal_v) == before
+
+    # Its payment page cannot be opened again.
+    reopen = await client.post(
+        "/api/v1/payments/paytr/token", headers=auth_header(customer_user), json={"order_id": order["id"]}
+    )
+    assert reopen.status_code == 409
+
+
+async def test_releasing_a_paid_order_changes_nothing(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, catalog, fake_paytr
+):
+    normal_v, _ = catalog
+    order, page = await _opened(client, customer_user, normal_v)
+    await client.post("/api/v1/payments/paytr/callback", data=_notification(page["merchant_oid"], "success", 500000))
+    resp = await _release(client, customer_user, order["id"])
+    assert resp.status_code == 200 and resp.json()["status"] == "APPROVED"
+
+
+async def test_a_new_checkout_replaces_the_open_card_order_and_can_have_its_stock(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, catalog, fake_paytr
+):
+    normal_v, _ = catalog
+    # The last two in stock: the abandoned attempt holds both.
+    await _set_stock(db_session, normal_v, 2)
+    first, _page = await _opened(client, customer_user, normal_v, qty=2)
+    assert await _stock(db_session, normal_v) == 0
+
+    # Back (the browser's, a reload), then the same cart again, by transfer this time.
+    resp = await _checkout(client, customer_user, normal_v, qty=2)
+    assert resp.status_code == 201, resp.text
+
+    replaced = await db_session.get(Order, first["id"], populate_existing=True)
+    assert (replaced.status, replaced.cancel_reason) == ("CANCELLED", order_lifecycle.SUPERSEDED)
+    assert await _stock(db_session, normal_v) == 0  # held once, by the new order
+    open_card = await db_session.scalar(
+        select(func.count()).select_from(Order).where(
+            Order.user_id == customer_user.id, Order.status == "AWAITING_PAYMENT"
+        )
+    )
+    assert open_card == 0
+
+
+async def test_a_payment_after_the_customer_left_brings_the_order_back_paid(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, catalog, fake_paytr
+):
+    normal_v, _ = catalog
+    before = await _stock(db_session, normal_v)
+    order, page = await _opened(client, customer_user, normal_v)
+    await _release(client, customer_user, order["id"])
+    assert await _stock(db_session, normal_v) == before
+
+    # The card had gone through just as they pressed back.
+    form = _notification(page["merchant_oid"], "success", 500000)
+    assert (await client.post("/api/v1/payments/paytr/callback", data=form)).text == "OK"
+
+    paid = await db_session.get(Order, order["id"], populate_existing=True)
+    assert paid.status == "APPROVED" and paid.paid_at is not None and paid.recovered_at is not None
+    assert "mükerrer ödemeyi kontrol edin" in paid.internal_note
+    assert await _stock(db_session, normal_v) == before - 1
+
+
+async def test_a_payment_after_release_with_the_goods_sold_waits_for_a_person(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, catalog, fake_paytr
+):
+    normal_v, _ = catalog
+    order, page = await _opened(client, customer_user, normal_v)
+    await _release(client, customer_user, order["id"])
+    await _set_stock(db_session, normal_v, 0)  # sold to someone else meanwhile
+
+    form = _notification(page["merchant_oid"], "success", 500000)
+    assert (await client.post("/api/v1/payments/paytr/callback", data=form)).text == "OK"
+
+    kept = await db_session.get(Order, order["id"], populate_existing=True)
+    assert kept.status == "CANCELLED" and kept.paid_at is None
+    assert "stok" in kept.internal_note and "iade" in kept.internal_note
+    assert await _stock(db_session, normal_v) == 0
+    tx = await db_session.scalar(select(PaymentTransaction).where(PaymentTransaction.merchant_oid == page["merchant_oid"]))
+    assert tx.status == PaymentStatus.SUCCESS  # the money is on record
+
+
+async def test_a_payment_after_an_admin_cancelled_the_order_is_left_to_them(
+    client: AsyncClient, db_session: AsyncSession, customer_user: User, admin_user: User, catalog, fake_paytr
+):
+    normal_v, _ = catalog
+    order, page = await _opened(client, customer_user, normal_v)
+    resp = await client.post(
+        f"/api/v1/admin/orders/{order['id']}/cancel", headers=auth_header(admin_user), json={"reason": "Müşteri aradı, iptal"}
+    )
+    assert resp.status_code == 200, resp.text
+    form = _notification(page["merchant_oid"], "success", 500000)
+    assert (await client.post("/api/v1/payments/paytr/callback", data=form)).text == "OK"
+    assert (await db_session.get(Order, order["id"], populate_existing=True)).status == "CANCELLED"

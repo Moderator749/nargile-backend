@@ -79,7 +79,7 @@ async def cancel_expired_pending_orders(db: AsyncSession) -> int:
             continue
 
         if order.status == OrderStatus.AWAITING_PAYMENT:
-            await order_lifecycle.fail_payment(db, order, user, "Kart ödemesi tamamlanmadı (otomatik)", now)
+            await order_lifecycle.fail_payment(db, order, user, order_lifecycle.TIMED_OUT, now)
         else:
             await order_lifecycle.cancel(db, order, user, "48 saat içinde havale alınmadı (otomatik iptal)", now)
         cancelled_count += 1

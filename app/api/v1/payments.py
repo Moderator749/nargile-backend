@@ -169,6 +169,43 @@ async def paytr_token(
     )
 
 
+async def _revive_paid(
+    db: AsyncSession,
+    order: Order,
+    tx: PaymentTransaction,
+    now: datetime,
+    background: BackgroundTasks,
+    factory: async_sessionmaker,
+) -> None:
+    """PayTR's word that an order was paid after the shop had released it on
+    its own (the customer left the page or checked out again, or its time ran
+    out): the money is in, so the order comes back paid with its stock taken
+    again, as "Siparişi Kurtar" would. The shop is told on the order itself:
+    the customer may also have paid a newer order for the same cart. When the
+    goods have been sold since, nothing changes but the note — a person
+    decides (a refund, or other goods)."""
+    oid = tx.merchant_oid
+    was = f"{getattr(order.status, 'value', order.status)}: {order.cancel_reason or '-'}"
+    try:
+        async with db.begin_nested():
+            await order_lifecycle.recover(db, order, now, paid=True)
+    except order_lifecycle.StockShortage as exc:
+        # The savepoint's rollback expired the order: read it again before writing on it.
+        await db.refresh(order)
+        order_lifecycle.add_internal_note(
+            order, f"PayTR ödemesi ({oid}) sipariş bırakıldıktan sonra geldi ({was}), ancak stok "
+            f"artık yok: {exc}. Para alındı — iade ya da başka ürün için müşteriyle görüşün.", now,
+        )
+        logger.error("PayTR payment %s for released order %s: stock gone (%s)", oid, order.order_number, exc)
+        return
+    order_lifecycle.add_internal_note(
+        order, f"PayTR ödemesi ({oid}) sipariş bırakıldıktan sonra geldi ({was}); sipariş ödenmiş "
+        "olarak geri alındı. Müşterinin aynı sepetle yeni bir siparişi de olabilir: mükerrer ödemeyi kontrol edin.", now,
+    )
+    logger.warning("PayTR payment %s revived released order %s", oid, order.order_number)
+    background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_PLACED)
+
+
 @router.post("/paytr/callback", response_class=PlainTextResponse)
 async def paytr_callback(
     request: Request,
@@ -203,7 +240,11 @@ async def paytr_callback(
     if form.get("total_amount", "").isdigit():
         tx.total_amount = Decimal(form["total_amount"]) / 100
 
-    order = await db.scalar(select(Order).where(Order.id == tx.order_id).options(selectinload(Order.items)))
+    # Locked: the customer releasing it ("Ödeme yöntemini değiştir", a new
+    # checkout) and this notification marking it paid must not cross.
+    order = await db.scalar(
+        select(Order).where(Order.id == tx.order_id).options(selectinload(Order.items)).with_for_update()
+    )
     if success:
         collected = int(form["total_amount"]) if form.get("total_amount", "").isdigit() else 0
         if collected < kurus(tx.amount):
@@ -213,6 +254,8 @@ async def paytr_callback(
             await order_lifecycle.mark_paid(db, order, now)
             # A card order is placed now that it is paid: "Siparişiniz alınmıştır".
             background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_PLACED)
+        elif order_lifecycle.revives_on_payment(order):
+            await _revive_paid(db, order, tx, now, background, factory)
         else:
             # Paid after the order was released (it timed out or was cancelled):
             # the money is in, the stock is not held. A person has to decide.
