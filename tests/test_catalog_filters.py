@@ -297,3 +297,56 @@ async def test_a_product_without_a_brand_takes_the_one_its_name_carries(client: 
         await db_session.execute(delete(Product).where(Product.id.in_([bare.id, own.id, inside.id])))
         await db_session.execute(delete(Brand).where(Brand.id == brand.id))
         await db_session.commit()
+
+
+@pytest.mark.parametrize(
+    ("query", "means_bottles"),
+    [
+        ("yedek cam", True), ("nargile camı", True), ("Nargile Camı", True), ("cam", True), ("şişe camları", True),
+        ("cam lüle", False), ("samsaris yedek cam", False), ("lüle haznesi cam", False),
+        ("camel", False), ("kamp", False), ("çakmak", False),
+    ],
+)
+def test_glass_means_the_bottles_unless_it_is_a_bowls(query, means_bottles):
+    from app.api.v1.products import _fold_tr
+    from app.services.search_synonyms import synonym_categories
+
+    assert (synonym_categories(_fold_tr(query)) == ["siseler"]) is means_bottles
+
+
+async def test_yedek_cam_finds_the_bottles_and_still_the_glass_parts(client: AsyncClient, db_session: AsyncSession):
+    """"yedek cam" / "nargile camı" list the Nargile Şişeleri (named "Şişe"), and
+    whatever is named with the words too; a bowl's glass is not a bottle."""
+    from sqlalchemy import select
+
+    suffix = uuid.uuid4().hex[:6]
+    bottles = await db_session.scalar(select(Category).where(Category.slug == "siseler"))
+    made = bottles is None
+    if made:
+        bottles = Category(name="Nargile Şişeleri", slug="siseler")
+        db_session.add(bottles)
+        await db_session.flush()
+    bottle = Product(base_code=f"SS-{suffix}", name=f"Geçme Nargile Şişesi {suffix}", category_id=bottles.id, tags=[])
+    insert = Product(base_code=f"LL-{suffix}", name=f"Samsaris Yedek Cam Lüle {suffix}", tags=[])
+    db_session.add_all([bottle, insert])
+    await db_session.commit()
+    try:
+        found = await _ids(client, q="yedek cam")
+        assert {str(bottle.id), str(insert.id)} <= found
+        assert str(bottle.id) in await _ids(client, q="nargile camı")
+        # About a bowl's glass: the bowl part, not the bottles.
+        bowl = await _ids(client, q="samsaris yedek cam")
+        assert str(insert.id) in bowl and str(bottle.id) not in bowl
+        # Inside another category the synonym stays a filter, not a way out of it.
+        assert str(bottle.id) not in await _ids(client, q="yedek cam", category=f"yok-{suffix}")
+        # Searching inside the bottles themselves: both category trees in one statement.
+        assert str(bottle.id) in await _ids(client, q="yedek cam", category="siseler")
+
+        resp = await client.get("/api/v1/products/suggest", params={"q": "yedek cam"})
+        assert resp.status_code == 200, resp.text
+        assert {"name": bottles.name, "slug": "siseler"} in resp.json()["categories"]
+    finally:
+        await db_session.execute(delete(Product).where(Product.id.in_([bottle.id, insert.id])))
+        if made:
+            await db_session.execute(delete(Category).where(Category.id == bottles.id))
+        await db_session.commit()

@@ -43,6 +43,7 @@ from app.schemas.cart import CartLineInfo, StockCheckLine, StockCheckRequest
 from app.schemas.i18n import Locale
 from app.services import localize, slug_redirects
 from app.services.categories import category_subtree, memberships, products_in, ranked_order
+from app.services.search_synonyms import synonym_categories, synonym_subtree
 from app.services.checkout_engine import CENTRAL_STOCK, HAVALE_SWITCH, shows_stock_count, stock_on_hand
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import pick_price_row, to_try
@@ -142,6 +143,9 @@ def apply_catalog_filters(
         pattern = f"%{_escape_like(_fold_tr(q.strip()))}%"
         # A category's name finds what is filed under it: "lule" lists the Lüleler.
         named = select(Category.id).where(_folded(Category.name).like(pattern, escape="\\"))
+        # And a word the shop does not use, the category it means: "yedek cam"
+        # lists the Nargile Şişeleri too (app.services.search_synonyms).
+        also = synonym_categories(_fold_tr(q.strip()))
         stmt = stmt.where(
             or_(
                 *(
@@ -154,6 +158,7 @@ def apply_catalog_filters(
                     )
                 ),
                 Product.id.in_(products_in(named)),
+                *([Product.id.in_(products_in(synonym_subtree(also)))] if also else []),
             )
         )
     return stmt
@@ -481,7 +486,14 @@ async def suggest(
     categories = (
         await db.execute(
             select(Category)
-            .where(Category.is_active.is_(True), _folded(Category.name).like(pattern, escape="\\"))
+            .where(
+                Category.is_active.is_(True),
+                or_(
+                    _folded(Category.name).like(pattern, escape="\\"),
+                    # "yedek cam" suggests the Nargile Şişeleri (search_synonyms).
+                    Category.slug.in_(synonym_categories(_fold_tr(q.strip()))),
+                ),
+            )
             .order_by(Category.sort_order, Category.name)
             .limit(SUGGESTED_CATEGORIES)
         )
