@@ -203,10 +203,22 @@ async def _record(
     return record
 
 
+def _codes_in_file():
+    """The distinct, non-blank product codes of a file's rows, for the file search."""
+    return func.array_remove(func.array_agg(PricingRecord.product_code.distinct()), "")
+
+
 async def _file_read(db: AsyncSession, file: PricingFile) -> PricingFileRead:
-    count = await db.scalar(select(func.count()).select_from(PricingRecord).where(PricingRecord.file_id == file.id))
+    count, codes = (
+        await db.execute(select(func.count(), _codes_in_file()).where(PricingRecord.file_id == file.id))
+    ).one()
     return PricingFileRead(
-        id=file.id, name=file.name, created_at=file.created_at, updated_at=file.updated_at, record_count=count or 0
+        id=file.id,
+        name=file.name,
+        created_at=file.created_at,
+        updated_at=file.updated_at,
+        record_count=count or 0,
+        product_codes=codes or [],
     )
 
 
@@ -220,19 +232,30 @@ async def _name_taken(db: AsyncSession, name: str, but: int | None = None) -> bo
 
 @router.get("/files", response_model=list[PricingFileRead])
 async def list_files(_admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)):
+    # Each file's row count and product codes in one grouped query, so the
+    # Dosyalar search can match codes inside files without opening them.
     counts = (
-        select(PricingRecord.file_id, func.count().label("n")).group_by(PricingRecord.file_id).subquery()
+        select(PricingRecord.file_id, func.count().label("n"), _codes_in_file().label("codes"))
+        .group_by(PricingRecord.file_id)
+        .subquery()
     )
     rows = (
         await db.execute(
-            select(PricingFile, func.coalesce(counts.c.n, 0))
+            select(PricingFile, func.coalesce(counts.c.n, 0), counts.c.codes)
             .outerjoin(counts, counts.c.file_id == PricingFile.id)
             .order_by(PricingFile.updated_at.desc())
         )
     ).all()
     return [
-        PricingFileRead(id=f.id, name=f.name, created_at=f.created_at, updated_at=f.updated_at, record_count=n)
-        for f, n in rows
+        PricingFileRead(
+            id=f.id,
+            name=f.name,
+            created_at=f.created_at,
+            updated_at=f.updated_at,
+            record_count=n,
+            product_codes=codes or [],
+        )
+        for f, n, codes in rows
     ]
 
 

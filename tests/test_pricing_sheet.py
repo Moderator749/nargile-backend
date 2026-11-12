@@ -251,6 +251,27 @@ async def test_drafts_and_files(client: AsyncClient, admin_user: User):
     assert neither.status_code == 422
 
 
+async def test_the_file_list_carries_each_files_product_codes(client: AsyncClient, admin_user: User):
+    """The Dosyalar search matches codes inside files from the list alone, without opening each file."""
+    h = auth_header(admin_user)
+    name = f"Kodlu {uuid.uuid4().hex[:6]}"
+    for code in ("Steam 09", "LA92-4", "Steam 09", ""):
+        resp = await client.post(f"{BASE}/file", headers=h, json={"file_name": name, "sheet": _sheet(product_code=code)})
+        assert resp.status_code == 201, resp.text
+    file_id = resp.json()["file_id"]
+    empty = (await client.post(f"{BASE}/file", headers=h, json={"file_name": f"{name} boş", "sheet": _sheet()})).json()
+
+    files = {f["id"]: f for f in (await client.get(f"{BASE}/files", headers=h)).json()}
+    # Distinct and without the blank code; a file whose rows have no code lists none.
+    assert sorted(files[file_id]["product_codes"]) == ["LA92-4", "Steam 09"]
+    assert files[file_id]["record_count"] == 4
+    assert files[empty["file_id"]]["product_codes"] == []
+
+    # A renamed file comes back with its codes too, so the card keeps matching.
+    renamed = (await client.patch(f"{BASE}/files/{file_id}", headers=h, json={"name": f"{name} yeni"})).json()
+    assert sorted(renamed["product_codes"]) == ["LA92-4", "Steam 09"]
+
+
 async def test_a_saved_row_is_overwritten_in_place(client: AsyncClient, admin_user: User):
     h = auth_header(admin_user)
     code = f"OVR-{uuid.uuid4().hex[:6]}"

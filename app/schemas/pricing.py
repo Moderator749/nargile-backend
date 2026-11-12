@@ -222,6 +222,8 @@ class PricingFileRead(BaseModel):
     # Last time a row was saved into it.
     updated_at: datetime
     record_count: int = 0
+    # The distinct product codes of its rows, so the file list can be searched by code.
+    product_codes: list[str] = []
 
 
 class RecordsChanged(BaseModel):
