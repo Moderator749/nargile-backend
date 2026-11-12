@@ -422,6 +422,19 @@ async def test_masa_folded_finds_both_but_masa_with_s_cedilla_means_the_tongs(cl
         resp = await client.get("/api/v1/products/suggest", params={"q": "masa"})
         order = [p["id"] for p in resp.json()["products"]]
         assert order.index(str(table.id)) < order.index(str(tongs.id))
+        # The shelves too: "maşa" suggests one named so, never a masaüstü one.
+        shelves = [Category(name=f"Köz Maşaları {suffix}", slug=f"koz-masalari-{suffix}"), Category(name=f"Masaüstü Takımlar {suffix}", slug=f"masaustu-{suffix}")]
+        db_session.add_all(shelves)
+        await db_session.commit()
+        try:
+            names = [c["name"] for c in (await client.get("/api/v1/products/suggest", params={"q": "maşa"})).json()["categories"]]
+            assert f"Köz Maşaları {suffix}" in names and not any("Masaüstü" in n for n in names)
+            # Folded, "masa" still suggests both, the one named as typed first.
+            folded = [c["name"] for c in (await client.get("/api/v1/products/suggest", params={"q": "masa"})).json()["categories"]]
+            assert folded.index(f"Masaüstü Takımlar {suffix}") < folded.index(f"Köz Maşaları {suffix}")
+        finally:
+            await db_session.execute(delete(Category).where(Category.id.in_([c.id for c in shelves])))
+            await db_session.commit()
     finally:
         await db_session.execute(delete(Product).where(Product.id.in_([tongs.id, table.id])))
         await db_session.commit()

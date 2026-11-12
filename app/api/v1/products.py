@@ -572,8 +572,21 @@ async def suggest(
                     # "yedek cam" suggests the Nargile Şişeleri (search_synonyms).
                     Category.slug.in_(synonym_categories(folded)),
                 ),
+                # "maşa" typed with its ş: the Köz Maşaları, not the masaüstü shelves.
+                *(
+                    or_(
+                        _lowered(Category.name).like(f"%{_escape_like(word)}%", escape="\\"),
+                        Category.slug.in_(synonym_categories(folded)),
+                    )
+                    for word in _marked_words(q)
+                ),
             )
-            .order_by(Category.sort_order, Category.name)
+            # A name holding the query as typed first.
+            .order_by(
+                case((_lowered(Category.name).like(f"%{_escape_like(_lower_tr(q.strip()))}%", escape="\\"), 0), else_=1),
+                Category.sort_order,
+                Category.name,
+            )
             .limit(SUGGESTED_CATEGORIES)
         )
     ).scalars().all()
