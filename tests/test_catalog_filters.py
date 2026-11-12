@@ -362,6 +362,8 @@ async def test_yedek_cam_finds_the_bottles_and_still_the_glass_parts(client: Asy
         ("nargile kafası", ["luleler"]), ("başlık", ["luleler"]), ("marpuç başlığı", []),
         ("köz makinesi", ["elektrikli-ocaklar", "gazli-ocaklar"]), ("kömür yakıcı", ["elektrikli-ocaklar", "gazli-ocaklar"]),
         ("köz ocağı", ["elektrikli-ocaklar", "gazli-ocaklar"]),
+        ("köz maşası", ["koz-masalari"]), ("kömür maşası", ["koz-masalari"]), ("nargile maşası", ["koz-masalari"]),
+        ("masa", []), ("maşa", []), ("masa üstü", []),
         ("mr wood", []), ("darkside", []), ("lüle", []), ("kafatası", []),
     ],
 )

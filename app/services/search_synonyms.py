@@ -51,6 +51,10 @@ SYNONYMS: tuple[Synonym, ...] = (
     Synonym(_word(r"lastik(?:leri|lari|i|gi)?|lastigi"), None, ("contalar",)),
     # "nargile kafası", "başlık": the lüle — not a marpuç's head ("marpuç başlığı").
     Synonym(_word(r"kafa(?:si|lar|lari)?|baslik(?:lar|lari)?|basligi"), re.compile(r"marpuc"), ("luleler",)),
+    # "köz maşası", "kömür maşası", "nargile maşası": the tongs (named "Közcü
+    # Maşası", on "Köz Maşaları"). Only with "maşa" after köz, kömür or
+    # nargile, so a plain "masa" (folded, it is also a table) stays as it was.
+    Synonym(_word(r"(?:koz(?:cu)?|komur|nargile) masa(?:si|lar|lari)?"), None, ("koz-masalari",)),
     # "köz makinesi", "kömür yakıcı", "köz ocağı": the coal heaters.
     Synonym(
         _word(r"(?:koz|komur) (?:makine(?:si)?|yakici|ocag(?:i)?|ocak)"),
