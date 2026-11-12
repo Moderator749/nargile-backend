@@ -164,6 +164,9 @@ class CatalogProductDetail(CatalogProductRead):
     # Every category the product is listed under, the primary one first: the
     # page's "İlgili Kategoriler" links.
     category_ids: list[int] = []
+    # Its Turkish meta description is boilerplate, copied onto three or more
+    # products on sale: the storefront writes its own instead.
+    meta_description_shared: bool = False
 
 
 # ── B2B price catalogue (PDF) ────────────────────────────────────────────────

@@ -401,3 +401,65 @@ async def test_a_short_query_is_not_squashed_across_words(client: AsyncClient, d
     finally:
         await db_session.execute(delete(Product).where(Product.id == product.id))
         await db_session.commit()
+
+
+async def test_masa_folded_finds_both_but_masa_with_s_cedilla_means_the_tongs(client: AsyncClient, db_session: AsyncSession):
+    """A phone without Turkish keys types "masa" for the tongs: folded, it finds
+    them and the tables. "maşa", typed with ş, means the tongs only."""
+    suffix = uuid.uuid4().hex[:6]
+    tongs = Product(base_code=f"MS-{suffix}", name=f"Köz Maşası {suffix}", tags=[])
+    table = Product(base_code=f"MT-{suffix}", name=f"Masaüstü Nargile Takımı {suffix}", tags=[])
+    db_session.add_all([tongs, table])
+    await db_session.commit()
+    try:
+        folded = await _ids(client, q="masa")
+        assert {str(tongs.id), str(table.id)} <= folded
+        typed = await _ids(client, q="maşa")
+        assert str(tongs.id) in typed and str(table.id) not in typed
+        # Capitals, as typed: still the tongs.
+        assert str(tongs.id) in await _ids(client, q="MAŞA")
+        # The suggestions put the name that holds it as typed first.
+        resp = await client.get("/api/v1/products/suggest", params={"q": "masa"})
+        order = [p["id"] for p in resp.json()["products"]]
+        assert order.index(str(table.id)) < order.index(str(tongs.id))
+    finally:
+        await db_session.execute(delete(Product).where(Product.id.in_([tongs.id, table.id])))
+        await db_session.commit()
+
+
+async def test_a_turkish_word_still_reaches_a_shelf_its_name_or_synonym_means(client: AsyncClient, db_session: AsyncSession):
+    """"ağızlık" is in no product's name: its synonym shelf still answers it."""
+    from sqlalchemy import select
+
+    suffix = uuid.uuid4().hex[:6]
+    shelf = await db_session.scalar(select(Category).where(Category.slug == "ozel-sipsiler"))
+    made = shelf is None
+    if made:
+        shelf = Category(name="Özel Sipsiler", slug="ozel-sipsiler")
+        db_session.add(shelf)
+        await db_session.flush()
+    tip = Product(base_code=f"SP-{suffix}", name=f"Askılı Kehribar Sipsi {suffix}", category_id=shelf.id, tags=[])
+    db_session.add(tip)
+    await db_session.commit()
+    try:
+        assert str(tip.id) in await _ids(client, q="ağızlık")
+    finally:
+        await db_session.execute(delete(Product).where(Product.id == tip.id))
+        if made:
+            await db_session.execute(delete(Category).where(Category.id == shelf.id))
+        await db_session.commit()
+
+
+async def test_a_meta_description_copied_onto_many_products_is_flagged(client: AsyncClient, db_session: AsyncSession):
+    suffix = uuid.uuid4().hex[:6]
+    boiler = f"Lüle çeşitleri peşin fiyatına 3 taksit {suffix}"
+    copies = [Product(base_code=f"BP{i}-{suffix}", slug=f"boiler-{i}-{suffix}", name=f"Lüle {i} {suffix}", meta_description=boiler, tags=[]) for i in range(3)]
+    own = Product(base_code=f"OWN-{suffix}", slug=f"own-{suffix}", name=f"Özel {suffix}", meta_description=f"Kendi açıklaması {suffix}", tags=[])
+    db_session.add_all([*copies, own])
+    await db_session.commit()
+    try:
+        assert (await client.get(f"/api/v1/products/boiler-0-{suffix}")).json()["meta_description_shared"] is True
+        assert (await client.get(f"/api/v1/products/own-{suffix}")).json()["meta_description_shared"] is False
+    finally:
+        await db_session.execute(delete(Product).where(Product.base_code.like(f"%-{suffix}")))
+        await db_session.commit()

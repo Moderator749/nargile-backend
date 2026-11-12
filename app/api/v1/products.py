@@ -5,7 +5,7 @@ from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from pydantic import BaseModel
@@ -71,10 +71,44 @@ def _folded(column):
     return func.lower(func.translate(column, _TR_FROM, _TR_TO))
 
 
+# Lower case with ş, ğ, ö, ü and ç kept ("MAŞA" → "maşa"), while the dotted
+# and dotless i stay one letter (İ, I, ı → i): "nargıle" is a slip for
+# "nargile", never a different word, and a capital I says nothing either way.
+_TR_UPPER = "İIıŞĞÜÖÇ"
+_TR_LOWER = "iiişğüöç"
+_TR_LOWERING = str.maketrans(_TR_UPPER, _TR_LOWER)
+#: Letters a phone without Turkish keys cannot type: whoever typed one meant it.
+_TR_MARKS = set("şğöüç")
+
+
+def _lower_tr(text: str) -> str:
+    return text.translate(_TR_LOWERING).lower()
+
+
+def _lowered(column):
+    return func.lower(func.translate(column, _TR_UPPER, _TR_LOWER))
+
+
+def _marked_words(q: str) -> list[str]:
+    """The words of a query typed with ş, ğ, ö, ü or ç ("maşa", "kömür"): those
+    the search holds to as typed, so "maşa" is not "masa"."""
+    return [w for w in _lower_tr(q).split() if _TR_MARKS & set(w)]
+
+
+def exact_first(q: str):
+    """An ordering key: 0 for a product whose name holds the query exactly as
+    typed (Turkish letters and all), 1 for one found only folded or otherwise."""
+    pattern = f"%{_escape_like(_lower_tr(q.strip()))}%"
+    return case((_lowered(Product.name).like(pattern, escape="\\"), 0), else_=1)
+
+
 def _squashed_col(column):
     """A column folded and stripped of spaces and punctuation ("Mr.Wood" → "mrwood"): search_synonyms.squashed."""
     return func.regexp_replace(_folded(column), "[^0-9a-z]", "", "g")
 
+
+#: A Turkish "SEO Açıklaması" on this many products on sale counts as boilerplate.
+META_SHARED_FROM = 3
 
 #: A squashed query shorter than this would match across words by accident.
 SQUASHED_MIN = 4
@@ -168,6 +202,8 @@ def apply_catalog_filters(
         # And a word the shop does not use, the category it means: "yedek cam"
         # lists the Nargile Şişeleri too (app.services.search_synonyms).
         also = synonym_categories(folded)
+        # One clause, used twice below: its CTE must be the same object, not two of one name.
+        shelves = [Product.id.in_(products_in(synonym_subtree(also)))] if also else []
         stmt = stmt.where(
             or_(
                 *(
@@ -180,9 +216,27 @@ def apply_catalog_filters(
                     )
                 ),
                 Product.id.in_(products_in(named)),
-                *([Product.id.in_(products_in(synonym_subtree(also)))] if also else []),
+                *shelves,
             )
         )
+        # Folded, "maşa" and "masa" are one word, which keeps a phone without
+        # Turkish keys finding the tongs by "masa". A word typed with a Turkish
+        # letter was meant as typed: it must stand so in the product's name or
+        # brand, a category it is filed under, or a shelf the query means —
+        # "maşa" lists the köz maşaları and not the masaüstü sets.
+        for word in _marked_words(q):
+            as_typed = f"%{_escape_like(word)}%"
+            stmt = stmt.where(
+                or_(
+                    _lowered(Product.name).like(as_typed, escape="\\"),
+                    _lowered(Product.brand).like(as_typed, escape="\\"),
+                    Product.id.in_(
+                        products_in(select(Category.id).where(_lowered(Category.name).like(as_typed, escape="\\")))
+                    ),
+                    *shelves,
+                    *([Product.translations[lang]["name"].astext.ilike(as_typed)] if lang in ("en", "ar") else []),
+                )
+            )
     return stmt
 
 
@@ -338,6 +392,9 @@ async def list_products(
     if ids:
         stmt = stmt.where(Product.id.in_(ids))
     order = (Product.name, Product.id)
+    if q and q.strip():
+        # A name holding the query exactly as typed comes before one found folded.
+        order = (exact_first(q), *order)
     # In the catalog's own order ("Önerilen"), what nobody can buy goes last: a
     # colour of it in the central stock or not. "Yeni Gelenler" stays newest first.
     buyable = _buyable()
@@ -500,7 +557,7 @@ async def suggest(
         await db.execute(
             apply_catalog_filters(select(Product), category=None, q=q, published_only=True, lang=lang)
             .options(*_VARIANT_LOADS)
-            .order_by(buyable.desc(), Product.name, Product.id)
+            .order_by(buyable.desc(), exact_first(q), Product.name, Product.id)
             .limit(SUGGESTED_PRODUCTS)
         )
     ).scalars().all()
@@ -869,8 +926,21 @@ async def get_product(
         (await db.execute(select(listed.c.category_id).where(listed.c.product_id == product.id))).scalars()
     )
     primary = [product.category_id] if product.category_id in linked else []
+    # The admin's Turkish "SEO Açıklaması" copied onto three or more products on
+    # sale is boilerplate ("… peşin fiyatına 3 taksit …"): it says nothing of
+    # this product, so the storefront writes one that does instead.
+    shared = False
+    own_meta = (product.meta_description or "").strip()
+    if lang is None and own_meta:
+        shared = (
+            await db.scalar(
+                select(func.count()).where(Product.on_storefront(), func.trim(Product.meta_description) == own_meta)
+            )
+            or 0
+        ) >= META_SHARED_FROM
     return CatalogProductDetail(
         **views[0].model_dump(),
         cross_sells=views[1:],
         category_ids=primary + sorted(linked - set(primary)),
+        meta_description_shared=shared,
     )
