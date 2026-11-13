@@ -49,3 +49,14 @@ def test_app_logs_reach_the_service_log_at_info():
     assert sum(getattr(h, "_app_log", False) for h in app_logger.handlers) == 1
     main._app_logging()  # idempotent: a reload adds no second handler
     assert sum(getattr(h, "_app_log", False) for h in app_logger.handlers) == 1
+
+
+async def test_with_background_jobs_off_the_app_starts_no_scheduler(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "BACKGROUND_JOBS", False)
+    started = []
+    monkeypatch.setattr(main, "build_scheduler", lambda: started.append(1))
+    with caplog.at_level(logging.WARNING, logger="app"):
+        async with main.lifespan(main.app):
+            pass
+    assert started == []
+    assert "Background jobs off" in caplog.text

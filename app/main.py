@@ -112,6 +112,10 @@ def build_scheduler() -> AsyncIOScheduler:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    if not settings.BACKGROUND_JOBS:
+        logger.warning("Background jobs off (BACKGROUND_JOBS=false): no SLA check, shipment sync, campaigns or translations.")
+        yield
+        return
     scheduler = build_scheduler()
     scheduler.start()
     logger.info("SLA scheduler started (every 1 hour).")

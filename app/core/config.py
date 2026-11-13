@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440  # admins / staff
     CUSTOMER_SESSION_DAYS: int = 30
     DEBUG: bool = False
+    # The scheduled jobs (SLA check, shipment sync, campaign sends, translation
+    # sweep) run inside the API process. Off on a second copy of the shop — a
+    # new server being readied on a copy of the database — so customers never
+    # get a campaign twice and Yurtiçi is not polled from two places.
+    BACKGROUND_JOBS: bool = True
     CORS_ORIGINS: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     # Origins matched by pattern on top of CORS_ORIGINS — the storefront's
     # Vercel preview deployments, whose host changes with every deploy.
