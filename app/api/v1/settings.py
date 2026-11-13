@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
+from app.core.edge_cache import edge_cached
 from app.models.user import User
 from app.schemas.settings import ShippingSettingsRead, StoreParametersSchema
 from app.services.shop_settings import istanbul_free_minimum
@@ -30,7 +31,7 @@ async def get_shipping_settings(db: AsyncSession = Depends(get_db)):
     return await _shipping_settings(db)
 
 
-@router.get("/settings/parameters", response_model=StoreParametersSchema)
+@router.get("/settings/parameters", response_model=StoreParametersSchema, dependencies=[Depends(edge_cached)])
 async def get_store_parameters(db: AsyncSession = Depends(get_db)):
     return StoreParametersSchema.of(await load_parameters(db))
 

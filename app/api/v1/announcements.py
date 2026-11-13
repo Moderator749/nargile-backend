@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
+from app.core.edge_cache import edge_cached
 from app.models.site import ANNOUNCEMENT_ID, POPUP_ID, BannerPreset, PopupAnnouncement, SiteAnnouncement
 from app.models.user import User
 from app.schemas.site import (
@@ -22,7 +23,7 @@ from app.schemas.site import (
 router = APIRouter(tags=["announcements"])
 
 
-@router.get("/banners/active", response_model=AnnouncementRead | None)
+@router.get("/banners/active", response_model=AnnouncementRead | None, dependencies=[Depends(edge_cached)])
 async def get_active_announcement(db: AsyncSession = Depends(get_db)):
     """The live banner, or null when none is active or it has expired.
 
@@ -98,7 +99,7 @@ async def update_announcement(
 # ── Landing popup ("Açılış duyurusu") ────────────────────────────────────────
 
 
-@router.get("/announcements/popup", response_model=PopupRead | None)
+@router.get("/announcements/popup", response_model=PopupRead | None, dependencies=[Depends(edge_cached)])
 async def get_live_popup(db: AsyncSession = Depends(get_db)):
     """The popup to show now, or null when it is off, blank or outside its time range."""
     row = await db.get(PopupAnnouncement, POPUP_ID)
