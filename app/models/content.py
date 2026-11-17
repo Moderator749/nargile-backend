@@ -86,6 +86,9 @@ class PromoBox(Base):
     top_title: Mapped[str | None] = mapped_column(String(120))
     # The line under the advantages card's title; none = the storefront's own.
     bottom_text: Mapped[str | None] = mapped_column(String(300))
+    # The advantages card's short lines, in order; none = the storefront's own
+    # (genuine products, the live free-shipping threshold and SultanPuan rate).
+    features: Mapped[list | None] = mapped_column(JSONB)
     # Where each card's dark veil starts ("Gölge Yönü"): left, right, top or bottom.
     top_shade: Mapped[str] = mapped_column(String(6), nullable=False, default="left", server_default="left")
     bottom_shade: Mapped[str] = mapped_column(String(6), nullable=False, default="left", server_default="left")

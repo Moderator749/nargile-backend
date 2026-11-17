@@ -270,6 +270,9 @@ class HeroSlideRead(BaseModel):
 
 # ── Promo boxes ──────────────────────────────────────────────────────────────
 
+#: The advantages card has room for this many short lines.
+MAX_PROMO_FEATURES = 4
+
 
 class PromoBoxWrite(BaseModel):
     """The two cards beside the hero ("Promo Kutusu"): the community card on
@@ -290,6 +293,8 @@ class PromoBoxWrite(BaseModel):
     # Blank = the storefront's own copy, in each language.
     top_title: str | None = Field(default=None, max_length=120)
     bottom_text: str | None = Field(default=None, max_length=300)
+    # The advantages card's lines, up to four; none or empty = the storefront's own.
+    features: list[Annotated[str, Field(max_length=60)]] | None = Field(default=None, max_length=MAX_PROMO_FEATURES)
     top_shade: Shade = "left"
     bottom_shade: Shade = "left"
     is_active: bool = True
@@ -304,6 +309,12 @@ class PromoBoxWrite(BaseModel):
     @classmethod
     def _strip(cls, v: str) -> str:
         return v.strip()
+
+    @field_validator("features")
+    @classmethod
+    def _features(cls, v: list[str] | None) -> list[str] | None:
+        lines = [line.strip() for line in v or [] if line and line.strip()]
+        return lines or None
 
     @field_validator("title")
     @classmethod
@@ -341,6 +352,7 @@ class PromoBoxRead(BaseModel):
     bottom_card_focus_x: int = 50
     top_title: str | None = None
     bottom_text: str | None = None
+    features: list[str] | None = None
     top_shade: Shade = "left"
     bottom_shade: Shade = "left"
     is_active: bool

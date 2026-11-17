@@ -71,3 +71,27 @@ async def upload_banner(
     except InvalidImage as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return UploadedImage(url=media_url(request, path), path=path)
+
+
+#: A promo card beside the hero is at most ~560px wide (two side by side under
+#: the slider on a tablet): 1200px covers it on a retina screen, and keeps the
+#: card's background, which loads with the homepage, light.
+PROMO_CARD_SIDE = 1200
+
+
+@router.post("/uploads/promo-card", response_model=UploadedImage, status_code=status.HTTP_201_CREATED)
+async def upload_promo_card(
+    request: Request,
+    file: UploadFile = File(...),
+    _admin: User = Depends(get_current_admin_user),
+):
+    """A promo card's background ("Promo Kutusu"): PNG, JPEG or WebP up to 5 MB,
+    stored as a WebP at most 1200px on its longest side."""
+    data = await file.read(MAX_PRODUCT_IMAGE_BYTES + 1)
+    try:
+        path = await run_in_threadpool(
+            save_image, data, "promos", MAX_PRODUCT_IMAGE_BYTES, optimise=True, max_side=PROMO_CARD_SIDE
+        )
+    except InvalidImage as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    return UploadedImage(url=media_url(request, path), path=path)

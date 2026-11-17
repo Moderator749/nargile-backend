@@ -55,7 +55,7 @@ def promo_read(row: PromoBox, _request: Request) -> PromoBoxRead:
         requires=row.requires, widget=row.widget,
         top_card_image_url=row.top_card_image_url, top_card_focus_x=row.top_card_focus_x,
         bottom_card_image_url=row.bottom_card_image_url, bottom_card_focus_x=row.bottom_card_focus_x,
-        top_title=row.top_title, bottom_text=row.bottom_text,
+        top_title=row.top_title, bottom_text=row.bottom_text, features=row.features,
         top_shade=row.top_shade, bottom_shade=row.bottom_shade,
         is_active=row.is_active, sort_order=row.sort_order,
     )

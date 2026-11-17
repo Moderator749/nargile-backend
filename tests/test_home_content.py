@@ -231,7 +231,29 @@ async def test_the_promo_box_is_one_box_saved_where_the_homepage_shows_it(
     assert (await client.get("/api/v1/admin/promo-box", headers=h)).json()["id"] == box["id"]
 
 
-@pytest.mark.parametrize("bad", [{"top_shade": "diagonal"}, {"bottom_shade": ""}, {"bottom_text": "x" * 301}])
+async def test_the_advantages_card_takes_its_own_lines(client: AsyncClient, admin_user: User, cleanup):
+    h = auth_header(admin_user)
+    saved = await client.put("/api/v1/admin/promo-box", headers=h, json={**PROMO, "features": [" Hızlı kargo ", "", "Orijinal ürün"]})
+    assert saved.status_code == 200, saved.text
+    # Trimmed, blank lines dropped, order kept; the homepage reads the same.
+    assert saved.json()["features"] == ["Hızlı kargo", "Orijinal ürün"]
+    public = (await client.get("/api/v1/home/content")).json()["promos"]
+    assert public[0]["features"] == ["Hızlı kargo", "Orijinal ürün"]
+    # None left: the storefront's own lines again.
+    cleared = (await client.put("/api/v1/admin/promo-box", headers=h, json={**PROMO, "features": ["  "]})).json()
+    assert cleared["features"] is None
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"top_shade": "diagonal"},
+        {"bottom_shade": ""},
+        {"bottom_text": "x" * 301},
+        {"features": ["x" * 61]},
+        {"features": ["a", "b", "c", "d", "e"]},
+    ],
+)
 async def test_promo_box_shades_and_texts_are_held_to_their_rules(client: AsyncClient, admin_user: User, cleanup, bad: dict):
     resp = await client.put("/api/v1/admin/promo-box", headers=auth_header(admin_user), json={**PROMO, **bad})
     assert resp.status_code == 422
@@ -303,3 +325,28 @@ async def test_a_wide_slide_keeps_2560px_and_is_stored_as_webp(client: AsyncClie
     assert stored.suffix == ".webp"
     with Image.open(stored) as image:
         assert image.size == (2560, 1280)
+
+
+async def test_a_promo_card_upload_is_a_light_webp(
+    client: AsyncClient, admin_user: User, customer_user: User, tmp_path, monkeypatch
+):
+    import io
+
+    from PIL import Image
+
+    monkeypatch.setattr(settings, "MEDIA_ROOT", tmp_path)
+    out = io.BytesIO()
+    Image.new("RGB", (2400, 1600), (40, 28, 20)).save(out, "PNG")
+    upload = lambda headers, data: client.post(  # noqa: E731
+        "/api/v1/admin/uploads/promo-card", headers=headers, files={"file": ("kart.png", data, "image/png")}
+    )
+    resp = await upload(auth_header(admin_user), out.getvalue())
+    assert resp.status_code == 201, resp.text
+    saved = resp.json()
+    assert saved["path"].startswith("promos/") and saved["path"].endswith(".webp")
+    with Image.open(tmp_path / saved["path"]) as image:
+        # 1200px on its longest side: a card, not a product photo or a banner.
+        assert image.format == "WEBP" and image.size == (1200, 800)
+    assert (await upload({}, out.getvalue())).status_code == 401
+    assert (await upload(auth_header(customer_user), out.getvalue())).status_code == 403
+    assert (await upload(auth_header(admin_user), b"not an image")).status_code == 422
