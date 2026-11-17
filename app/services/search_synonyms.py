@@ -44,7 +44,7 @@ SYNONYMS: tuple[Synonym, ...] = (
     # "nargile hortumu": the marpuç — not its spring ("hortum yayı").
     Synonym(_word(r"hortum(?:u|lar|lari)?"), re.compile(r"yay"), ("marpuclar",)),
     # "ağızlık": the sipsi.
-    Synonym(_word(r"agizlik(?:i|lar|lari)?|agizligi"), None, ("ozel-sipsiler", "plastik-ve-slikon-sipsiler")),
+    Synonym(_word(r"agizlik(?:i|lar|lari)?|agizligi"), None, ("ozel-sipsiler", "sipsiler")),
     # "hmd", "kaloud", "lotus", "ısı yönetimi": the heat management shelf ("Isı Yönetim Araçları").
     Synonym(_word(r"hmd|kaloud|lotus|isi yonetim(?:i)?"), None, ("kozlukler",)),
     # "şişe lastiği", "lüle lastiği": the contalar.

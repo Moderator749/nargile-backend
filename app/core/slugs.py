@@ -44,6 +44,7 @@ OLD_ROOT_ADDRESSES = frozenset({
     "mini-masaustu-takimlar", "rus-takimlari", "panada-hookah", "oduman-nargile", "mr-wood-nargile",
     "steamulation-nargile-takimlari", "quasar-arguile", "meduse-nargile-takimlari",
     "purmuzler",  # into Gazlar ve Pürmüzler (scripts/apply_malzemeler_tree.py)
+    "plastik-ve-slikon-sipsiler",  # the sipsi shelf is /sipsiler again (2026-11-17)
 })
 RESERVED_ROOT_PATHS = STOREFRONT_PAGES | OLD_ROOT_ADDRESSES
 

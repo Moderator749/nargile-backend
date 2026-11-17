@@ -356,7 +356,7 @@ async def test_yedek_cam_finds_the_bottles_and_still_the_glass_parts(client: Asy
     ("query", "means"),
     [
         ("nargile hortumu", ["marpuclar"]), ("silikon hortum", ["marpuclar"]), ("hortum yayı", []),
-        ("ağızlık", ["ozel-sipsiler", "plastik-ve-slikon-sipsiler"]), ("nargile ağızlığı", ["ozel-sipsiler", "plastik-ve-slikon-sipsiler"]),
+        ("ağızlık", ["ozel-sipsiler", "sipsiler"]), ("nargile ağızlığı", ["ozel-sipsiler", "sipsiler"]),
         ("hmd", ["kozlukler"]), ("kaloud lotus", ["kozlukler"]), ("copper balance hmd", ["kozlukler"]),
         ("şişe lastiği", ["contalar"]), ("lüle lastiği", ["contalar"]), ("plastik", []), ("plastik sipsi", []),
         ("nargile kafası", ["luleler"]), ("başlık", ["luleler"]), ("marpuç başlığı", []),
