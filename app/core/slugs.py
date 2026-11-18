@@ -54,6 +54,10 @@ OLD_ROOT_ADDRESSES = frozenset({
     "copper-blance",
     # 2026-11-18: old store shelves still indexed, now 301s (lib/legacy/categories.ts).
     "hortum-yaylari", "lule-ve-marpuc-baglantilari",
+    # 2026-11-18: the Oduman bottle shelf's old slug; it is now oduman-yedek-siseler
+    # (a slug_redirects row sends /oduman-siseler there), and the new empty Şişeler
+    # sub-shelf that had briefly taken it is oduman-nargile-siseleri.
+    "oduman-siseler",
 })
 RESERVED_ROOT_PATHS = STOREFRONT_PAGES | OLD_ROOT_ADDRESSES
 

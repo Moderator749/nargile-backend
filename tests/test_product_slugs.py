@@ -70,8 +70,8 @@ async def test_a_product_never_gets_one_of_the_storefronts_root_addresses(db_ses
     # A live category's slug is its page, guarded by root_slugs, not a reserved word.
     assert not {"siseler", "oduman"} & RESERVED_ROOT_PATHS
     # Merged duplicate brands and retired shelves (2026-11-18) stay reserved; the survivors do not.
-    assert {"alpha", "kong", "copper-blance", "kullan-at-marpuclar", "legen-hookah-ruzgarliklar"} <= RESERVED_ROOT_PATHS
-    assert not {"alpha-hookah", "kong-bowl", "copper-balance", "tek-kullanimlik-marpuclar", "legend-hookah-ruzgarliklar"} & RESERVED_ROOT_PATHS
+    assert {"alpha", "kong", "copper-blance", "kullan-at-marpuclar", "legen-hookah-ruzgarliklar", "oduman-siseler"} <= RESERVED_ROOT_PATHS
+    assert not {"alpha-hookah", "kong-bowl", "copper-balance", "tek-kullanimlik-marpuclar", "legend-hookah-ruzgarliklar", "oduman-yedek-siseler", "oduman-nargile-siseleri"} & RESERVED_ROOT_PATHS
     product = Product(base_code="", name="Blog", tags=[])
     db_session.add(product)
     await db_session.commit()
