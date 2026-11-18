@@ -45,6 +45,13 @@ OLD_ROOT_ADDRESSES = frozenset({
     "steamulation-nargile-takimlari", "quasar-arguile", "meduse-nargile-takimlari",
     "purmuzler",  # into Gazlar ve Pürmüzler (scripts/apply_malzemeler_tree.py)
     "plastik-ve-slikon-sipsiler",  # the sipsi shelf is /sipsiler again (2026-11-17)
+    # 2026-11-18: a duplicate shelf (same products as tek-kullanimlik-marpuclar) and
+    # the misspelt Legend shelf, renamed with the panel's slug redirect.
+    "kullan-at-marpuclar", "legen-hookah-ruzgarliklar",
+    # 2026-11-18: empty duplicate brand rows merged into the brand that holds the
+    # products (the storefront answers each with a 301, lib/legacy/categories.ts).
+    "alpha", "kong", "oblako", "kolos", "solaris", "japona", "hoob", "blade", "metsan", "naimi",
+    "copper-blance",
 })
 RESERVED_ROOT_PATHS = STOREFRONT_PAGES | OLD_ROOT_ADDRESSES
 
