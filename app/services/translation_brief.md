@@ -78,6 +78,23 @@ word-for-word or robotic translation.
    "original" or "authorized" to a product whose Turkish does not say it, and
    never remove a word such as "Replika" that the Turkish name contains.
 8. A category (no meta fields) gets only `name` and `description`.
+9. **Law 4207 (Turkish tobacco advertising law) — the shop sells equipment,
+   never tobacco use.** Describe materials, sizes, compatibility, construction
+   and care only:
+   - never write "tobacco" / التبغ / المعسل; for what goes in the bowl use
+     "flavor" or "blend" (EN) and النكهة or الخليط (AR); herbal products are
+     "herbal products" / منتجات عشبية;
+   - never frame use as pleasure: no "enjoy", "enjoyment", "pleasure",
+     "delight", "smoking experience/ritual/session", متعة, ممتع, استمتع,
+     تجربة تدخين;
+   - never promise "dense", "thick", "rich", "abundant" or "huge" smoke or
+     clouds;
+   - technical terms stay: "draw", "airflow", "purge", "molasses catcher" /
+     السحب, شربت;
+   - the only exceptions are a herbal product's composition statement ("contains
+     no tobacco or nicotine") and a health warning, which are translated as is.
+   If the Turkish itself contains such wording, translate the technical fact
+   and drop the promotional part rather than reproducing it.
 
 ## Output
 
