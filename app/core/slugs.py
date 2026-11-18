@@ -52,6 +52,8 @@ OLD_ROOT_ADDRESSES = frozenset({
     # products (the storefront answers each with a 301, lib/legacy/categories.ts).
     "alpha", "kong", "oblako", "kolos", "solaris", "japona", "hoob", "blade", "metsan", "naimi",
     "copper-blance",
+    # 2026-11-18: old store shelves still indexed, now 301s (lib/legacy/categories.ts).
+    "hortum-yaylari", "lule-ve-marpuc-baglantilari",
 })
 RESERVED_ROOT_PATHS = STOREFRONT_PAGES | OLD_ROOT_ADDRESSES
 
