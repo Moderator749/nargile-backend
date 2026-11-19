@@ -739,7 +739,8 @@ async def list_flash_sale_products(
     result = await db.execute(
         select(Product)
         .where(Product.is_opportunity.is_(True), Product.on_storefront())
-        .order_by(missed.asc(), Product.opportunity_end_date.asc().nulls_last(), Product.id)
+        # Sold out last, whatever the deal's state: the row opens on what can be bought.
+        .order_by(_buyable().desc(), missed.asc(), Product.opportunity_end_date.asc().nulls_last(), Product.id)
         .options(*_VARIANT_LOADS)
         .limit(limit)
     )
@@ -777,7 +778,8 @@ async def list_bestsellers(
         select(Product)
         .join(sold, sold.c.product_id == Product.id)
         .where(Product.on_storefront())
-        .order_by(sold.c.sold.desc(), Product.name, Product.id)
+        # Sold out last: the row opens on what can be bought.
+        .order_by(_buyable().desc(), sold.c.sold.desc(), Product.name, Product.id)
         .options(*_VARIANT_LOADS)
         .limit(limit)
     )

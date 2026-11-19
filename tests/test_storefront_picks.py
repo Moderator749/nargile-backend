@@ -10,7 +10,8 @@ from httpx import AsyncClient
 from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.catalog import Product, ProductVariant
+from app.models.catalog import Inventory, Product, ProductVariant
+from app.services.checkout_engine import CENTRAL_STOCK
 from app.models.order import Order, OrderItem, OrderStatus, PaymentMethod
 from app.models.user import User
 from tests.conftest import auth_header
@@ -61,6 +62,8 @@ async def picks(db_session: AsyncSession, customer_user: User):
     await db_session.execute(delete(OrderItem).where(OrderItem.order_id.in_(order_ids)))
     await db_session.execute(delete(Order).where(Order.id.in_(order_ids)))
     ids = [p.id for p in products]
+    vids = [v.id for vs in variants.values() for v in vs]
+    await db_session.execute(delete(Inventory).where(Inventory.variant_id.in_(vids)))
     await db_session.execute(delete(ProductVariant).where(ProductVariant.product_id.in_(ids)))
     await db_session.execute(delete(Product).where(Product.id.in_(ids)))
     await db_session.commit()
@@ -95,6 +98,21 @@ async def test_bestsellers_rank_by_quantity_sold_across_colours(client: AsyncCli
     ranked = await _ids(client, "/bestsellers", limit=3)
     assert ranked == [str(a.id), str(b.id), str(c.id)]
     assert await _ids(client, "/bestsellers", limit=1) == [str(a.id)]
+
+
+async def test_bestsellers_put_sold_out_products_last(client: AsyncClient, db_session: AsyncSession, picks):
+    """A sold-out product never opens the row: what can be bought comes first,
+    each group by the quantity sold."""
+    products, variants, sell = picks
+    a, b, c, _ = products
+    await sell([(variants[a.id][0], 3 * BIG), (variants[b.id][0], 2 * BIG), (variants[c.id][0], BIG)])
+    # Only b and c have a colour in the central stock; a (the top seller) has none.
+    db_session.add_all(
+        Inventory(variant_id=variants[p.id][1].id, warehouse_type=CENTRAL_STOCK, quantity=4) for p in (b, c)
+    )
+    await db_session.commit()
+    ranked = [i for i in await _ids(client, "/bestsellers", limit=50) if i in {str(a.id), str(b.id), str(c.id)}]
+    assert ranked == [str(b.id), str(c.id), str(a.id)]
 
 
 @pytest.mark.parametrize(
