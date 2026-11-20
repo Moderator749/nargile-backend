@@ -154,6 +154,13 @@ def no_rates_snapshot(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_indexnow_pings(monkeypatch):
+    """No test announces pages to IndexNow, whatever .env holds; the IndexNow
+    tests turn it on with a key and a stand-in `send` (tests/test_indexnow.py)."""
+    monkeypatch.setattr(settings, "INDEXNOW_KEY", None)
+
+
+@pytest.fixture(autouse=True)
 def no_claude_calls(monkeypatch):
     """No test reaches Anthropic's API, whatever .env holds. A test that turns
     auto-translation on replaces `auto_translate.complete` itself (see

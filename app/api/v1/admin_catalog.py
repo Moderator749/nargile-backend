@@ -41,7 +41,7 @@ from app.services import product_blueprint
 from app.services.checkout_engine import CENTRAL_STOCK
 from app.services.exchange_rates import RatesUnavailable, get_rates
 from app.services.pricing_engine import CURRENCY_PREFERENCE
-from app.services import auto_translate
+from app.services import auto_translate, indexnow
 
 router = APIRouter(prefix="/admin", tags=["admin-catalog"])
 
@@ -85,6 +85,7 @@ async def create_product_sheet(
     await db.commit()
     # English and Arabic it lacks, written by Claude as drafts after the answer.
     background.add_task(auto_translate.translate, "product", product.id, sessions)
+    background.add_task(indexnow.queue_products, sessions, [product.id])
     return await _read_sheet(db, product.id)
 
 
@@ -116,6 +117,7 @@ async def update_product_sheet(
         raise HTTPException(status_code=422, detail=str(exc)) from None
     await db.commit()
     background.add_task(auto_translate.translate, "product", product_id, sessions)
+    background.add_task(indexnow.queue_products, sessions, [product_id])
     return await _read_sheet(db, product_id)
 
 
@@ -290,6 +292,8 @@ async def _admin_product_rows(db: AsyncSession, ids: list[uuid.UUID]) -> list[Ad
 @router.post("/products/delete", response_model=ProductDeleteResult)
 async def delete_products(
     payload: ProductIds,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -311,6 +315,7 @@ async def delete_products(
         product_blueprint.soft_delete(product, now)
         result.deleted.append(product_id)
     await db.commit()
+    background.add_task(indexnow.queue_products, sessions, result.deleted)
     return result
 
 
@@ -339,6 +344,8 @@ async def duplicate_products(
 async def set_product_published(
     product_id: uuid.UUID,
     payload: ProductPublishUpdate,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -348,6 +355,7 @@ async def set_product_published(
         raise HTTPException(status_code=404, detail="Product not found")
     product.is_published = payload.is_published
     await db.commit()
+    background.add_task(indexnow.queue_products, sessions, [product_id])
     return ProductPublishRead(id=product.id, is_published=product.is_published)
 
 
@@ -355,6 +363,8 @@ async def set_product_published(
 async def set_product_stock(
     product_id: uuid.UUID,
     payload: ProductStockUpdate,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -375,6 +385,7 @@ async def set_product_stock(
     for item in payload.variants:
         await product_blueprint.sync_stock(db, variants[item.id], SheetStock(quantity=item.quantity))
     await db.commit()
+    background.add_task(indexnow.queue_products, sessions, [product.id])
     return (await _admin_product_rows(db, [product.id]))[0]
 
 

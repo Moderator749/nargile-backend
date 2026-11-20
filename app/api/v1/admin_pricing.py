@@ -19,12 +19,12 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile, status
 from starlette.concurrency import run_in_threadpool
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.api.deps import get_current_admin_user
+from app.api.deps import get_current_admin_user, get_session_factory
 from app.core.database import get_db
 from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPrice
 from app.api.v1.products import build_price_list
@@ -61,6 +61,7 @@ from app.schemas.pricing import (
     SaveToFileRequest,
 )
 from app.services.price_import import ImportFileError, apply_matches, match_blocks, normalize, parse_workbook
+from app.services import indexnow
 from app.services.pricing_sheet import ApplyError, apply_to_product, compute_sheet
 from app.services.product_blueprint import erp_catalog
 
@@ -479,6 +480,8 @@ async def save_to_file(
 @router.post("/apply-to-product", response_model=ApplyResult)
 async def save_and_apply(
     payload: SaveToFileRequest,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -506,6 +509,7 @@ async def save_and_apply(
     }
     db.add(record)
     await db.commit()
+    background.add_task(indexnow.queue_products, sessions, [applied.product.id])
     return ApplyResult(
         record=_read(record, file.name, applied.product.image_url),
         product_id=applied.product.id,
@@ -619,8 +623,10 @@ def _row(block) -> dict:
 
 @router.post("/import-excel", response_model=PriceImportResult)
 async def import_excel(
+    background: BackgroundTasks,
     file: UploadFile = File(...),
     dry_run: bool = Query(True, description="Only report what would change"),
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -643,6 +649,7 @@ async def import_excel(
     if not dry_run and preview.matched:
         variants = await apply_matches(db, preview)
         await db.commit()
+        background.add_task(indexnow.queue_products, sessions, [m.product.id for m in preview.matched])
 
     return PriceImportResult(
         dry_run=dry_run,

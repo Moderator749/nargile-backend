@@ -31,7 +31,8 @@ from app.schemas.taxonomy import (
 from app.services import root_slugs, slug_redirects
 from app.services.categories import category_subtree, category_subtree_ids, memberships, placement_error, products_in, ranked_order
 from app.services.media import MAX_IMAGE_BYTES, WIDE_SIDE, InvalidImage, delete_media, save_image
-from app.services import auto_translate
+from app.services import auto_translate, indexnow
+from app.services.localize import locales_of
 
 router = APIRouter(prefix="/admin", tags=["admin-taxonomy"])
 
@@ -129,6 +130,7 @@ async def create_category(
     db.add(category)
     await db.commit()
     background.add_task(auto_translate.translate, "category", category.id, sessions)
+    background.add_task(indexnow.queue_categories, sessions, [category.id])
     return (await _category_rows(db, [category.id]))[0]
 
 
@@ -147,6 +149,7 @@ async def update_category(
     await _apply_category(db, category, payload)
     await db.commit()
     background.add_task(auto_translate.translate, "category", category_id, sessions)
+    background.add_task(indexnow.queue_categories, sessions, [category_id])
     return (await _category_rows(db, [category_id]))[0]
 
 
@@ -163,14 +166,18 @@ async def delete_category(
         raise HTTPException(status_code=409, detail="Move or delete its subcategories first")
     if await db.scalar(products_in([category_id]).limit(1)):
         raise HTTPException(status_code=409, detail="Move its products to another category first")
+    gone = indexnow.page_urls(category.slug, locales_of(category.translations))
     await db.delete(category)
     await db.commit()
+    indexnow.queue(gone)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/products/category", response_model=ProductCategoryAssignResult)
 async def assign_product_category(
     payload: ProductCategoryAssign,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -180,6 +187,9 @@ async def assign_product_category(
     """
     if payload.category_id is not None and await db.get(Category, payload.category_id) is None:
         raise HTTPException(status_code=404, detail="Category not found")
+    # The shelves they leave, read before the move; their new one comes with them after it.
+    listed = memberships().subquery()
+    left = (await db.scalars(select(listed.c.category_id).where(listed.c.product_id.in_(payload.product_ids)))).all()
     result = await db.execute(
         update(Product)
         .where(Product.id.in_(payload.product_ids))
@@ -191,6 +201,8 @@ async def assign_product_category(
         moved = (await db.execute(select(Product.id).where(Product.id.in_(payload.product_ids)))).scalars()
         db.add_all(ProductCategory(product_id=pid, category_id=payload.category_id, position=0) for pid in moved)
     await db.commit()
+    background.add_task(indexnow.queue_products, sessions, payload.product_ids)
+    background.add_task(indexnow.queue_categories, sessions, left)
     return ProductCategoryAssignResult(updated=result.rowcount)
 
 
@@ -215,12 +227,15 @@ async def category_bulk_scope(
 async def category_bulk_update_settings(
     category_id: int,
     payload: CategoryBulkSettings,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Write the sent "Genel Kurallar" and "KDV gösterimi" fields on every product
     of the category, in one statement: all of them or, on an error, none."""
     await _category(db, category_id)
+    targets = (await db.scalars(_bulk_targets(category_id, payload.include_subcategories))).all()
     result = await db.execute(
         update(Product)
         .where(Product.id.in_(_bulk_targets(category_id, payload.include_subcategories)))
@@ -228,6 +243,7 @@ async def category_bulk_update_settings(
         .execution_options(synchronize_session=False)
     )
     await db.commit()
+    background.add_task(indexnow.queue_products, sessions, targets)
     return CategoryBulkResult(updated=result.rowcount)
 
 
@@ -273,6 +289,8 @@ async def list_brands_admin(
 async def create_brand(
     payload: BrandWrite,
     request: Request,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -280,6 +298,7 @@ async def create_brand(
     await _apply_brand(db, brand, payload)
     db.add(brand)
     await db.commit()
+    background.add_task(indexnow.queue_brands, sessions, [brand.id])
     return brand_read(brand, request)
 
 
@@ -309,6 +328,8 @@ async def update_brand(
     brand_id: int,
     payload: BrandWrite,
     request: Request,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -319,6 +340,7 @@ async def update_brand(
         dropped, brand.logo_path = brand.logo_path, None
     await db.commit()
     delete_media(dropped)
+    background.add_task(indexnow.queue_brands, sessions, [brand_id])
     return brand_read(brand, request)
 
 
@@ -328,8 +350,10 @@ async def delete_brand(
 ):
     brand = await _brand(db, brand_id)
     logo = brand.logo_path
+    gone = indexnow.page_urls(brand.slug) if brand.is_active else []
     await db.delete(brand)
     await db.commit()
+    indexnow.queue(gone)
     delete_media(logo)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

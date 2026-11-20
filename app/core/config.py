@@ -101,6 +101,12 @@ class Settings(BaseSettings):
     # it the storefront shows the draft within its day-long cache window.
     STOREFRONT_REVALIDATE_URL: str | None = None
     REVALIDATE_SECRET: str | None = None
+    # IndexNow (app.services.indexnow): after an admin save, the changed
+    # product/category/brand pages are announced to Bing & co. Off without a
+    # key; the storefront serves it as /<key>.txt (saas_frontend/public).
+    INDEXNOW_KEY: str | None = None
+    INDEXNOW_SITE_URL: str = "https://www.nargilemalzemesi.com"
+    INDEXNOW_ENDPOINT: str = "https://api.indexnow.org/indexnow"
     # Appended to every campaign SMS: the opt-out the ETK/İYS rules require,
     # e.g. "Ret icin RET yazip 3XXX'e gonderin. B001". Blank: nothing added.
     SMS_OPT_OUT_TEXT: str = ""
