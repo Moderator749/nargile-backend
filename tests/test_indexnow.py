@@ -129,3 +129,27 @@ async def test_nothing_is_sent_without_a_key_or_background_jobs(client: AsyncCli
     )
     await _settle()
     assert sent == [] and not indexnow._pending
+
+
+async def test_the_cetvel_save_that_applies_prices_pings_the_product(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, catalog, sent
+):
+    """The panel's "Kaydet ve Siteye Uygula" goes through /save, not /apply-to-product."""
+    from sqlalchemy import select
+
+    from tests.test_pricing_sheet import _sheet
+
+    normal_v, _ = catalog
+    code, slug = (await db_session.execute(select(Product.base_code, Product.slug).where(Product.id == normal_v.product_id))).one()
+    h = auth_header(admin_user)
+    saved = await client.post("/api/v1/admin/pricing/save", headers=h, json={"sheet": _sheet(product_code=code), "mode": "new"})
+    assert saved.status_code == 200, saved.text
+    await _settle()
+    assert sent == []  # only saved, nothing on the site changed
+
+    applied = await client.post(
+        "/api/v1/admin/pricing/save", headers=h, json={"sheet": _sheet(product_code=code), "apply": True, "mode": "new"}
+    )
+    assert applied.status_code == 200, applied.text
+    await _settle()
+    assert sent == [[f"{SITE}/{slug}"]]

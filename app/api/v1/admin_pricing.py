@@ -523,6 +523,8 @@ async def save_and_apply(
 @router.post("/save", response_model=SaveResult)
 async def save(
     payload: SaveRequest,
+    background: BackgroundTasks,
+    sessions: async_sessionmaker = Depends(get_session_factory),
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -603,6 +605,9 @@ async def save(
         )
         image_url = done.product.image_url
     await db.commit()
+    if applied is not None:
+        # The panel's "Kaydet ve Siteye Uygula": the same announcement as /apply-to-product.
+        background.add_task(indexnow.queue_products, sessions, [applied.product_id])
     if image_url is None:
         image_url = await _image_for(db, record.product_code)
     return SaveResult(

@@ -23,7 +23,6 @@ import re
 from pathlib import Path
 from typing import Any
 
-import httpx
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -32,6 +31,7 @@ from app.core.config import settings
 from app.core.database import async_session
 from app.models.catalog import Category, Product
 from app.schemas.i18n import TRANSLATED_LOCALES, CategoryTranslation, ProductTranslation
+from app.services import storefront_cache
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +193,7 @@ async def translate(kind: str, row_id: Any, factory: async_sessionmaker | None =
                 await db.commit()
         if written:
             logger.info("Auto-translated %s %s into %s", kind, row_id, ", ".join(written))
-            await _refresh_storefront()
+            _refresh_storefront()
         return list(written)
     except Exception:
         logger.exception("Auto-translation of %s %s failed", kind, row_id)
@@ -223,12 +223,7 @@ async def sweep(limit: int | None = None, factory: async_sessionmaker | None = N
     return done
 
 
-async def _refresh_storefront() -> None:
-    """Ask the storefront to drop its cached catalog, so the draft shows now (optional)."""
-    if not (settings.STOREFRONT_REVALIDATE_URL and settings.REVALIDATE_SECRET):
-        return
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(settings.STOREFRONT_REVALIDATE_URL, headers={"X-Revalidate-Secret": settings.REVALIDATE_SECRET})
-    except httpx.HTTPError:
-        logger.warning("Storefront revalidation failed", exc_info=True)
+def _refresh_storefront() -> None:
+    """Ask the storefront to drop its cached catalog, so the draft shows soon
+    (optional; gathered with every other request, see storefront_cache)."""
+    storefront_cache.request_refresh()

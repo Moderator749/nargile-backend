@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from app.core.database import async_session
 from app.core.media_files import MediaFiles
 from app.core.media_rewrite import LocalMediaRewriteMiddleware
 from app.core.trailing_slash import StripTrailingSlashMiddleware
-from app.services import auto_translate, campaigns
+from app.services import auto_translate, campaigns, indexnow, storefront_cache
 from app.services.order_tasks import cancel_expired_pending_orders
 from app.services.shipping.sync import sync_shipments
 
@@ -122,6 +123,12 @@ async def lifespan(application: FastAPI):
     yield
     scheduler.shutdown()
     logger.info("SLA scheduler stopped.")
+    # A restart (every deploy) must not drop what is still gathering.
+    for pending in (indexnow.flush, storefront_cache.flush):
+        try:
+            await asyncio.wait_for(pending(), timeout=5)
+        except Exception:  # noqa: BLE001 — both are hints; shutting down matters more
+            logger.warning("Shutdown flush failed", exc_info=True)
 
 
 app = FastAPI(

@@ -33,3 +33,4 @@ from app.models.notification import (  # noqa: F401
 from app.models.payment import PaymentTransaction  # noqa: F401
 from app.models.pricing import PriceImportAlias, PricingFile, PricingRecord  # noqa: F401
 from app.models.admin_chat import AdminMessage, AdminMessageRead  # noqa: F401
+from app.models.service_account import ServiceAccount  # noqa: F401

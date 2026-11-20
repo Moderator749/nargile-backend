@@ -107,6 +107,10 @@ class Settings(BaseSettings):
     INDEXNOW_KEY: str | None = None
     INDEXNOW_SITE_URL: str = "https://www.nargilemalzemesi.com"
     INDEXNOW_ENDPOINT: str = "https://api.indexnow.org/indexnow"
+    # The shop's own brands (by slug): the price-intelligence feed
+    # (/integrations/price-intel/catalog) leaves their products out — they are
+    # priced by the shop, not by the market. SULTANCOCO is Sultan's coal.
+    PRICE_INTEL_EXCLUDED_BRAND_SLUGS: list[str] = ["sultan", "legend", "sultancoco"]
     # Appended to every campaign SMS: the opt-out the ETK/İYS rules require,
     # e.g. "Ret icin RET yazip 3XXX'e gonderin. B001". Blank: nothing added.
     SMS_OPT_OUT_TEXT: str = ""

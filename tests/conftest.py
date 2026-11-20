@@ -161,6 +161,16 @@ def no_indexnow_pings(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_storefront_refresh(monkeypatch):
+    """No test calls the storefront's /api/revalidate, whatever .env holds; the
+    tests of the batching turn it on with a stand-in (tests/test_storefront_cache.py)."""
+    from app.services import storefront_cache
+
+    monkeypatch.setattr(settings, "STOREFRONT_REVALIDATE_URL", None)
+    storefront_cache._first = storefront_cache._last = None
+
+
+@pytest.fixture(autouse=True)
 def no_claude_calls(monkeypatch):
     """No test reaches Anthropic's API, whatever .env holds. A test that turns
     auto-translation on replaces `auto_translate.complete` itself (see
