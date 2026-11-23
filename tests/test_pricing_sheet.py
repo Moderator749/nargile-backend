@@ -83,7 +83,7 @@ def test_a_foreign_sheet_gives_the_tl_figure_at_the_typed_rate():
         usd_rate="41.50", eur_rate="48.10",
     )))
     # 10 + 100% = 20, + 20% VAT = 24; the typed 25 is the shelf price.
-    assert (out["retail"]["computed"], out["retail"]["price"], out["try_price"]) == ("24.00", "25", "1037.50")
+    assert (out["retail"]["computed"], out["retail"]["price"], out["try_price"]) == ("24.00", "25", "1038.00")  # 25 × 41.50 = 1037.50, in whole lira
 
 
 def test_an_extra_sits_before_retail_and_retail_builds_on_it_before_vat():
@@ -463,8 +463,9 @@ async def test_apply_writes_every_customer_groups_live_price(
     assert got[SegmentType.CAFE] == ("TRY", Decimal("1350.00"), Decimal("1620.00"))
     # Retail runs on the calculated chain (1322.50 through the 0% columns, then
     # Özel Fiyat's +5% = 1388.625) + 20%, not on Kafe's typed 1350: 1666.35,
-    # plus 20% VAT 1999.62 on the shelf.
-    assert got[SegmentType.RETAIL] == ("TRY", Decimal("1666.35"), Decimal("1999.62"))
+    # plus 20% VAT 1999.62 — 2000.00 on the shelf, in whole lira, and 1666.67
+    # before VAT derived from it.
+    assert got[SegmentType.RETAIL] == ("TRY", Decimal("1666.67"), Decimal("2000.00"))
     assert all(len(rows) == 1 for rows in prices.values())
 
 
@@ -511,7 +512,7 @@ async def test_a_foreign_sheet_replaces_try_rows_and_retail_takes_the_final_deci
     dealer = prices[SegmentType.DEALER]
     assert [(r.currency, r.price_incl_tax, r.price_excl_tax) for r in dealer] == [("USD", Decimal("110.00"), Decimal("91.67"))]
     retail = prices[SegmentType.RETAIL]
-    assert [(r.currency, r.price_incl_tax) for r in retail] == [("TRY", Decimal("6999.90"))]
+    assert [(r.currency, r.price_incl_tax) for r in retail] == [("TRY", Decimal("7000.00"))]  # 6999.90 typed, whole lira
 
     # And the same sheet without a final decision prices retail in USD, the TRY row gone.
     sheet.pop("final_try")

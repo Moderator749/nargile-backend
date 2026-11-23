@@ -49,6 +49,7 @@ from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPri
 from app.models.user import CustomerSegment, SegmentType
 from app.schemas.pricing import AppliedPrice, PricingSheetIn
 from app.schemas.taxonomy import BULK_ERP_DISPLAY
+from app.services.pricing_engine import excl_from_incl, whole_lira
 
 CENT = Decimal("0.01")
 COST_PLACES = Decimal("0.0001")
@@ -112,7 +113,8 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
     retail = _priced(with_vat(before_vat), r.erp_price, r.desired, None)
     retail_price = Decimal(retail["price"])
     rate = {CurrencyType.USD: sheet.usd_rate, CurrencyType.EUR: sheet.eur_rate}.get(sheet.currency)
-    try_price = (retail_price * rate).quantize(CENT) if rate else None
+    # Whole lira, rounded up, as the storefront converts it (pricing_engine.whole_lira).
+    try_price = whole_lira(retail_price * rate) if rate else None
     return {
         "vat_mode": sheet.vat_mode,
         "currency": sheet.currency.value,
@@ -270,6 +272,11 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
         if segment_id is None:
             raise ApplyError(f"Müşteri grubu tanımlı değil: {segment.value}")
         excl, incl = _both_sides(price, basis, vat_rate)
+        if currency == CurrencyType.TRY:
+            # A TRY price is charged in whole lira: rounded up after VAT, and
+            # the figure before VAT follows from it (pricing_engine).
+            incl = whole_lira(incl)
+            excl = excl_from_incl(incl, vat_rate)
         rows.append((segment_id, currency, excl, incl))
         applied.append(AppliedPrice(
             label=label, segment=segment, currency=currency, price_excl_tax=excl, price_incl_tax=incl,
@@ -315,6 +322,11 @@ async def write_prices(
         rows_by_variant[row.variant_id].append(row)
 
     for segment_id, currency, excl, incl in prices:
+        if currency == CurrencyType.TRY and incl != whole_lira(incl):
+            # Whole lira in TRY, whoever computed the figure (a worksheet, an
+            # imported sheet): rounded up after VAT, before VAT derived from it.
+            incl = whole_lira(incl)
+            excl = excl_from_incl(incl, vat_rate)
         for variant in variants:
             kept = None
             for row in [p for p in rows_by_variant[variant.id] if p.segment_id == segment_id]:

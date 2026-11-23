@@ -148,7 +148,8 @@ async def test_save_and_apply_writes_the_green_row_to_the_product(
     assert body["applied"]["variants_updated"] == 1 and body["record"]["applied_at"] is not None
     prices = await _prices(db_session, normal_v.id)
     assert prices[SegmentType.DEALER][0].price_excl_tax == Decimal("1150.00")
-    assert prices[SegmentType.RETAIL][0].price_incl_tax == Decimal("1904.40")
+    # The sheet says 1904.40; the shelf takes it in whole lira, rounded up.
+    assert prices[SegmentType.RETAIL][0].price_incl_tax == Decimal("1905.00")
 
     # The same code again from a new sheet: asked about before anything is written.
     asked = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=code, cost="2000"), "apply": True})
@@ -297,7 +298,8 @@ async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     assert applied.status_code == 200, applied.text
     prices = await _prices(db_session, normal_v.id)
     assert (prices[SegmentType.DEALER][0].price_excl_tax, prices[SegmentType.CAFE][0].price_excl_tax) == (
-        Decimal("110.52"), Decimal("131.58"),  # the green row, for the site
+        # The green row, for the site, in whole lira after VAT (132.62 → 133, 157.90 → 158).
+        Decimal("110.83"), Decimal("131.67"),
     )
     # Retail's ERP 180 is a shelf price, after VAT: the shelf gets 180 as it is.
     assert (prices[SegmentType.RETAIL][0].price_excl_tax, prices[SegmentType.RETAIL][0].price_incl_tax) == (
@@ -350,12 +352,13 @@ async def test_cetvel_2_takes_its_erp_row_after_vat_and_shows_vat_included(
     assert applied.status_code == 200, applied.text
     prices = await _prices(db_session, normal_v.id)
     assert {seg: rows[0].price_incl_tax for seg, rows in prices.items() if seg in SITE} == {
-        SegmentType.DEALER: Decimal("120.75"),
-        SegmentType.WHOLESALE: Decimal("120.75"),
-        SegmentType.CAFE: Decimal("138.60"),
+        # 120.75 and 138.60 on the sheet; whole lira, rounded up, on the shelf.
+        SegmentType.DEALER: Decimal("121.00"),
+        SegmentType.WHOLESALE: Decimal("121.00"),
+        SegmentType.CAFE: Decimal("139.00"),
         SegmentType.RETAIL: Decimal("138.00"),  # retail never takes the rate
     }
-    assert prices[SegmentType.CAFE][0].price_excl_tax == Decimal("115.50")
+    assert prices[SegmentType.CAFE][0].price_excl_tax == Decimal("115.83")  # 139.00 after VAT
     await db_session.refresh(product)
     assert product.erp_prices == {"TRY": {"DEALER": "95.83", "WHOLESALE": "95.83", "CAFE": "110.00", "RETAIL": "115.00"}}
     assert (

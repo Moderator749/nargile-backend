@@ -47,7 +47,7 @@ from app.services.categories import category_subtree, memberships, products_in, 
 from app.services.search_synonyms import squashed, synonym_categories, synonym_subtree
 from app.services.checkout_engine import CENTRAL_STOCK, HAVALE_SWITCH, shows_stock_count, stock_on_hand
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
-from app.services.pricing_engine import pick_price_row, to_try
+from app.services.pricing_engine import pick_price_row, row_in_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
 from app.services.store_parameters import load_parameters
 
@@ -286,10 +286,10 @@ def _price_for(variant: ProductVariant, segment_id: int, rates: Rates | None) ->
     entered = CatalogPrice.model_validate(row, from_attributes=True)
     if CurrencyType(row.currency) == CurrencyType.TRY:
         return entered, None
-    incl = to_try(row.price_incl_tax, row.currency, rates)
-    excl = to_try(row.price_excl_tax, row.currency, rates)
-    if incl is None or excl is None:
+    converted = row_in_try(row, rates)  # whole lira, rounded up
+    if converted is None:
         return None, entered  # TCMB unreachable: show the foreign figure only
+    excl, incl = converted
     return (
         CatalogPrice(currency=CurrencyType.TRY, price_excl_tax=excl, price_incl_tax=incl, vat_rate=row.vat_rate),
         entered,
