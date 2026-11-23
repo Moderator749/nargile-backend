@@ -174,7 +174,7 @@ def _print(plan: Plan) -> None:
     print(f"Products whose brand name changes: {len(plan.products)}")
     for p in plan.products[:30]:
         moved = f"  (brand #{p['brand_id_before']} → #{p['brand_id_after']})" if p["brand_id_before"] != p["brand_id_after"] else ""
-        print(f"  #{p['id']:<6} {p['before']!r:40} → {p['after']!r}{moved}")
+        print(f"  {str(p['id'])[:8]}  {p['before']!r:40} → {p['after']!r}{moved}")
     if len(plan.products) > 30:
         print(f"  … and {len(plan.products) - 30} more")
 
@@ -198,7 +198,7 @@ async def main() -> None:
             return
         REPORTS.mkdir(exist_ok=True)
         report = REPORTS / f"brand-caps-{datetime.now():%Y%m%d-%H%M%S}.json"
-        report.write_text(json.dumps(asdict(plan), ensure_ascii=False, indent=1))
+        report.write_text(json.dumps(asdict(plan), ensure_ascii=False, indent=1, default=str))
         await db.commit()
         print(f"\nWritten. Rows as they were: {report}")
     await engine.dispose()

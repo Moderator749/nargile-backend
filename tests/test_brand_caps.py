@@ -1,7 +1,9 @@
 """Brand names in capitals: the rule, the brand endpoints keeping a name as
 sent (trimmed), and the one-off script that put the old names into capitals."""
 
+import json
 import uuid
+from dataclasses import asdict
 
 import pytest
 from httpx import AsyncClient
@@ -102,6 +104,9 @@ async def test_script_puts_names_into_capitals_and_merges_twins(db_session: Asyn
     plan = await script.run(db, apply=True, scope=tag)
     await db.commit()
     db.expire_all()
+    # The report and the listing take products' UUID ids.
+    script._print(plan)
+    assert json.loads(json.dumps(asdict(plan), default=str))["products"]
 
     rows = {b.slug: b for b in (await db.scalars(select(Brand).where(Brand.slug.contains(tag)))).all()}
     assert set(rows) == {caps_slug, lower_slug, done_slug}  # the mixed-case twin is gone
