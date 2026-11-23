@@ -51,6 +51,11 @@ SYNONYMS: tuple[Synonym, ...] = (
     Synonym(_word(r"lastik(?:leri|lari|i|gi)?|lastigi"), None, ("contalar",)),
     # "nargile kafası", "başlık": the lüle — not a marpuç's head ("marpuç başlığı").
     Synonym(_word(r"kafa(?:si|lar|lari)?|baslik(?:lar|lari)?|basligi"), re.compile(r"marpuc"), ("luleler",)),
+    # "pipe", "bowel" (a slip for bowl) and the Arabic "رأس" (head): the lüle.
+    Synonym(re.compile(r"(?<![0-9a-z])(?:pipe|pipes|bowel|bowels)(?![0-9a-z])|رأس"), None, ("luleler",)),
+    # "narghilè", "narguilé", "nargileh": the hookah in Italian, French and
+    # English spellings — the nargile sets.
+    Synonym(_word(r"narghil[eèé]h?|narguil[eèé]h?|nargileh"), None, ("nargile-takimlari",)),
     # "köz maşası", "kömür maşası", "nargile maşası": the tongs (named "Közcü
     # Maşası", on "Köz Maşaları"). Only with "maşa" after köz, kömür or
     # nargile, so a plain "masa" (folded, it is also a table) stays as it was.

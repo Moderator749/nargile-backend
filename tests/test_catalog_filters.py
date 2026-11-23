@@ -365,6 +365,10 @@ async def test_yedek_cam_finds_the_bottles_and_still_the_glass_parts(client: Asy
         ("köz maşası", ["koz-masalari"]), ("kömür maşası", ["koz-masalari"]), ("nargile maşası", ["koz-masalari"]),
         ("masa", []), ("maşa", []), ("masa üstü", []),
         ("mr wood", []), ("darkside", []), ("lüle", []), ("kafatası", []),
+        ("pipe", ["luleler"]), ("hookah pipe", ["luleler"]), ("bowel", ["luleler"]), ("رأس", ["luleler"]),
+        ("رأس الشيشة", ["luleler"]), ("pipet", []),
+        ("narghilè", ["nargile-takimlari"]), ("Narguilé", ["nargile-takimlari"]), ("nargileh", ["nargile-takimlari"]),
+        ("nargile", []),
     ],
 )
 def test_colloquial_words_mean_their_shelves(query, means):
@@ -477,4 +481,38 @@ async def test_a_meta_description_copied_onto_many_products_is_flagged(client: A
         assert (await client.get(f"/api/v1/products/own-{suffix}")).json()["meta_description_shared"] is False
     finally:
         await db_session.execute(delete(Product).where(Product.base_code.like(f"%-{suffix}")))
+        await db_session.commit()
+
+
+async def test_a_search_for_a_retired_product_lists_its_brand(client: AsyncClient, db_session: AsyncSession):
+    """An old product's full name ("MR.WOOD NARGİLE TAKIMI -PRISMA BLACK
+    ZEBRANO", a line no longer on sale) finds nothing on sale: rather than an
+    empty page, the brand it names lists what it has now — the listing and its
+    summary alike. A search that finds something is left as it is."""
+    from app.models.brand import Brand
+
+    suffix = uuid.uuid4().hex[:6]
+    term = f"zebrawood{suffix}"
+    brand = Brand(name=term.upper(), slug=f"zw-{suffix}", search_term=term, is_active=True, sort_order=0)
+    db_session.add(brand)
+    await db_session.flush()
+    live = Product(base_code=f"ZW1-{suffix}", name=f"{term.upper()} Classic Kristal", brand=term.upper(), tags=[])
+    retired = Product(
+        base_code=f"ZW2-{suffix}", name=f"{term.upper()} Nargile Takımı - Prisma Black", brand=term.upper(), tags=[],
+        is_published=False,
+    )
+    db_session.add_all([live, retired])
+    await db_session.commit()
+    try:
+        query = f"{term.upper()} NARGİLE TAKIMI -PRISMA BLACK ZEBRANO"
+        assert await _ids(client, q=query) == {str(live.id)}
+        summary = await client.get("/api/v1/products/summary", params={"q": query})
+        assert summary.status_code == 200 and summary.json()["total"] == 1
+        # A search with results is not widened to the brand.
+        assert await _ids(client, q=f"{term} classic") == {str(live.id)}
+        # Nor is one naming no brand: still nothing.
+        assert await _ids(client, q=f"prisma black {suffix}") == set()
+    finally:
+        await db_session.execute(delete(Product).where(Product.id.in_([live.id, retired.id])))
+        await db_session.execute(delete(Brand).where(Brand.id == brand.id))
         await db_session.commit()

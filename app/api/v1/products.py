@@ -157,6 +157,40 @@ def brand_in_name(name: str, terms: list[tuple[re.Pattern[str], str]]) -> str | 
     return best[1] if best else None
 
 
+async def _brand_slug_in(db: AsyncSession, q: str) -> str | None:
+    """The active brand a search names ("MR.WOOD NARGİLE TAKIMI -PRISMA …" →
+    mr-wood), by the whole word its page searches for: the one that comes
+    first in the query, the longer on a tie. None when it names none."""
+    folded = _fold_tr(q.strip())
+    rows = (await db.execute(select(Brand.slug, Brand.search_term).where(Brand.is_active.is_(True)))).all()
+    best: tuple[tuple[int, int], str] | None = None
+    for slug, term in rows:
+        term = _fold_tr((term or "").strip())
+        if not term:
+            continue
+        found = re.search(rf"(?<![0-9a-z]){re.escape(term)}(?![0-9a-z])", folded)
+        if found and (best is None or (found.start(), -len(term)) < best[0]):
+            best = ((found.start(), -len(term)), slug)
+    return best[1] if best else None
+
+
+async def _search_or_brand(
+    db: AsyncSession, *, category: str | None, q: str | None, brand: str | None, lang: str | None
+) -> tuple[str | None, str | None]:
+    """The (q, brand) a listing is filtered by. A search that finds nothing on
+    sale but names a brand lists that brand's products instead: an old or
+    retired product's full name ("MR.WOOD NARGİLE TAKIMI -PRISMA BLACK
+    ZEBRANO", a line no longer sold) leads to what the brand has now rather
+    than to an empty page. The listing and its summary ask the same, so they agree."""
+    if not (q and q.strip()) or brand:
+        return q, brand
+    stmt = apply_catalog_filters(select(Product.id), category=category, q=q, published_only=True, lang=lang)
+    if await db.scalar(select(stmt.limit(1).exists())):
+        return q, brand
+    named = await _brand_slug_in(db, q)
+    return (None, named) if named else (q, brand)
+
+
 #: How many of each the header search suggests while a visitor types.
 SUGGESTED_PRODUCTS = 6
 SUGGESTED_CATEGORIES = 4
@@ -388,6 +422,8 @@ async def list_products(
     "Benzer Ürünler", re-priced for a signed-in viewer). `sort=newest` is the
     homepage's "Yeni Gelenler": the latest added first — the imported catalog
     shares one creation time, so among those it falls back on the name."""
+    if not ids:
+        q, brand = await _search_or_brand(db, category=category, q=q, brand=brand, lang=lang)
     stmt = apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang, brand=brand)
     if ids:
         stmt = stmt.where(Product.id.in_(ids))
@@ -470,6 +506,7 @@ async def catalog_summary(
     price them for the caller — the colour a card shows (the first in the
     caller's stock, else the first), at a live flash sale's price, else the
     caller's own, else the retail one; in TRY."""
+    q, brand = await _search_or_brand(db, category=category, q=q, brand=brand, lang=lang)
     products = (
         await db.execute(
             apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang, brand=brand).options(

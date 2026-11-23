@@ -25,6 +25,7 @@ STOREFRONT_PAGES = frozenset({
     "firsat-urunleri", "fiyat-katalogu", "images", "kargo-takip", "login", "magazalar", "marka", "onizleme", "orders",
     "product", "register", "sifre-yenile", "sifremi-unuttum", "sozlesmeler", "sss", "opengraph-image",
     "robots.txt", "sitemap.xml", "llms.txt", "favicon.ico", "icon.png", "apple-icon.png", "index.php",
+    "apple-touch-icon.png", "apple-touch-icon-precomposed.png",
 })
 OLD_ROOT_ADDRESSES = frozenset({
     # The old store's shelves and pages.
@@ -38,6 +39,8 @@ OLD_ROOT_ADDRESSES = frozenset({
     "sultan-nargile-takimlari", "masaustu-nargile-takimi", "teslimat-ve-kargolama-bilgileri", "sartlar-ve-kosullar",
     "sikca-sorulan-sorular", "hakkimizda", "gizlilik-sozlesmesi", "ithal-nargile", "legend-hookah-nargile",
     "sultan-nargile",
+    # 2026-11-23: Turkish addresses for the sign-in and contact pages (301s, lib/legacy/categories.ts).
+    "giris", "iletisim",
     # Category slugs retired by this storefront's taxonomy changes.
     "nargile-komurleri", "hindistan-cevizi-komurleri", "bitkisel-karisimlar", "marpuc-ve-hortumlar",
     "kozlukler-isi-yonetimi", "yedek-siseler", "yedek-sise-ve-govde", "masaustu-nargile-takimlari",
