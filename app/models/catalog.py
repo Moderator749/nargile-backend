@@ -530,6 +530,6 @@ def _link_product_brand(mapper, connection, target: Product) -> None:
         ).limit(1)
     ).first()
     if row is None:
-        target.brand_id = None
+        target.brand_id, target.brand = None, name
         return
     target.brand_id, target.brand = row.id, row.name
