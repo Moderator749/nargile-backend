@@ -44,15 +44,18 @@ class TestAccount:
     segment: SegmentType
 
 
+# Names as "Ad Soyad": the account page splits off the last word as the
+# surname (Ad "Esenyurt", Soyad "Şube"). No "Test" in them: they show on
+# orders, labels and the panel like any customer's.
 ACCOUNTS: tuple[TestAccount, ...] = (
-    TestAccount("cafe@sultannargile.com", "Test Cafe", AccountType.CAFE, SegmentType.CAFE),
-    TestAccount("bayi@sultannargile.com", "Test Bayi", AccountType.TOBACCO_SHOP, SegmentType.DEALER),
-    TestAccount("toptan@sultannargile.com", "Test Toptan", AccountType.TOBACCO_SHOP, SegmentType.WHOLESALE),
+    TestAccount("cafe@sultannargile.com", "Cafe Hesabı", AccountType.CAFE, SegmentType.CAFE),
+    TestAccount("bayi@sultannargile.com", "Bayi Hesabı", AccountType.TOBACCO_SHOP, SegmentType.DEALER),
+    TestAccount("toptan@sultannargile.com", "Toptan Hesabı", AccountType.TOBACCO_SHOP, SegmentType.WHOLESALE),
     # Export: the account type is what makes it one (no payment screen, a quote);
     # wholesale prices are what an approved export customer buys at.
-    TestAccount("yurtdisi@sultannargile.com", "Test Yurtdışı", AccountType.INTERNATIONAL, SegmentType.WHOLESALE),
-    TestAccount("esenyurt@sultannargile.com", "Test Esenyurt Şube", AccountType.INDIVIDUAL, SegmentType.RETAIL),
-    TestAccount("bahcelievler@sultannargile.com", "Test Bahçelievler Şube", AccountType.INDIVIDUAL, SegmentType.RETAIL),
+    TestAccount("yurtdisi@sultannargile.com", "Yurtdışı Hesabı", AccountType.INTERNATIONAL, SegmentType.WHOLESALE),
+    TestAccount("esenyurt@sultannargile.com", "Esenyurt Şube", AccountType.INDIVIDUAL, SegmentType.RETAIL),
+    TestAccount("bahcelievler@sultannargile.com", "Bahçelievler Şube", AccountType.INDIVIDUAL, SegmentType.RETAIL),
 )
 
 SEGMENT_LABELS = {
