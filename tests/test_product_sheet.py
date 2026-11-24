@@ -21,7 +21,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice, WarehouseType
+from app.models.catalog import Inventory, Product, ProductVariant, SlugRedirect, VariantPrice, WarehouseType
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
 from app.services import exchange_rates
@@ -298,6 +298,29 @@ async def test_a_deleted_products_code_can_be_used_again(
     assert sorted((str(pid), active) for pid, active in rows) == sorted(
         [(first["id"], False), (second["id"], True)]
     )
+
+
+async def test_a_new_products_address_is_nobodys_redirect(
+    client: AsyncClient, admin_user: User, db_session: AsyncSession
+):
+    """An old slug left by another product's rename gives way when a new product
+    is given that address (MLZ162-1's, 2026-11-24)."""
+    other = (await _post(client, admin_user, _sheet(color_names=[]))).json()
+    code = f"MLZ{uuid.uuid4().hex[:5].upper()}-1"
+    body = _sheet(base_code=code, color_names=[])
+    created = (await _post(client, admin_user, body)).json()
+    # Pretend the address was the other product's before a rename, then free it.
+    taken = created["slug"]
+    await client.post("/api/v1/admin/products/delete", headers=auth_header(admin_user), json={"product_ids": [created["id"]]})
+    db_session.add(SlugRedirect(kind="product", old_slug=taken, product_id=uuid.UUID(other["id"])))
+    await db_session.commit()
+
+    again = (await _post(client, admin_user, body)).json()
+    assert again["slug"] == taken
+    left = await db_session.scalar(
+        select(SlugRedirect.id).where(SlugRedirect.kind == "product", SlugRedirect.old_slug == taken)
+    )
+    assert left is None
 
 
 async def test_a_live_products_code_is_refused_whatever_its_case(client: AsyncClient, admin_user: User):

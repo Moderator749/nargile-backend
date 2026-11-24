@@ -19,7 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import false as sa_false
 from sqlalchemy import func
-from sqlalchemy import and_, event, inspect, or_, select, text, update
+from sqlalchemy import and_, delete, event, inspect, or_, select, text, update
 from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, object_session, relationship
@@ -513,6 +513,11 @@ def _give_product_a_slug(mapper, connection, target: Product) -> None:
         slug, n = f"{base}-{n}", n + 1
     pending.add(slug)
     target.slug = slug
+    # An address in live use is nobody's redirect (as slug_redirects.moved has it
+    # for a rename): an old slug of another product gives way to this one.
+    connection.execute(
+        delete(SlugRedirect).where(SlugRedirect.kind == "product", SlugRedirect.old_slug == slug)
+    )
 
 
 @event.listens_for(Session, "after_flush")
