@@ -67,7 +67,7 @@ async def run(codes: list[str], dry_run: bool, refresh: bool) -> None:
                 "id": str(product.id), "code": product.base_code, "name": product.name, "slug": product.slug,
                 "was_published": product.is_published, "orders": orders,
             })
-            soft_delete(product, now)
+            await soft_delete(db, product, now)
         await db.flush()
 
         if dry_run or not report:

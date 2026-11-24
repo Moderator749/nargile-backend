@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api.deps import get_current_admin_user
 from app.core.database import get_db
-from app.models.catalog import CurrencyType, ProductVariant
+from app.models.catalog import CurrencyType, Product, ProductVariant
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.promotion import FlashSaleRead, FlashSaleWrite
@@ -90,8 +90,12 @@ async def _load(db: AsyncSession, sale_id: int) -> FlashSale:
 
 async def _apply(db: AsyncSession, sale: FlashSale, payload: FlashSaleWrite) -> None:
     """Resolve the SKU and check the sale is really a discount on the RETAIL price."""
+    # A live product's colour: a deleted product's retired colour may share the code now.
     variant = await db.scalar(
-        select(ProductVariant).where(ProductVariant.sku == payload.sku).options(selectinload(ProductVariant.prices))
+        select(ProductVariant)
+        .join(Product, Product.id == ProductVariant.product_id)
+        .where(ProductVariant.sku == payload.sku, Product.is_deleted.is_(False))
+        .options(selectinload(ProductVariant.prices))
     )
     if variant is None:
         raise HTTPException(status_code=404, detail=f"No variant with SKU {payload.sku}")

@@ -22,7 +22,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -382,8 +382,15 @@ async def _park_swapped(
 
 
 async def _taken_skus(db: AsyncSession, exclude: list[uuid.UUID]) -> set[str]:
-    """Every SKU in use outside this product, so a derived one cannot shadow one."""
-    stmt = select(ProductVariant.sku)
+    """Every SKU other products hold, folded for case, so a derived one cannot
+    shadow one. A live product's retired colours hold theirs (re-adding the
+    colour revives the row); a deleted product holds none, so its codes are
+    free for a new product."""
+    stmt = (
+        select(func.lower(ProductVariant.sku))
+        .join(Product, Product.id == ProductVariant.product_id)
+        .where(Product.is_deleted.is_(False))
+    )
     if exclude:
         stmt = stmt.where(ProductVariant.id.not_in(exclude))
     return set((await db.execute(stmt)).scalars())
@@ -401,16 +408,17 @@ def _variant_sku(base: str, color: str | None, *, foreign: set[str], mine: set[s
     slug = color_slug(color) if color else ""
     tail = f"-{slug}" if slug else ""
     candidate = f"{base[: SKU_MAX - len(tail)]}{tail}"
-    if candidate in foreign:
+    # `foreign` is folded (_taken_skus); codes are unique case aside.
+    if candidate.lower() in foreign:
         raise SheetError(f"“{candidate}” kodu başka bir ürüne ait")
-    if candidate not in mine:
+    if candidate.lower() not in {m.lower() for m in mine}:
         return candidate
 
     stem = slug or "RENK"
     for attempt in range(2, 100):
         tail = f"-{stem}-{attempt}"
         numbered = f"{base[: SKU_MAX - len(tail)]}{tail}"
-        if numbered not in foreign and numbered not in mine:
+        if numbered.lower() not in foreign and numbered.lower() not in {m.lower() for m in mine}:
             return numbered
     raise SheetError(f"“{base}” için boş bir stok kodu bulunamadı")
 
@@ -646,15 +654,24 @@ async def _free_code(db: AsyncSession, code: str) -> str:
     raise SheetError("Kopya için boş bir ürün kodu bulunamadı")
 
 
-def soft_delete(product: Product, now: datetime | None = None) -> None:
+async def soft_delete(db: AsyncSession, product: Product, now: datetime | None = None) -> None:
     """The admin's "Sil": the product leaves the storefront and the admin lists
     but its row stays, with its colours, so the order lines that point at them
     keep their product. Unpublished as well, for every reader that only asks
-    `is_published`. Deleting it again keeps the first date."""
+    `is_published`. Deleting it again keeps the first date.
+
+    Its colours are retired with it, as a removed colour is: they keep their
+    stock codes for the order lines, but no longer hold them, so a new product
+    can be given the same code (the index is on colours on sale only)."""
     if not product.is_deleted:
         product.deleted_at = now or datetime.now(timezone.utc)
     product.is_deleted = True
     product.is_published = False
+    await db.execute(
+        update(ProductVariant)
+        .where(ProductVariant.product_id == product.id, ProductVariant.is_active.is_(True))
+        .values(is_active=False)
+    )
 
 
 async def delete_product(db: AsyncSession, product: Product) -> None:

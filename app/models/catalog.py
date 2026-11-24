@@ -19,7 +19,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import false as sa_false
 from sqlalchemy import func
-from sqlalchemy import and_, event, inspect, or_, select
+from sqlalchemy import and_, event, inspect, or_, select, text, update
 from sqlalchemy import true as sa_true
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, Session, mapped_column, object_session, relationship
@@ -336,12 +336,19 @@ class ProductVariant(Base):
     otherwise kept with `is_active = False`: its order lines still have to name
     the thing that was sold. Re-adding the same label revives that row, with its
     history, instead of making a second one — which the unique constraint on
-    (product, colour) forbids anyway.
+    (product, colour) forbids anyway. A deleted product's colours are retired
+    with it (product_blueprint.soft_delete).
+
+    A stock code is unique among the colours on sale, case aside: a retired
+    colour keeps its code for its order lines without holding it, so deleting a
+    product never stops its code being used again. The product sheet still
+    refuses a retired colour's code while its product lives, so re-adding that
+    colour can always revive it.
     """
 
     __tablename__ = "product_variants"
     __table_args__ = (
-        Index("ix_product_variants_sku", "sku", unique=True),
+        Index("ix_product_variants_sku", text("lower(sku)"), unique=True, postgresql_where=text("is_active")),
         # One row per colour per product. NULLs are distinct in Postgres, so this
         # does not by itself stop two "Standart" variants; the product sheet does.
         UniqueConstraint("product_id", "color_name", name="uq_variant_product_color"),
@@ -478,6 +485,19 @@ def _give_product_a_slug(mapper, connection, target: Product) -> None:
     session = object_session(target)
     pending: set[str] = session.info.setdefault(_PENDING_SLUGS, set()) if session is not None else set()
     base = product_slug_base(target.name or "", target.base_code or "")
+    # A deleted product gives its address up to a new product that would be
+    # given it (the same code and name: usually the same thing, sold again), so
+    # the address and its links lead to the product on sale, not "-2". The
+    # deleted row keeps its order lines under an address no page links.
+    if base not in pending:
+        holder = connection.execute(
+            select(Product.id).where(Product.slug == base, Product.is_deleted.is_(True))
+        ).scalar()
+        if holder is not None:
+            tail = f"-silindi-{holder.hex[:8]}"
+            connection.execute(
+                update(Product).where(Product.id == holder).values(slug=f"{base[: PRODUCT_SLUG_MAX - len(tail)]}{tail}")
+            )
     taken = set(
         connection.execute(
             select(Product.slug).where((Product.slug == base) | Product.slug.like(f"{base}-%"))

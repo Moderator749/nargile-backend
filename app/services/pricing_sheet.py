@@ -224,9 +224,14 @@ async def find_product(db: AsyncSession, code: str) -> Product | None:
     live = Product.is_deleted.is_(False)
     product = await db.scalar(select(Product).where(func.lower(Product.base_code) == code.lower(), live).options(options))
     if product is None:
-        variant = await db.scalar(select(ProductVariant).where(func.lower(ProductVariant.sku) == code.lower()))
-        if variant is not None:
-            product = await db.scalar(select(Product).where(Product.id == variant.product_id, live).options(options))
+        # A deleted product's code may belong to a new product now: look among live ones only.
+        product = await db.scalar(
+            select(Product)
+            .join(ProductVariant, ProductVariant.product_id == Product.id)
+            .where(func.lower(ProductVariant.sku) == code.lower(), live)
+            .options(options)
+            .limit(1)
+        )
     return product
 
 

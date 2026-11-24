@@ -266,6 +266,46 @@ async def test_sheet_rejects_a_code_another_product_owns(client: AsyncClient, ad
     assert resp.status_code == 422 and "başka bir ürüne ait" in resp.json()["detail"]
 
 
+async def test_a_deleted_products_code_can_be_used_again(
+    client: AsyncClient, admin_user: User, db_session: AsyncSession
+):
+    """Deleting a product frees its code: the same code (any case) and name make
+    a new product, which takes the old address; the deleted row and its retired
+    colour stay for their order lines. (MLZ-162-1, 2026-11-24.)"""
+    code = f"MLZ-{uuid.uuid4().hex[:5].upper()}-1"
+    first = (await _post(client, admin_user, _sheet(base_code=code, color_names=[]))).json()
+    deleted = await client.post(
+        "/api/v1/admin/products/delete", headers=auth_header(admin_user), json={"product_ids": [first["id"]]}
+    )
+    assert deleted.status_code == 200 and deleted.json()["deleted"] == [first["id"]]
+
+    again = await _post(client, admin_user, _sheet(base_code=code.lower(), color_names=[]))
+    assert again.status_code in (200, 201), again.text
+    second = again.json()
+    assert second["id"] != first["id"] and second["slug"] == first["slug"]
+
+    old = await db_session.scalar(
+        select(Product).where(Product.id == uuid.UUID(first["id"])).execution_options(populate_existing=True)
+    )
+    assert old.is_deleted and old.slug.startswith(f"{first['slug']}-silindi-")
+    rows = (
+        await db_session.execute(
+            select(ProductVariant.product_id, ProductVariant.is_active)
+            .where(ProductVariant.sku.ilike(code))
+            .execution_options(populate_existing=True)
+        )
+    ).all()
+    assert sorted((str(pid), active) for pid, active in rows) == sorted(
+        [(first["id"], False), (second["id"], True)]
+    )
+
+
+async def test_a_live_products_code_is_refused_whatever_its_case(client: AsyncClient, admin_user: User):
+    first = (await _post(client, admin_user, _sheet(color_names=[]))).json()
+    resp = await _post(client, admin_user, _sheet(base_code=first["base_code"].lower(), color_names=[]))
+    assert resp.status_code == 422 and "başka bir ürüne ait" in resp.json()["detail"]
+
+
 # ── One stock for every segment ──────────────────────────────────────────────
 
 

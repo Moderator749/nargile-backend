@@ -312,7 +312,7 @@ async def delete_products(
         if product is None:
             result.refused[product_id] = "Ürün bulunamadı"
             continue
-        product_blueprint.soft_delete(product, now)
+        await product_blueprint.soft_delete(db, product, now)
         result.deleted.append(product_id)
     await db.commit()
     background.add_task(indexnow.queue_products, sessions, result.deleted)

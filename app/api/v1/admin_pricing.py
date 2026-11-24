@@ -97,16 +97,18 @@ async def _images(db: AsyncSession, codes: set[str]) -> dict[str, str]:
     if not wanted:
         return {}
     found: dict[str, str] = {}
+    # Deleted first, so a live product's photo overwrites a deleted one's under a reused code.
     by_sku = await db.execute(
         select(func.lower(ProductVariant.sku), Product.image_url)
         .join(Product, Product.id == ProductVariant.product_id)
         .where(func.lower(ProductVariant.sku).in_(wanted), Product.image_url.is_not(None))
+        .order_by(Product.is_deleted.desc())
     )
     found.update({code: url for code, url in by_sku})
     by_code = await db.execute(
-        select(func.lower(Product.base_code), Product.image_url).where(
-            func.lower(Product.base_code).in_(wanted), Product.image_url.is_not(None)
-        )
+        select(func.lower(Product.base_code), Product.image_url)
+        .where(func.lower(Product.base_code).in_(wanted), Product.image_url.is_not(None))
+        .order_by(Product.is_deleted.desc())
     )
     found.update({code: url for code, url in by_code})  # the product's own code wins over a SKU
     return found
