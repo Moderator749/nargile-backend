@@ -92,23 +92,26 @@ def _write_sheet(record: PricingRecord, sheet: PricingSheetIn) -> None:
 
 
 async def _images(db: AsyncSession, codes: set[str]) -> dict[str, str]:
-    """Each code's product photo, by product code or a colour's SKU (case-insensitive)."""
+    """Each code's product photo, by product code or a colour's SKU on sale
+    (case-insensitive). A deleted product is not looked at: its code may be a
+    new product's now, or nobody's."""
     wanted = {c.strip().lower() for c in codes if c and c.strip()}
     if not wanted:
         return {}
     found: dict[str, str] = {}
-    # Deleted first, so a live product's photo overwrites a deleted one's under a reused code.
+    live = Product.is_deleted.is_(False)
     by_sku = await db.execute(
         select(func.lower(ProductVariant.sku), Product.image_url)
         .join(Product, Product.id == ProductVariant.product_id)
-        .where(func.lower(ProductVariant.sku).in_(wanted), Product.image_url.is_not(None))
-        .order_by(Product.is_deleted.desc())
+        .where(
+            func.lower(ProductVariant.sku).in_(wanted), ProductVariant.is_active.is_(True),
+            live, Product.image_url.is_not(None),
+        )
     )
     found.update({code: url for code, url in by_sku})
     by_code = await db.execute(
         select(func.lower(Product.base_code), Product.image_url)
-        .where(func.lower(Product.base_code).in_(wanted), Product.image_url.is_not(None))
-        .order_by(Product.is_deleted.desc())
+        .where(func.lower(Product.base_code).in_(wanted), live, Product.image_url.is_not(None))
     )
     found.update({code: url for code, url in by_code})  # the product's own code wins over a SKU
     return found
@@ -116,21 +119,23 @@ async def _images(db: AsyncSession, codes: set[str]) -> dict[str, str]:
 
 async def _erp_catalogs(db: AsyncSession, codes: set[str]) -> dict[str, ProductErpCatalog]:
     """Each code's product's "ERP ve Katalog Fiyatları" (the product sheet's),
-    by product code or a colour's SKU (case-insensitive), with its price table
-    — for the price catalogue. A live product wins over a deleted one, and the
-    product's own code over a SKU."""
+    by product code or a colour's SKU on sale (case-insensitive), with its
+    price table — for the price catalogue. The product's own code wins over a
+    SKU. A deleted product is not looked at: a row whose code only a deleted
+    product had prices from its own figures, never the deleted one's."""
     wanted = {c.strip().lower() for c in codes if c and c.strip()}
     if not wanted:
         return {}
     products: dict[str, Product] = {}
+    live = Product.is_deleted.is_(False)
     by_sku = (
         select(func.lower(ProductVariant.sku), Product)
         .join(Product, Product.id == ProductVariant.product_id)
-        .where(func.lower(ProductVariant.sku).in_(wanted))
+        .where(func.lower(ProductVariant.sku).in_(wanted), ProductVariant.is_active.is_(True), live)
     )
-    by_code = select(func.lower(Product.base_code), Product).where(func.lower(Product.base_code).in_(wanted))
-    for stmt in (by_sku, by_code):  # deleted first, so a live one overwrites it
-        for code, product in await db.execute(stmt.order_by(Product.is_deleted.desc())):
+    by_code = select(func.lower(Product.base_code), Product).where(func.lower(Product.base_code).in_(wanted), live)
+    for stmt in (by_sku, by_code):  # the code after the SKU, so it overwrites it
+        for code, product in await db.execute(stmt):
             products[code] = product
 
     # The price table as the product sheet shows it: its first live colour's
@@ -720,6 +725,7 @@ async def list_import_aliases(_admin: User = Depends(get_current_admin_user), db
     rows = await db.execute(
         select(PriceImportAlias, Product)
         .join(Product, Product.id == PriceImportAlias.product_id)
+        .where(Product.is_deleted.is_(False))  # a deleted product's names tie to nothing
         .order_by(PriceImportAlias.excel_name)
     )
     return [_alias(alias, product) for alias, product in rows.all()]
@@ -734,7 +740,10 @@ async def _save_aliases(db: AsyncSession, admin: User, entries: list[ImportAlias
     if len(set(keys)) != len(keys):
         raise HTTPException(status_code=422, detail="Aynı ad birden fazla kez gönderildi.")
     ids = {entry.product_id for entry in entries}
-    products = {p.id: p for p in (await db.scalars(select(Product).where(Product.id.in_(ids)))).all()}
+    products = {
+        p.id: p
+        for p in (await db.scalars(select(Product).where(Product.id.in_(ids), Product.is_deleted.is_(False)))).all()
+    }
     if missing := ids - products.keys():
         raise HTTPException(status_code=404, detail=f"Ürün bulunamadı: {', '.join(sorted(map(str, missing)))}")
     existing = {

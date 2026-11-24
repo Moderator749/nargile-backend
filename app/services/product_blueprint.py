@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.core.slugs import PRODUCT_SLUG_MAX
 from app.models.catalog import (
     Category,
     CurrencyType,
@@ -37,11 +38,12 @@ from app.models.catalog import (
     ProductVariant,
     VariantPrice,
 )
+from app.models.pricing import PriceImportAlias, PricingRecord
 from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType
 from app.services import root_slugs, slug_redirects
 from app.services.checkout_engine import CENTRAL_STOCK, stock_on_hand
-from app.services.pricing_engine import pick_price_row
+from app.services.pricing_engine import erp_text, pick_price_row
 from app.models.order import OrderItem
 from app.schemas import i18n
 from app.schemas.product_sheet import (
@@ -186,11 +188,26 @@ async def save(
             raise SheetError("Seçilen kategorilerden biri bulunamadı")
 
     if payload.slug and payload.slug != (product.slug if product else None):
+        others = Product.id != (product.id if product else None)
         clash = await db.scalar(
-            select(Product.id).where(Product.slug == payload.slug, Product.id != (product.id if product else None))
+            select(Product.id).where(Product.slug == payload.slug, others, Product.is_deleted.is_(False))
         )
         if clash is not None:
             raise SheetError(f"“{payload.slug}” adresi başka bir üründe kullanılıyor")
+        # A deleted product gives its address up, as it does to a slug made
+        # from the name (catalog._give_product_a_slug): it keeps its order
+        # lines under "<slug>-silindi-<id>", an address no page links.
+        holder = await db.scalar(
+            select(Product.id).where(Product.slug == payload.slug, others, Product.is_deleted.is_(True))
+        )
+        if holder is not None:
+            tail = f"-silindi-{holder.hex[:8]}"
+            await db.execute(
+                update(Product)
+                .where(Product.id == holder)
+                .values(slug=f"{payload.slug[: PRODUCT_SLUG_MAX - len(tail)]}{tail}")
+                .execution_options(synchronize_session="fetch")
+            )
         shared = await root_slugs.taken_by(db, "product", payload.slug)
         if shared:
             raise SheetError(shared)
@@ -550,7 +567,9 @@ async def _sync_cross_sells(db: AsyncSession, product: Product, related_ids: lis
         raise SheetError("Ürün kendisiyle birlikte satılamaz")
     if related_ids:
         found = set(
-            (await db.execute(select(Product.id).where(Product.id.in_(related_ids)))).scalars()
+            (
+                await db.execute(select(Product.id).where(Product.id.in_(related_ids), Product.is_deleted.is_(False)))
+            ).scalars()
         )
         missing = [pid for pid in related_ids if pid not in found]
         if missing:
@@ -572,7 +591,7 @@ def cross_sell_cards(product: Product, retail_segment_id: int | None) -> list[Cr
     cards = []
     for link in sorted(product.cross_sells, key=lambda c: c.position):
         related = link.related
-        if related is None:  # the product was deleted (the cascade removes the row)
+        if related is None or related.is_deleted:  # soft_delete unpins it; an old row may linger
             continue
         price = None
         for variant in related.variants:
@@ -621,9 +640,11 @@ async def duplicate(db: AsyncSession, product: Product, segments: dict[int, Segm
 
 
 def stored_erp_prices(prices: dict[CurrencyType, dict[SegmentType, Decimal]]) -> dict | None:
-    """The ERP matrix as the product keeps it: strings to the kuruş, no empty currency; None when empty."""
+    """The ERP matrix as the product keeps it: strings to the kuruş — or to the
+    four places a price typed after VAT needs (pricing_engine.erp_text) — no
+    empty currency; None when empty."""
     stored = {
-        CurrencyType(c).value: {SegmentType(s).value: str(Decimal(v).quantize(Decimal("0.01"))) for s, v in row.items()}
+        CurrencyType(c).value: {SegmentType(s).value: erp_text(v) for s, v in row.items()}
         for c, row in prices.items()
         if row
     }
@@ -643,13 +664,24 @@ BASE_CODE_MAX = 30
 
 async def _free_code(db: AsyncSession, code: str) -> str:
     """"<code>-KOPYA", then -KOPYA2, -KOPYA3… until one no product and no stock
-    code has taken. Both pools, because the copy's code becomes both."""
-    taken = set((await db.execute(select(Product.base_code))).scalars())
-    taken |= set((await db.execute(select(ProductVariant.sku))).scalars())
+    code has taken, case aside. Both pools, because the copy's code becomes
+    both. A deleted product's codes are free, as `_taken_skus` has them."""
+    live = Product.is_deleted.is_(False)
+    taken = {c.lower() for c in (await db.execute(select(Product.base_code).where(live))).scalars()}
+    taken |= {
+        s.lower()
+        for s in (
+            await db.execute(
+                select(ProductVariant.sku)
+                .join(Product, Product.id == ProductVariant.product_id)
+                .where(live, ProductVariant.is_active.is_(True))
+            )
+        ).scalars()
+    }
     for n in range(1, 100):
         suffix = f"-KOPYA{'' if n == 1 else n}"
         candidate = f"{code[: BASE_CODE_MAX - len(suffix)]}{suffix}"
-        if candidate not in taken:
+        if candidate.lower() not in taken:
             return candidate
     raise SheetError("Kopya için boş bir ürün kodu bulunamadı")
 
@@ -662,14 +694,45 @@ async def soft_delete(db: AsyncSession, product: Product, now: datetime | None =
 
     Its colours are retired with it, as a removed colour is: they keep their
     stock codes for the order lines, but no longer hold them, so a new product
-    can be given the same code (the index is on colours on sale only)."""
+    can be given the same code (the index is on colours on sale only).
+
+    Nothing else keeps pointing at it as a live product either:
+    - a pricing worksheet row applied to it ("Sitede") is detached: no longer
+      applied, its summary naming the deleted product as `deleted_product_id`
+      and `product_id` null — its figures stay, as a worksheet to reuse, but
+      it no longer claims a product's live prices, and a new product given
+      the same code starts with no row applied to it;
+    - the workbook names tied to it in "Toplu Fiyat" (price import aliases)
+      are dropped, so an upload never matches them to it again;
+    - it is unpinned from every product that sold it alongside ("birlikte
+      satılanlar"), and its flash sales are switched off."""
+    now = now or datetime.now(timezone.utc)
     if not product.is_deleted:
-        product.deleted_at = now or datetime.now(timezone.utc)
+        product.deleted_at = now
     product.is_deleted = True
     product.is_published = False
     await db.execute(
         update(ProductVariant)
         .where(ProductVariant.product_id == product.id, ProductVariant.is_active.is_(True))
+        .values(is_active=False)
+    )
+    applied_to = PricingRecord.applied_summary["product_id"].astext
+    for record in (await db.execute(select(PricingRecord).where(applied_to == str(product.id)))).scalars():
+        record.applied_summary = {
+            **(record.applied_summary or {}),
+            "product_id": None,
+            "deleted_product_id": str(product.id),
+            "detached_at": now.isoformat(),
+        }
+        record.applied_at = None
+    await db.execute(delete(PriceImportAlias).where(PriceImportAlias.product_id == product.id))
+    await db.execute(delete(ProductCrossSell).where(ProductCrossSell.related_product_id == product.id))
+    await db.execute(
+        update(FlashSale)
+        .where(
+            FlashSale.variant_id.in_(select(ProductVariant.id).where(ProductVariant.product_id == product.id)),
+            FlashSale.is_active.is_(True),
+        )
         .values(is_active=False)
     )
 

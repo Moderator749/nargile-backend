@@ -170,7 +170,9 @@ class SheetOpportunity(BaseModel):
         return self
 
 
-ErpPrice = Annotated[Decimal, Field(gt=0, le=Decimal("100000000"), decimal_places=2)]
+# Before VAT: to the kuruş, or to four places when a price typed after VAT
+# needs them to come back exactly (0.45 at 20% is 0.375; pricing_engine.erp_before_vat).
+ErpPrice = Annotated[Decimal, Field(gt=0, le=Decimal("100000000"), decimal_places=4)]
 
 
 class SheetErpCatalog(BaseModel):

@@ -511,7 +511,7 @@ async def test_erp_catalog_prices_round_trip_on_the_product(client: AsyncClient,
     [
         {"erp_prices": {"TRY": {"DEALER": "0"}}},
         {"erp_prices": {"USD": {"CAFE": "-3"}}},
-        {"erp_prices": {"EUR": {"RETAIL": "1.234"}}},
+        {"erp_prices": {"EUR": {"RETAIL": "1.23456"}}},  # four places at most (0.375 is fine)
         {"erp_prices": {"GBP": {"RETAIL": "10"}}},
         {"erp_prices": {"TRY": {"VIP": "10"}}},
     ],

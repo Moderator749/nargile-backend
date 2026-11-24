@@ -30,7 +30,8 @@ from the orange row), the classes then adding the rate (115 + 5% = 120.75).
 Mağaza Fiyatı and retail are shelf prices, after VAT on both sheets, and so
 is their ERP fiyatı: 250 typed is 250.00 to apply, never 300. The product's
 ERP prices are before VAT, so whatever was typed after VAT loses VAT on the
-way there (`erp_by_group`: 115 at 20% is 95.83).
+way there (`erp_by_group`: 115 at 20% is 95.83; 0.45 is 0.375, kept to four
+places so the catalogue shows 0.45 again, never 0.46).
 
 The uygulanacak oran is added half a kuruş up, as the panel shows it.
 
@@ -49,7 +50,7 @@ from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPri
 from app.models.user import CustomerSegment, SegmentType
 from app.schemas.pricing import AppliedPrice, PricingSheetIn
 from app.schemas.taxonomy import BULK_ERP_DISPLAY
-from app.services.pricing_engine import excl_from_incl, whole_lira
+from app.services.pricing_engine import erp_before_vat, erp_text, excl_from_incl, whole_lira
 
 CENT = Decimal("0.01")
 COST_PLACES = Decimal("0.0001")
@@ -168,18 +169,21 @@ def erp_by_group(sheet: PricingSheetIn) -> dict[SegmentType, Decimal | None]:
 
     The classes' blue row is in the sheet's basis: on Cetvel 1 before VAT
     already (485 typed is 485), on Cetvel 2 after VAT (115 at 20% is 95.83).
-    Retail's is after VAT on both (240 typed at 20% is 200)."""
-    vat = 1 + sheet.retail.vat_rate / 100
+    Retail's is after VAT on both (240 typed at 20% is 200). A price typed
+    after VAT is kept so that VAT put back gives it again — to four places
+    when the kuruş cannot (0.45 at 20% is 0.375, not 0.38, which shows 0.46)."""
+    vat = sheet.retail.vat_rate
 
-    def before_vat(price: Decimal | None, factor: Decimal) -> Decimal | None:
-        return None if price is None else (price / factor).quantize(CENT, rounding=ROUND_HALF_UP)
+    def before_vat(price: Decimal | None, after_vat: bool) -> Decimal | None:
+        if price is None:
+            return None
+        return erp_before_vat(price, vat) if after_vat else price.quantize(CENT, rounding=ROUND_HALF_UP)
 
-    classes = vat if sheet.vat_mode == "INCL" else Decimal(1)
     erp: dict[SegmentType, Decimal | None] = {}
     for col in sheet.columns:
         if col.segment is not None:
-            erp[col.segment] = before_vat(col.erp_price, classes)
-    erp[SegmentType.RETAIL] = before_vat(sheet.retail.erp_price, vat)
+            erp[col.segment] = before_vat(col.erp_price, sheet.vat_mode == "INCL")
+    erp[SegmentType.RETAIL] = before_vat(sheet.retail.erp_price, True)
     return erp
 
 
@@ -187,8 +191,13 @@ def write_erp(product: Product, sheet: PricingSheetIn) -> None:
     """The sheet's "ERP fiyatı" row onto the product's ERP prices (the product
     sheet's "ERP ve Katalog Fiyatları"), in the sheet's currency: each group
     the sheet prices takes its ERP price, or loses the one it had when the
-    sheet has none — the sheet now prices it from its own row. Other groups
-    and currencies are left as they are.
+    sheet has none — the sheet now prices it from its own row.
+
+    Each group the sheet prices also loses its ERP prices in the other
+    currencies, as its live prices do (`write_prices`): a catalogue takes a
+    group's ERP price in its own currency first, so an old TL figure would
+    quietly win over the USD one just applied. Groups the sheet does not
+    price keep theirs, in every currency.
 
     A sheet from a cost after VAT ("Cetvel 2 · KDV dahil maliyet") also sets
     every group's "KDV gösterimi" to "KDV dahil göster", so the catalogue shows
@@ -196,10 +205,13 @@ def write_erp(product: Product, sheet: PricingSheetIn) -> None:
     matrix = {c: dict(row) for c, row in (product.erp_prices or {}).items()}
     row = matrix.setdefault(sheet.currency.value, {})
     for segment, price in erp_by_group(sheet).items():
+        for currency, other in matrix.items():
+            if currency != sheet.currency.value:
+                other.pop(segment.value, None)
         if price is None:
             row.pop(segment.value, None)
         else:
-            row[segment.value] = str(price)
+            row[segment.value] = erp_text(price)
     product.erp_prices = {c: r for c, r in matrix.items() if r} or None
     if sheet.vat_mode == "INCL":
         for field in BULK_ERP_DISPLAY:  # True is "KDV dahil göster"
@@ -228,7 +240,7 @@ async def find_product(db: AsyncSession, code: str) -> Product | None:
         product = await db.scalar(
             select(Product)
             .join(ProductVariant, ProductVariant.product_id == Product.id)
-            .where(func.lower(ProductVariant.sku) == code.lower(), live)
+            .where(func.lower(ProductVariant.sku) == code.lower(), ProductVariant.is_active.is_(True), live)
             .options(options)
             .limit(1)
         )

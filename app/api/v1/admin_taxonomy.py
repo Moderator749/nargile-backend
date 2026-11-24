@@ -3,7 +3,7 @@ mapping, and brands (with logos) for the menu and the homepage marquee."""
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Request, Response, UploadFile, status
 from starlette.concurrency import run_in_threadpool
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.deps import get_current_admin_user, get_session_factory
@@ -44,6 +44,8 @@ async def _category_rows(db: AsyncSession, ids: list[int] | None = None) -> list
     listed = memberships().subquery()
     counts = (
         select(listed.c.category_id, func.count().label("n"))
+        # A deleted product is in no list of the panel's: not in the count either.
+        .join(Product, and_(Product.id == listed.c.product_id, Product.is_deleted.is_(False)))
         .group_by(listed.c.category_id)
         .subquery()
     )

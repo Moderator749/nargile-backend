@@ -10,7 +10,7 @@ before VAT is then derived from that whole price, so the two still agree.
 """
 
 from collections.abc import Iterable
-from decimal import ROUND_CEILING, Decimal
+from decimal import ROUND_CEILING, ROUND_HALF_UP, Decimal
 
 
 from app.models.catalog import CurrencyType, VariantPrice
@@ -67,6 +67,33 @@ def row_in_try(row: VariantPrice, rates: Rates | None) -> tuple[Decimal, Decimal
     if incl is None:
         return None
     return excl_from_incl(incl, row.vat_rate), incl
+
+
+# An ERP price ("ERP ve Katalog Fiyatları") is kept before VAT, to the kuruş —
+# or to four places when the kuruş would not give back the price after VAT it
+# was typed as: 0.45 USD at 20% is 0.375, since 0.38 × 1.20 = 0.456 shows 0.46.
+ERP_PLACES = Decimal("0.0001")
+
+
+def erp_before_vat(price: Decimal, vat_rate: Decimal) -> Decimal:
+    """An ERP price typed after VAT (`price`), before VAT as the product keeps
+    it: to the kuruş when VAT put back on that gives `price` again (115 at 20%
+    is 95.83, and 95.83 × 1.20 = 115.00), else to four places (0.45 is 0.375).
+    At 0% it is `price` itself."""
+    factor = 1 + Decimal(vat_rate) / 100
+    exact = price / factor
+    cents = exact.quantize(CENT, rounding=ROUND_HALF_UP)
+    if (cents * factor).quantize(CENT, rounding=ROUND_HALF_UP) == price.quantize(CENT, rounding=ROUND_HALF_UP):
+        return cents
+    return exact.quantize(ERP_PLACES, rounding=ROUND_HALF_UP)
+
+
+def erp_text(value: Decimal | str) -> str:
+    """An ERP price as the product stores it: to the kuruş ("95.83", "105.00"),
+    or with the places it needs beyond them, up to four ("0.375")."""
+    exact = Decimal(value).quantize(ERP_PLACES, rounding=ROUND_HALF_UP)
+    cents = exact.quantize(CENT)
+    return str(cents) if cents == exact else str(exact).rstrip("0")
 
 
 def calculate_line_total(unit_price: Decimal, quantity: int) -> Decimal:

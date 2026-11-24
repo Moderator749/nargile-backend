@@ -1,7 +1,7 @@
 import re
 import uuid
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
@@ -47,7 +47,7 @@ from app.services.categories import category_subtree, memberships, products_in, 
 from app.services.search_synonyms import squashed, synonym_categories, synonym_subtree
 from app.services.checkout_engine import CENTRAL_STOCK, HAVALE_SWITCH, shows_stock_count, stock_on_hand
 from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
-from app.services.pricing_engine import pick_price_row, row_in_try
+from app.services.pricing_engine import CENT, ERP_PLACES, pick_price_row, row_in_try, to_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
 from app.services.store_parameters import load_parameters
 
@@ -296,14 +296,15 @@ def _price_for(variant: ProductVariant, segment_id: int, rates: Rates | None) ->
     )
 
 
-async def _rates_if_needed(products: list[Product]) -> Rates | None:
-    """Fetch TCMB rates only when some price on the page is in a foreign currency."""
+async def _rates_if_needed(products: list[Product], erp: bool = False) -> Rates | None:
+    """Fetch TCMB rates only when some price on the page is in a foreign
+    currency — with `erp`, an ERP price too (a price catalogue's)."""
     if not any(
         CurrencyType(price.currency) != CurrencyType.TRY
         for product in products
         for variant in product.variants
         for price in variant.prices
-    ):
+    ) and not (erp and any(c != "TRY" for product in products for c in (product.erp_prices or {}))):
         return None
     try:
         return await get_rates()
@@ -683,15 +684,29 @@ ERP_DISPLAY_FIELD = {
 }
 
 
-def _erp_for(product: Product, group: SegmentType, currency: CurrencyType) -> tuple[Decimal | None, CurrencyType | None]:
-    """The group's ERP price (before VAT) for a catalogue in `currency`: the
-    group's in it, else its first of TRY, USD, EUR — as the admin's price
-    catalogue picks it (lib/erpCatalog.ts `erpPriceFor`)."""
+def _erp_for(
+    product: Product, group: SegmentType, listed: CatalogPrice, rates: Rates | None
+) -> tuple[Decimal | None, CurrencyType | None]:
+    """The group's ERP price (before VAT) for a catalogue line priced as
+    `listed`: the group's in that currency, else its first of TRY, USD, EUR —
+    as the admin's price catalogue picks it (lib/erpCatalog.ts `erpPriceFor`).
+
+    A TL line whose group has its ERP price only in USD or EUR (a USD
+    worksheet applied) takes it in TL at the day's rate, after VAT and in
+    whole lira as every TL price (0.375 USD + 20% = 0.45 USD → 23 TL), its
+    figure before VAT derived from that; the foreign figure without a rate."""
     matrix = product.erp_prices or {}
-    for code in dict.fromkeys((CurrencyType(currency).value, "TRY", "USD", "EUR")):
+    for code in dict.fromkeys((CurrencyType(listed.currency).value, "TRY", "USD", "EUR")):
         value = (matrix.get(code) or {}).get(group.value)
-        if value is not None:
-            return Decimal(value), CurrencyType(code)
+        if value is None:
+            continue
+        price, currency = Decimal(value), CurrencyType(code)
+        if CurrencyType(listed.currency) == CurrencyType.TRY and currency != CurrencyType.TRY:
+            factor = 1 + listed.vat_rate / 100
+            incl = to_try((price * factor).quantize(CENT, rounding=ROUND_HALF_UP), currency, rates)
+            if incl is not None:
+                return (incl / factor).quantize(ERP_PLACES, rounding=ROUND_HALF_UP), CurrencyType.TRY
+        return price, currency
     return None, None
 
 
@@ -718,7 +733,7 @@ async def build_price_list(
         )
     ).scalars().all()
     by_id = {p.id: p for p in rows}
-    rates = await _rates_if_needed(list(rows))
+    rates = await _rates_if_needed(list(rows), erp=True)
     items: list[PriceListItem] = []
     for product_id in dict.fromkeys(product_ids):  # screen order, each once
         product = by_id.get(product_id)
@@ -739,7 +754,7 @@ async def build_price_list(
                     listed = price
                 else:
                     continue
-                erp_price, erp_currency = _erp_for(product, group, listed.currency)
+                erp_price, erp_currency = _erp_for(product, group, listed, rates)
                 prices[group] = PriceListPrice(
                     **listed.model_dump(),
                     erp_price=erp_price,

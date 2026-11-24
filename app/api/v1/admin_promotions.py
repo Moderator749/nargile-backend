@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -94,7 +94,11 @@ async def _apply(db: AsyncSession, sale: FlashSale, payload: FlashSaleWrite) -> 
     variant = await db.scalar(
         select(ProductVariant)
         .join(Product, Product.id == ProductVariant.product_id)
-        .where(ProductVariant.sku == payload.sku, Product.is_deleted.is_(False))
+        .where(
+            func.lower(ProductVariant.sku) == payload.sku.strip().lower(),
+            ProductVariant.is_active.is_(True),
+            Product.is_deleted.is_(False),
+        )
         .options(selectinload(ProductVariant.prices))
     )
     if variant is None:

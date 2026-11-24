@@ -297,6 +297,8 @@ async def match_blocks(db: AsyncSession, parsed: Parsed) -> Preview:
         by["name"][normalize(product.name)].add(product.id)
         keys_of[product.id].add(normalize(product.base_code))
         for variant in product.variants:
+            if not variant.is_active:  # a retired colour's code is no longer its product's
+                continue
             by["sku"][normalize(variant.sku)].add(product.id)
             keys_of[product.id].add(normalize(variant.sku))
     aliases = {

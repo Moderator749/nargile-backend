@@ -276,7 +276,9 @@ async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     """MLZ 154: the blue "ERP fiyatı" row (105, 105, 125; retail 180) is the
     base the catalogue prices from, not the green row the site gets (105 +
     5.26% = 110.52). Applied, it is the product's ERP prices as typed, retail's
-    too; groups the sheet does not price, and other currencies, stay."""
+    too; groups the sheet does not price stay, in every currency, but a group
+    it prices loses its ERP price in the other currencies (MLZ163: an old TL
+    figure won over the USD sheet just applied)."""
     normal_v, _ = catalog
     code = await _code(db_session, normal_v)
     product = await db_session.get(Product, normal_v.product_id)
@@ -309,7 +311,6 @@ async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     # The product keeps it before VAT, as every ERP price: 180 / 1.20 = 150.
     assert product.erp_prices == {
         "TRY": {"DEALER": "105.00", "CAFE": "125.00", "RETAIL": "150.00", "WHOLESALE": "999.00"},
-        "USD": {"RETAIL": "24.50"},
     }
     # Cetvel 1 leaves each group's "KDV gösterimi" as the product had it.
     assert (product.erp_display_bayi, product.erp_display_toptan) == (None, True)
