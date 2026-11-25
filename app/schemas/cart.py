@@ -133,10 +133,16 @@ class CartCalculateResponse(BaseModel):
     # The VAT inside the merchandise, for a business invoice: the lines before
     # VAT, the line discounts before VAT (a bayi's havale), the VAT on what the
     # lines come to after them, and the rates involved. subtotal_excl_tax −
-    # line_discount_excl_tax + vat_total is what the lines come to. Not for a
-    # retail cart, whose discounts are cart-wide.
+    # line_discount_excl_tax + vat_total is what the lines come to.
+    # A Perakende cart (a Kurumsal account's invoice view) has cart-wide
+    # discounts instead: each before VAT below, and vat_total is then the VAT
+    # left after them all — subtotal_excl_tax − the three + vat_total is what
+    # the merchandise comes to (net_total, carriage being never charged).
     subtotal_excl_tax: Decimal = Decimal("0.00")
     line_discount_excl_tax: Decimal = Decimal("0.00")
+    volume_discount_excl_tax: Decimal = Decimal("0.00")
+    discount_excl_tax: Decimal = Decimal("0.00")
+    points_discount_excl_tax: Decimal = Decimal("0.00")
     vat_total: Decimal = Decimal("0.00")
     vat_rates: list[Decimal] = Field(default_factory=list)
     loyalty_points_to_earn: int

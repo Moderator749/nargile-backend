@@ -910,3 +910,24 @@ async def test_an_export_account_gets_no_perks_on_perakende(client: AsyncClient,
     quote = await _quote(client, user, variant)
     assert quote["perks_eligible"] is False and quote["loyalty_eligible"] is False
     assert Decimal(quote["volume_discount_amount"]) == Decimal(quote["discount_amount"]) == Decimal("0.00")
+
+
+async def test_a_perakende_cart_states_its_vat_after_its_discounts(
+    client: AsyncClient, db_session: AsyncSession, segments
+):
+    """A Kurumsal account on Perakende keeps its invoice view: the subtotal before
+    VAT, each cart-wide discount before VAT, the VAT left after them, the total —
+    adding up to the kuruş."""
+    firm = await _buyer(db_session, segments, AccountType.TOBACCO_SHOP, SegmentType.RETAIL)
+    variant = await _variant(db_session, segments)
+    await _grant_points(db_session, firm, 500)
+    resp = await client.post("/api/v1/orders/calculate-cart", headers=auth_header(firm), json=_body(variant, points_to_redeem=500))
+    assert resp.status_code == 200, resp.text
+    q = resp.json()
+    D = Decimal
+    volume, discount, points = D(q["volume_discount_excl_tax"]), D(q["discount_excl_tax"]), D(q["points_discount_excl_tax"])
+    assert volume > 0 and discount > 0 and points > 0
+    assert D(q["subtotal_excl_tax"]) - volume - discount - points + D(q["vat_total"]) == D(q["net_total"]) - D(q["cargo_cost"])
+    # Each before VAT at the cart's 20%.
+    assert abs(volume * D("1.20") - D(q["volume_discount_amount"])) <= D("0.01")
+    assert abs(points * D("1.20") - D(q["points_discount"])) <= D("0.01")

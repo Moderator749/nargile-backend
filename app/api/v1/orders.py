@@ -79,6 +79,19 @@ async def calculate_cart(
     # After each line's own discount (a bayi's havale); the same as above without one.
     net_excl = sum((i.net_line_total_excl_tax for i in cart.items), Decimal("0.00"))
     net_lines = sum((i.net_line_total for i in cart.items), Decimal("0.00"))
+    # A Perakende cart's discounts are cart-wide (ciro, havale, Sultan Puan): for
+    # its invoice view each is stated before VAT, at the lines' own blend of
+    # rates, and the VAT is what is left inside the merchandise after them all,
+    # so the rows add up to the total to the kuruş.
+    volume_excl = discount_excl = points_excl = Decimal("0.00")
+    vat_total = net_lines - net_excl
+    if cart.perks_eligible and cart.subtotal > 0:
+        share = subtotal_excl / cart.subtotal
+        volume_excl = (cart.volume_discount_amount * share).quantize(Decimal("0.01"))
+        discount_excl = (cart.discount_amount * share).quantize(Decimal("0.01"))
+        points_excl = (cart.points_discount * share).quantize(Decimal("0.01"))
+        merchandise = cart.subtotal - cart.volume_discount_amount - cart.discount_amount - cart.points_discount
+        vat_total = merchandise - (subtotal_excl - volume_excl - discount_excl - points_excl)
     next_tier = params.next_volume_tier(cart.subtotal)
     return CartCalculateResponse(
         subtotal=cart.subtotal,
@@ -111,7 +124,10 @@ async def calculate_cart(
         net_total=cart.net_total,
         subtotal_excl_tax=subtotal_excl,
         line_discount_excl_tax=subtotal_excl - net_excl,
-        vat_total=net_lines - net_excl,
+        volume_discount_excl_tax=volume_excl,
+        discount_excl_tax=discount_excl,
+        points_discount_excl_tax=points_excl,
+        vat_total=vat_total,
         vat_rates=sorted({i.vat_rate for i in cart.items}),
         loyalty_points_to_earn=cart.loyalty_points_to_earn,
         payment_method=cart.payment_method,
