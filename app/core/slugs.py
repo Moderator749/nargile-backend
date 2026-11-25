@@ -22,7 +22,7 @@ PRODUCT_SLUG_MAX = 255
 # (/siseler, /oduman, /wd-hookah) is that page, not a redirect, and is not listed.
 STOREFRONT_PAGES = frozenset({
     "en", "ar", "tr", "api", "_next", "_", "abonelikten-cik", "account", "admin", "bilgi", "blog", "cart", "catalog", "checkout",
-    "firsat-urunleri", "fiyat-katalogu", "images", "kargo-takip", "login", "magazalar", "marka", "onizleme", "orders",
+    "erisim-kisitli", "firsat-urunleri", "fiyat-katalogu", "images", "kargo-takip", "login", "magazalar", "marka", "onizleme", "orders",
     "product", "register", "sifre-yenile", "sifremi-unuttum", "sozlesmeler", "sss", "opengraph-image",
     "robots.txt", "sitemap.xml", "llms.txt", "favicon.ico", "icon.png", "apple-icon.png", "index.php",
     "apple-touch-icon.png", "apple-touch-icon-precomposed.png",

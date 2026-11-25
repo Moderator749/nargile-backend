@@ -20,6 +20,7 @@ from app.models.order import Order
 from app.models.user import (
     AccountType,
     AddressKind,
+    BillingEntity,
     CustomerAddress,
     CustomerProfile,
     CustomerSegment,
@@ -29,6 +30,7 @@ from app.models.user import (
 from app.schemas.admin import SortDirection
 from app.schemas.b2b import B2BApplicationRead, B2BApprove, B2BReject
 from app.schemas.customer import (
+    AccountTypeEdit,
     AdminCustomerDetail,
     AdminCustomerRead,
     CustomerAddressRead,
@@ -276,6 +278,40 @@ async def assign_segment(
     if segment_id is None:
         raise HTTPException(status_code=500, detail="Segment not configured")
     user.segment_id = segment_id
+    await db.commit()
+    return await _detail(db, user_id, admin)
+
+
+@router.put("/customers/{user_id}/account-type", response_model=AdminCustomerDetail)
+async def edit_account_type(
+    user_id: uuid.UUID,
+    payload: AccountTypeEdit,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Hesap Türü": switch an account between Bireysel and Kurumsal and keep
+    its firm's invoice details. Its price list is left as it is — a customer
+    who signed up as Bireysel and was put on Kafe keeps Kafe."""
+    user = await _customer(db, user_id, changed_by=admin)
+    if AccountType(user.account_type) == AccountType.INTERNATIONAL:
+        raise HTTPException(status_code=422, detail="Yurt dışı hesapların türü buradan değiştirilemez")
+    profile = await db.scalar(select(CustomerProfile).where(CustomerProfile.user_id == user.id))
+    if profile is None:
+        # An account made without one (an admin-created one, an old import).
+        profile = CustomerProfile(user_id=user.id)
+        user.profile = profile
+        db.add(profile)
+    if payload.kind == "INDIVIDUAL":
+        user.account_type = AccountType.INDIVIDUAL
+        # Invoiced to the person from now on; the firm's details stay on file.
+        profile.billing_entity_type = None
+    else:
+        user.account_type = payload.business_type
+        tax_number = payload.tax_number or ""
+        profile.billing_entity_type = BillingEntity.COMPANY if len(tax_number) == 10 else BillingEntity.SOLE_PROPRIETOR
+        profile.company_title = payload.company_title
+        profile.tax_office = payload.tax_office
+        profile.tax_number = tax_number
     await db.commit()
     return await _detail(db, user_id, admin)
 

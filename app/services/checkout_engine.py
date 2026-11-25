@@ -83,6 +83,7 @@ from app.services.flash_sales import discounted_price, live_flash_sales
 from app.services.loyalty_service import get_user_loyalty_balance
 from app.services.wallet import points_for
 from app.services.pricing_engine import calculate_line_total, pick_price_row, to_try
+from app.services.tier_access import RESTRICTED_MESSAGE, hidden_product_ids, restrictions_for
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -320,6 +321,14 @@ class CheckoutEngine:
 
         segment_id = user.segment_id or 1  # default to RETAIL
         items = await self._load_items(variant_quantities, segment_id, segment_code)
+        # "Grup Erişim Kısıtlamaları": a product this account's group may not
+        # see cannot be bought either, whatever the cart was sent.
+        hidden = await hidden_product_ids(
+            self._db, await restrictions_for(self._db, user), {i.product.id for i in items}
+        )
+        if hidden:
+            sku = next(i.variant.sku for i in items if i.product.id in hidden)
+            raise ValueError(f"{sku}: {RESTRICTED_MESSAGE}")
 
         subtotal = sum((i.line_total for i in items), Decimal("0.00"))
         # The van is free from a limit the admin sets, and below it the option is

@@ -71,6 +71,7 @@ RULE_FIELDS = (
     "gives_points",
     "can_use_points",
     "is_cart_rule_applied",
+    "allow_retail_kurus",
 )
 OPPORTUNITY_FIELDS = (
     "is_opportunity",
@@ -242,7 +243,7 @@ async def save(
         if "weight_kg" in payload.model_fields_set:
             variant.weight_kg = payload.weight_kg
         await sync_stock(db, variant, sheet.stock)
-        await _sync_prices(db, variant, payload.prices, segments)
+        await _sync_prices(db, variant, payload.prices, segments, whole_retail=not payload.rules.allow_retail_kurus)
         await _sync_flash_sale(db, variant, payload.opportunity, now)
     await _sync_cross_sells(db, product, payload.related_product_ids)
     category_ids = await _with_deals_category(db, payload.category_ids or [], product.is_opportunity)
@@ -479,9 +480,12 @@ async def _sync_prices(
     variant: ProductVariant,
     rows: list[SheetPriceRow],
     segments: dict[SegmentType, int],
+    *,
+    whole_retail: bool = True,
 ) -> None:
     """Upsert the filled cells of the matrix and drop the ones the admin cleared.
-    A retail TL price is kept in whole lira, rounded up (pricing_engine)."""
+    A retail TL price is kept in whole lira, rounded up (pricing_engine) —
+    unless the product keeps its retail kuruş (`allow_retail_kurus`)."""
     existing = {
         (CurrencyType(p.currency), p.segment_id): p
         for p in (await db.execute(select(VariantPrice).where(VariantPrice.variant_id == variant.id))).scalars()
@@ -497,7 +501,10 @@ async def _sync_prices(
             if not cell.filled:
                 continue
             excl, incl, vat = cell.resolved()
-            if segment == SegmentType.RETAIL and CurrencyType(row.currency) == CurrencyType.TRY and incl != whole_lira(incl):
+            if (
+                whole_retail and segment == SegmentType.RETAIL
+                and CurrencyType(row.currency) == CurrencyType.TRY and incl != whole_lira(incl)
+            ):
                 # Retail TL is whole lira, rounded up, from whichever side was
                 # typed (7.50 → 8.00); before VAT follows from it. Bayi, Toptan
                 # and Kafe keep their kuruş.

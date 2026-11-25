@@ -144,6 +144,9 @@ class SheetRules(BaseModel):
     can_use_points: bool = True
     # "Sepet Kuralı": counts as coal for the cargo rule (see Product.is_cart_rule_applied).
     is_cart_rule_applied: bool = False
+    # "Perakende TL kuruşlu kalsın": keep this product's retail TL price as
+    # typed (7.50), not rounded up to whole lira (Product.allow_retail_kurus).
+    allow_retail_kurus: bool = False
 
 
 class SheetOpportunity(BaseModel):

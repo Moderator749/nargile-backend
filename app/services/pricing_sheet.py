@@ -299,7 +299,7 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
         if segment_id is None:
             raise ApplyError(f"Müşteri grubu tanımlı değil: {segment.value}")
         excl, incl = _both_sides(price, basis, vat_rate)
-        if currency == CurrencyType.TRY and segment == SegmentType.RETAIL:
+        if currency == CurrencyType.TRY and segment == SegmentType.RETAIL and not product.allow_retail_kurus:
             # A retail TRY price is charged in whole lira: rounded up after
             # VAT, and the figure before VAT follows from it (pricing_engine).
             # A business group keeps its kuruş (3.16 + 20% stays 3.16 / 3.79).
@@ -309,7 +309,9 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
         applied.append(AppliedPrice(
             label=label, segment=segment, currency=currency, price_excl_tax=excl, price_incl_tax=incl,
         ))
-    await write_prices(db, variants, rows, vat_rate, retail_id=segments.get(SegmentType.RETAIL))
+    # A product that keeps its retail kuruş is written as computed (no whole-lira rounding).
+    retail_id = None if product.allow_retail_kurus else segments.get(SegmentType.RETAIL)
+    await write_prices(db, variants, rows, vat_rate, retail_id=retail_id)
     write_erp(product, sheet)
     cost = cost_before_vat(sheet.cost, sheet.vat_mode, sheet.retail.vat_rate)
     for variant in variants:

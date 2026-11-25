@@ -9,9 +9,11 @@ registration plus :class:`SegmentAssign`.
 import enum
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.core.tr_identity import normalize_tax_id
 from app.models.user import AccountType, AddressKind, BillingEntity, InternationalKind, SegmentType
 
 
@@ -149,6 +151,52 @@ class AddressBookEntry(SavedAddress):
 
     editable: bool
     deletable: bool
+
+
+class AccountTypeEdit(BaseModel):
+    """"Hesap Türü" in the admin panel: Bireysel, or Kurumsal with the firm's
+    invoice details. The price list (segment) is not touched.
+
+    Kurumsal: the account becomes a business account (`business_type`, its line
+    of business: Kafe & Restoran or Nargile & Tobacco Shop) invoiced to the
+    firm — a şirket for a 10-digit VKN, a şahıs firması for an 11-digit TCKN.
+    Bireysel: an individual account, invoiced to the person; the firm's details
+    stay on file but are no longer used.
+    """
+
+    kind: Literal["INDIVIDUAL", "CORPORATE"]
+    business_type: Literal[AccountType.CAFE, AccountType.TOBACCO_SHOP] | None = None
+    company_title: str | None = Field(default=None, max_length=255)
+    tax_office: str | None = Field(default=None, max_length=100)
+    tax_number: str | None = Field(default=None, max_length=20)
+
+    @field_validator("company_title", "tax_office", mode="before")
+    @classmethod
+    def _squash(cls, v: str | None) -> str | None:
+        return " ".join((v or "").split()) or None
+
+    @field_validator("tax_number", mode="before")
+    @classmethod
+    def _tax_id(cls, v: str | None) -> str | None:
+        if not (v or "").strip():
+            return None
+        try:
+            return normalize_tax_id(v)
+        except ValueError:
+            raise ValueError("Vergi numarası 10 haneli VKN ya da geçerli 11 haneli TCKN olmalı")
+
+    @model_validator(mode="after")
+    def _corporate_needs_the_firm(self) -> "AccountTypeEdit":
+        if self.kind == "CORPORATE":
+            missing = [
+                label for label, value in (
+                    ("İş kolu", self.business_type), ("Şirket ünvanı", self.company_title),
+                    ("Vergi dairesi", self.tax_office), ("Vergi numarası / TCKN", self.tax_number),
+                ) if not value
+            ]
+            if missing:
+                raise ValueError("Kurumsal hesap için gerekli: " + ", ".join(missing))
+        return self
 
 
 class SegmentAssign(BaseModel):

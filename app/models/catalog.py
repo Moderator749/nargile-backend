@@ -184,6 +184,10 @@ class Product(Base):
     # are over coal_max_ratio of the subtotal ships free only from coal_min_kg.
     # The product's category plays no part (app.services.checkout_engine).
     is_cart_rule_applied: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=sa_false())
+    # "Perakende TL kuruşlu kalsın": this product's retail TL price is kept as
+    # typed (7.50 stays 7.50) instead of being rounded up to whole lira by the
+    # product form, a worksheet or an import. Off for every product by default.
+    allow_retail_kurus: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=sa_false())
 
     # ── "Fırsat" (opportunity) block of the same sheet ────────────────────────
     # The live sale price itself lives in flash_sales, which the product form

@@ -50,6 +50,14 @@ from app.services.exchange_rates import Rates, RatesUnavailable, get_rates
 from app.services.pricing_engine import CENT, ERP_PLACES, pick_price_row, row_in_try, to_try
 from app.services.flash_sales import discounted_price, excl_tax, live_flash_sales
 from app.services.store_parameters import load_parameters
+from app.services.tier_access import (
+    Restrictions,
+    ensure_brand_visible,
+    ensure_category_visible,
+    ensure_product_visible,
+    restrictions_for,
+    visible,
+)
 
 # Read-only. Catalog writes live in admin_catalog.py behind admin auth.
 router = APIRouter(prefix="/products", tags=["products"])
@@ -175,7 +183,8 @@ async def _brand_slug_in(db: AsyncSession, q: str) -> str | None:
 
 
 async def _search_or_brand(
-    db: AsyncSession, *, category: str | None, q: str | None, brand: str | None, lang: str | None
+    db: AsyncSession, *, category: str | None, q: str | None, brand: str | None, lang: str | None,
+    access: Restrictions | None = None,
 ) -> tuple[str | None, str | None]:
     """The (q, brand) a listing is filtered by. A search that finds nothing on
     sale but names a brand lists that brand's products instead: an old or
@@ -184,11 +193,28 @@ async def _search_or_brand(
     than to an empty page. The listing and its summary ask the same, so they agree."""
     if not (q and q.strip()) or brand:
         return q, brand
-    stmt = apply_catalog_filters(select(Product.id), category=category, q=q, published_only=True, lang=lang)
+    stmt = apply_catalog_filters(select(Product.id), category=category, q=q, published_only=True, lang=lang, access=access)
     if await db.scalar(select(stmt.limit(1).exists())):
         return q, brand
     named = await _brand_slug_in(db, q)
+    if named and access is not None and access.brand_ids:
+        brand_id = await db.scalar(select(Brand.id).where(Brand.slug == named))
+        if brand_id in access.brand_ids:
+            return q, brand  # a brand this viewer may not see is not offered instead
     return (None, named) if named else (q, brand)
+
+
+async def _guard_listing(db: AsyncSession, access: Restrictions, *, category: str | None, brand: str | None) -> None:
+    """A category or brand page this viewer's group may not see: 403, a notice
+    and nothing of what is in it."""
+    if category and access.category_ids:
+        category_id = await db.scalar(select(Category.id).where(Category.slug == category))
+        if category_id is not None:
+            ensure_category_visible(access, category_id)
+    if brand and access.brand_ids:
+        brand_id = await db.scalar(select(Brand.id).where(Brand.slug == brand))
+        if brand_id is not None:
+            ensure_brand_visible(access, brand_id)
 
 
 #: How many of each the header search suggests while a visitor types.
@@ -211,6 +237,7 @@ def apply_catalog_filters(
     lang: str | None = None,
     brand: str | None = None,
     include_deleted: bool = False,
+    access: Restrictions | None = None,
 ):
     """Filter by category slug (a parent includes its subcategories) and
     Turkish-aware free-text search — in English or Arabic too, with `lang`, so
@@ -222,6 +249,9 @@ def apply_catalog_filters(
     """
     if published_only:
         stmt = stmt.where(Product.on_storefront())
+        if access is not None:
+            # "Grup Erişim Kısıtlamaları": what this viewer's group may not see is not there.
+            stmt = stmt.where(visible(access))
     elif not include_deleted:
         stmt = stmt.where(Product.is_deleted.is_(False))
     if category:
@@ -426,9 +456,13 @@ async def list_products(
     "Benzer Ürünler", re-priced for a signed-in viewer). `sort=newest` is the
     homepage's "Yeni Gelenler": the latest added first — the imported catalog
     shares one creation time, so among those it falls back on the name."""
+    access = await restrictions_for(db, user)
+    await _guard_listing(db, access, category=category, brand=brand)
     if not ids:
-        q, brand = await _search_or_brand(db, category=category, q=q, brand=brand, lang=lang)
-    stmt = apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang, brand=brand)
+        q, brand = await _search_or_brand(db, category=category, q=q, brand=brand, lang=lang, access=access)
+    stmt = apply_catalog_filters(
+        select(Product), category=category, q=q, published_only=True, lang=lang, brand=brand, access=access
+    )
     if ids:
         stmt = stmt.where(Product.id.in_(ids))
     order = (Product.name, Product.id)
@@ -510,10 +544,14 @@ async def catalog_summary(
     price them for the caller — the colour a card shows (the first in the
     caller's stock, else the first), at a live flash sale's price, else the
     caller's own, else the retail one; in TRY."""
-    q, brand = await _search_or_brand(db, category=category, q=q, brand=brand, lang=lang)
+    access = await restrictions_for(db, user)
+    await _guard_listing(db, access, category=category, brand=brand)
+    q, brand = await _search_or_brand(db, category=category, q=q, brand=brand, lang=lang, access=access)
     products = (
         await db.execute(
-            apply_catalog_filters(select(Product), category=category, q=q, published_only=True, lang=lang, brand=brand).options(
+            apply_catalog_filters(
+                select(Product), category=category, q=q, published_only=True, lang=lang, brand=brand, access=access
+            ).options(
                 *_VARIANT_LOADS
             )
         )
@@ -591,12 +629,13 @@ async def suggest(
     the caller, the categories whose name matches, and how many products the
     full search finds. Matched as the search matches (`apply_catalog_filters`:
     Turkish letters folded, so "lule" suggests the Lüleler)."""
-    found = apply_catalog_filters(select(Product.id), category=None, q=q, published_only=True, lang=lang)
+    access = await restrictions_for(db, user)
+    found = apply_catalog_filters(select(Product.id), category=None, q=q, published_only=True, lang=lang, access=access)
     total = await db.scalar(select(func.count()).select_from(found.subquery()))
     buyable = _buyable()
     products = (
         await db.execute(
-            apply_catalog_filters(select(Product), category=None, q=q, published_only=True, lang=lang)
+            apply_catalog_filters(select(Product), category=None, q=q, published_only=True, lang=lang, access=access)
             .options(*_VARIANT_LOADS)
             .order_by(buyable.desc(), exact_first(q), Product.name, Product.id)
             .limit(SUGGESTED_PRODUCTS)
@@ -608,6 +647,7 @@ async def suggest(
             select(Category)
             .where(
                 Category.is_active.is_(True),
+                *([Category.id.notin_(access.category_ids)] if access.category_ids else []),
                 or_(
                     _name_matches(Category.name, folded),
                     # "yedek cam" suggests the Nargile Şişeleri (search_synonyms).
@@ -675,7 +715,7 @@ async def price_list(
     asked = set(payload.groups)
     if not asked <= allowed:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Bu fiyat grubu hesabınız için kataloğa eklenemez")
-    return await build_price_list(db, payload.product_ids, payload.groups)
+    return await build_price_list(db, payload.product_ids, payload.groups, await restrictions_for(db, user))
 
 
 # "ERP ve Katalog Fiyatları": each group's display choice on the product.
@@ -718,7 +758,7 @@ def _erp_for(
 
 
 async def build_price_list(
-    db: AsyncSession, product_ids: list[uuid.UUID], groups: list[SegmentType]
+    db: AsyncSession, product_ids: list[uuid.UUID], groups: list[SegmentType], access: Restrictions | None = None
 ) -> list[PriceListItem]:
     """A price catalogue's rows: the published products among these, in the
     order given (each once), with each group's regular list price (no flash
@@ -735,7 +775,11 @@ async def build_price_list(
     rows = (
         await db.execute(
             select(Product)
-            .where(Product.id.in_(product_ids), Product.on_storefront())
+            .where(
+                Product.id.in_(product_ids), Product.on_storefront(),
+                # The requesting account's group: what it may not see stays out of its catalogue.
+                *([visible(access)] if access is not None else []),
+            )
             .options(selectinload(Product.variants).selectinload(ProductVariant.prices))
         )
     ).scalars().all()
@@ -797,7 +841,7 @@ async def list_flash_sale_products(
     )
     result = await db.execute(
         select(Product)
-        .where(Product.is_opportunity.is_(True), Product.on_storefront())
+        .where(Product.is_opportunity.is_(True), Product.on_storefront(), visible(await restrictions_for(db, user)))
         # Sold out last, whatever the deal's state: the row opens on what can be bought.
         .order_by(_buyable().desc(), missed.asc(), Product.opportunity_end_date.asc().nulls_last(), Product.id)
         .options(*_VARIANT_LOADS)
@@ -836,7 +880,7 @@ async def list_bestsellers(
     result = await db.execute(
         select(Product)
         .join(sold, sold.c.product_id == Product.id)
-        .where(Product.on_storefront())
+        .where(Product.on_storefront(), visible(await restrictions_for(db, user)))
         # Sold out last: the row opens on what can be bought.
         .order_by(_buyable().desc(), sold.c.sold.desc(), Product.name, Product.id)
         .options(*_VARIANT_LOADS)
@@ -876,7 +920,10 @@ async def list_sultanpuan_products(lang: Locale | None = LANG, db: AsyncSession 
     if not loyalty.enabled:
         return showcase
     result = await db.execute(
-        select(Product).where(Product.on_storefront()).options(*_VARIANT_LOADS).order_by(Product.name, Product.id)
+        select(Product)
+        .where(Product.on_storefront(), visible(await restrictions_for(db, None)))  # a guest's view, as it is priced
+        .options(*_VARIANT_LOADS)
+        .order_by(Product.name, Product.id)
     )
     priced = [
         (price, product)
@@ -981,12 +1028,15 @@ async def get_product(
     )
     if not product:
         raise HTTPException(status_code=404, detail="Product not found")
+    access = await restrictions_for(db, user)
+    # A product of a hidden category or brand: a notice, never its page or prices.
+    await ensure_product_visible(db, access, product.id)
 
     pinned = (
         await db.execute(
             select(Product)
             .join(ProductCrossSell, ProductCrossSell.related_product_id == Product.id)
-            .where(ProductCrossSell.product_id == product.id, Product.on_storefront())
+            .where(ProductCrossSell.product_id == product.id, Product.on_storefront(), visible(access))
             .order_by(ProductCrossSell.position)
             .options(*_VARIANT_LOADS)
         )

@@ -216,3 +216,43 @@ async def test_the_one_off_marks_older_applied_records_and_resyncs_restored_kuru
 
     again = await script.run(apply=True, report=report)
     assert not [c for c in again["changes"] if c["id"] in (str(old_id), str(new_id))]
+
+
+async def test_a_product_that_keeps_retail_kurus_keeps_7_50(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User
+):
+    """"Perakende TL kuruşlu kalsın": the form, and a worksheet applied over
+    it, keep the 7.50 typed; without it the same 7.50 becomes 8.00."""
+    body = _product_sheet(
+        prices=[{"currency": "TRY", "cells": {
+            "DEALER": {"price_excl_tax": "3.16", "price_incl_tax": "3.79"},
+            "RETAIL": {"price_excl_tax": "6.25", "price_incl_tax": "7.50"},
+        }}],
+    )
+    body["rules"] = {**body["rules"], "allow_retail_kurus": True}
+    created = await _post(client, admin_user, body)
+    assert created.status_code == 201, created.text
+    sheet = created.json()
+    assert sheet["rules"]["allow_retail_kurus"] is True
+    retail = next(r for r in sheet["prices"] if r["currency"] == "TRY")["cells"]["RETAIL"]
+    assert (Decimal(retail["price_excl_tax"]), Decimal(retail["price_incl_tax"])) == (Decimal("6.25"), Decimal("7.50"))
+
+    # A worksheet applied to it writes its 7.50 as it is, too.
+    code = body["base_code"]
+    worksheet = _sheet(
+        product_code=code, cost="1.5",
+        columns=[{"label": "Bayi", "segment": "DEALER", "percent": "100"}],
+        retail={"percent": "10", "vat_rate": "20", "desired": "7.50"},
+    )
+    applied = await legacy_save(client, "apply", auth_header(admin_user), {"file_name": f"Kuruş {code}", "sheet": worksheet})
+    assert applied.status_code == 200, applied.text
+    written = {p["segment"]: p for p in applied.json()["prices"]}
+    assert written["RETAIL"]["price_incl_tax"] == "7.50" and written["RETAIL"]["price_excl_tax"] == "6.25"
+
+    # Switched off again: the same form save rounds it up.
+    body["rules"]["allow_retail_kurus"] = False
+    product_id = sheet["id"]
+    again = await client.put(f"/api/v1/admin/products/{product_id}/sheet", headers=auth_header(admin_user), json=body)
+    assert again.status_code == 200, again.text
+    retail = next(r for r in again.json()["prices"] if r["currency"] == "TRY")["cells"]["RETAIL"]
+    assert Decimal(retail["price_incl_tax"]) == Decimal("8.00")
