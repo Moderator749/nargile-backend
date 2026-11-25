@@ -210,6 +210,16 @@ class AccountTypeEdit(BaseModel):
         return self
 
 
+class CustomerDeleted(BaseModel):
+    """What "Kalıcı Olarak Sil" did. `deleted`: the account and everything
+    that was only its own are gone. `anonymized`: it had orders, which the
+    shop keeps (invoices, reports) — so the account was emptied instead: its
+    personal details erased, its login closed, its e-mail free again."""
+
+    mode: Literal["deleted", "anonymized"]
+    orders_kept: int = 0
+
+
 class StockExclusion(BaseModel):
     """"Stok ve Raporlardan Hariç Tut (Şube / Test Hesabı)": on or off, from now on."""
 

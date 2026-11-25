@@ -2,13 +2,14 @@
 point wallet — plus the company bank accounts (havale/EFT) and the B2B queue."""
 
 import re
+import secrets
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import case, delete, func, or_, select, text
 from sqlalchemy.dialects.postgresql import distinct_on
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -16,9 +17,11 @@ from sqlalchemy.orm import selectinload
 from app.api.deps import get_current_admin_user, guard_protected, may_change
 from app.api.v1.account import application_read, wallet_read
 from app.core.database import get_db
+from app.models.access import CustomerAccessRule
 from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
+from app.models.notification import PasswordResetToken
 from app.models.catalog import Product, ProductVariant
 from app.models.order import PAID_STATUSES, Order, OrderItem, OrderStatus, PaymentMethod
 from app.models.user import (
@@ -30,11 +33,13 @@ from app.models.user import (
     CustomerSegment,
     SegmentType,
     User,
+    UserRole,
 )
 from app.schemas.admin import SortDirection
 from app.schemas.b2b import B2BApplicationRead, B2BApprove, B2BReject
 from app.schemas.customer import (
     AccountTypeEdit,
+    CustomerDeleted,
     StockExclusion,
     CustomerOrder,
     CustomerOrderHistory,
@@ -384,6 +389,59 @@ async def customer_orders(
         paid_count=len(paid),
         total_spent=sum((o.total_amount for o in paid), Decimal("0.00")),
     )
+
+
+@router.delete("/customers/{user_id}", response_model=CustomerDeleted)
+async def delete_customer(
+    user_id: uuid.UUID,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Kalıcı Olarak Sil", from the customer's page after two confirmations.
+
+    A customer only — never an admin or staff account (those are Yöneticiler's).
+    In one transaction:
+
+    - no orders: the account is deleted, and with it everything that was only
+      its own — company profile, addresses, access rules, reset tokens, notes,
+      its Sultan Puan history (cascades and the ledger below); notification
+      logs keep their line without it.
+    - orders: the orders stay exactly as they are — the invoice, the reports,
+      the sums all stand on them, and each carries its own address and invoice
+      details. So the account is emptied instead of removed: name, phone,
+      username and e-mail erased (the e-mail free to sign up with again),
+      password unusable, every session ended, its profile, addresses, access
+      rules and reset tokens deleted, marketing consents withdrawn.
+    """
+    user = await _customer(db, user_id, changed_by=admin)
+    # As the database has it now: an erasure must not trust a copy loaded earlier.
+    await db.refresh(user)
+    if UserRole(user.role) != UserRole.CUSTOMER or user.is_superadmin:
+        raise HTTPException(status_code=403, detail="Yönetici ve personel hesapları buradan silinemez")
+    orders = await db.scalar(select(func.count()).select_from(Order).where(Order.user_id == user_id)) or 0
+    await db.execute(text("SET LOCAL lock_timeout = '5s'"))
+    if orders == 0:
+        # The ledger does not cascade (a balance is an account's history); with
+        # no order there is nothing it explains, so it goes with the account.
+        await db.execute(delete(LoyaltyLedger).where(LoyaltyLedger.user_id == user_id))
+        await db.delete(user)
+        await db.commit()
+        return CustomerDeleted(mode="deleted")
+
+    for model in (CustomerAddress, CustomerAccessRule, PasswordResetToken, CustomerProfile):
+        await db.execute(delete(model).where(model.user_id == user_id))
+    user.email = f"silinmis-{user.id.hex}@silinmis.invalid"
+    user.username = None
+    user.full_name = "Silinmiş müşteri"
+    user.phone = None
+    user.landline_phone = None
+    user.hashed_password = f"!deleted!{secrets.token_hex(16)}"  # matches no password
+    user.is_active = False
+    user.token_version = (user.token_version or 0) + 1  # every token it had stops working
+    user.marketing_email_consent_at = None
+    user.marketing_sms_consent_at = None
+    await db.commit()
+    return CustomerDeleted(mode="anonymized", orders_kept=orders)
 
 
 @router.put("/customers/{user_id}/stock-exclusion", response_model=AdminCustomerDetail)
