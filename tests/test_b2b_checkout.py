@@ -17,7 +17,7 @@ from decimal import Decimal
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.catalog import Inventory, Product, ProductVariant, VariantPrice, WarehouseType
@@ -435,9 +435,16 @@ async def test_a_firm_can_ask_for_its_card_to_be_saved(
 
 
 async def test_a_firms_cart_states_its_vat(client: AsyncClient, db_session: AsyncSession, segments):
-    """A business cart is priced net of promotions, so its invoice lines are
-    exact: the lines before VAT, the VAT on them, and the VAT-inclusive total."""
+    """A business cart (a Kafe, Toptan or Bayi list) is priced net of
+    promotions, so its invoice lines are exact: the lines before VAT, the VAT
+    on them, and the VAT-inclusive total."""
     headers = await _firm(client)
+    # On a B2B list: a firm still on Perakende gets the retail promotions (2026-11-25).
+    me = (await client.get("/api/v1/auth/me", headers=headers)).json()
+    await db_session.execute(
+        update(User).where(User.id == uuid.UUID(me["id"])).values(segment_id=segments[SegmentType.WHOLESALE].id)
+    )
+    await db_session.commit()
     variant = await _variant(db_session, segments)
     resp = await _quote(client, headers, variant, quantity=3)
     assert resp.status_code == 200, resp.text

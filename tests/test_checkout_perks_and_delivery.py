@@ -162,7 +162,6 @@ async def test_a_bireysel_retail_cart_gets_all_three_promotions(
         pytest.param(AccountType.TOBACCO_SHOP, SegmentType.DEALER, id="a shop on the bayi list"),
         pytest.param(AccountType.TOBACCO_SHOP, SegmentType.WHOLESALE, id="a shop on the toptan list"),
         pytest.param(AccountType.INTERNATIONAL, SegmentType.RETAIL, id="an export customer"),
-        pytest.param(AccountType.CAFE, SegmentType.RETAIL, id="a kafe still on retail prices"),
         pytest.param(AccountType.INDIVIDUAL, SegmentType.DEALER, id="a bireysel moved to the bayi list"),
     ],
 )
@@ -175,8 +174,7 @@ async def test_everyone_else_pays_their_tier_price_net(
 
     quote = await _quote(client, user, variant)
     assert quote["perks_eligible"] is False
-    # Sultan Puan alone goes by the price list: a firm on Perakende keeps it.
-    assert quote["loyalty_eligible"] is (segment == SegmentType.RETAIL and account_type != AccountType.INTERNATIONAL)
+    assert quote["loyalty_eligible"] is False
     assert Decimal(quote["volume_discount_amount"]) == Decimal("0.00")
     assert Decimal(quote["discount_amount"]) == Decimal("0.00")
     assert Decimal(quote["points_discount"]) == Decimal("0.00")
@@ -885,3 +883,30 @@ async def test_a_kurumsal_account_on_perakende_spends_its_points(
     quote = resp.json()
     assert quote["loyalty_eligible"] is True
     assert Decimal(quote["points_discount"]) > 0
+
+
+@pytest.mark.parametrize("account_type", [AccountType.CAFE, AccountType.TOBACCO_SHOP], ids=["kafe", "shop"])
+async def test_a_kurumsal_account_on_perakende_gets_the_cart_discounts_and_free_shipping(
+    client: AsyncClient, db_session: AsyncSession, segments, account_type: AccountType
+):
+    """Kurumsal, but on the Perakende price list (2026-11-25): the same ciro and
+    havale discounts and the same free shipping as a bireysel buyer's cart."""
+    firm = await _buyer(db_session, segments, account_type, SegmentType.RETAIL)
+    person = await _buyer(db_session, segments, AccountType.INDIVIDUAL, SegmentType.RETAIL)
+    variant = await _variant(db_session, segments)
+    theirs = await _quote(client, firm, variant, shipping_method="YURTICI_DOOR")
+    ours = await _quote(client, person, variant, shipping_method="YURTICI_DOOR")
+    assert theirs["perks_eligible"] is True and theirs["loyalty_eligible"] is True
+    assert Decimal(theirs["volume_discount_amount"]) == Decimal(ours["volume_discount_amount"]) > 0
+    assert Decimal(theirs["discount_amount"]) == Decimal(ours["discount_amount"]) > 0
+    assert theirs["shipping"]["reason"] == ours["shipping"]["reason"] == "free"
+    assert Decimal(theirs["net_total"]) == Decimal(ours["net_total"])
+
+
+async def test_an_export_account_gets_no_perks_on_perakende(client: AsyncClient, db_session: AsyncSession, segments):
+    """Yurt dışı: no discounts and no Sultan Puan, even on the Perakende list."""
+    user = await _buyer(db_session, segments, AccountType.INTERNATIONAL, SegmentType.RETAIL)
+    variant = await _variant(db_session, segments)
+    quote = await _quote(client, user, variant)
+    assert quote["perks_eligible"] is False and quote["loyalty_eligible"] is False
+    assert Decimal(quote["volume_discount_amount"]) == Decimal(quote["discount_amount"]) == Decimal("0.00")

@@ -1,11 +1,12 @@
 """Checkout engine implementing Turhan Abi's commercial rules.
 
-Four of these rules are retail promotions and reach only a bireysel account on
-the retail price list — the volume discount, the havale discount, Sultan Puan,
-and free shipping.
-A kafe, a shop or an export customer buys at a tier price those were never
-costed on top of, so it pays that price net, whatever it pays with and whatever
-it has in its wallet. ``app.services.perks`` is the one place that decides it.
+Four of these rules are retail promotions and reach every account on the
+Perakende price list, Bireysel or Kurumsal — the volume discount, the havale
+discount, Sultan Puan, and free shipping.
+A Kafe, Toptan or Bayi account buys at a tier price those were never costed on
+top of, so it pays that price net, whatever it pays with and whatever it has in
+its wallet; an export customer's order is a quote. ``app.services.perks`` is
+the one place that decides it.
 
 Business rules (all tiers are judged on the merchandise subtotal). The figures
 are the defaults; the admin panel's "Parametreler" page sets the live ones, read
