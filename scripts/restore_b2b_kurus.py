@@ -159,6 +159,7 @@ async def run(apply: bool, report: Path | None) -> dict:
                 row = await db.get(VariantPrice, change["id"])
                 row.price_excl_tax, row.price_incl_tax = _d(change["new_excl"]), _d(change["new_incl"])
             await db.commit()
+    await engine.dispose()
     return found
 
 
@@ -169,7 +170,6 @@ def main() -> None:
     args = parser.parse_args()
     report = args.report or max(REPORTS.glob("round-try-prices-*.json"), default=None)
     found = asyncio.run(run(args.apply, report))
-    asyncio.run(engine.dispose())
     by_source: dict[str, int] = {}
     for c in found["changes"]:
         key = "sheet" if c["source"].startswith("sheet") else "rounding report"
