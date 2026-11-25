@@ -29,6 +29,7 @@ from app.services import exchange_rates
 from app.services.checkout_engine import CENTRAL_STOCK
 from app.services.exchange_rates import Rates
 from scripts.backfill_product_costs import backfill
+from tests.pricing_helpers import legacy_save
 from tests.conftest import ADDRESS, CONSENTS, auth_header
 
 pytestmark = pytest.mark.asyncio
@@ -133,8 +134,7 @@ async def test_applying_a_worksheet_writes_its_cost_before_vat(
     code = variant.sku
     h = auth_header(admin_user)
 
-    resp = await client.post(
-        "/api/v1/admin/pricing/apply-to-product", headers=h, json={"file_name": "Maliyet", "sheet": _sheet(code)}
+    resp = await legacy_save(client, "apply", h, {"file_name": "Maliyet", "sheet": _sheet(code)}
     )
     assert resp.status_code == 200, resp.text
     assert await _cost(db_session, variant.id) == (Decimal("1000.0000"), "TRY")
@@ -142,7 +142,7 @@ async def test_applying_a_worksheet_writes_its_cost_before_vat(
 
     # A VAT-inclusive USD sheet: 120 with %20 inside is 100 before VAT, in USD.
     sheet = _sheet(code, vat_mode="INCL", currency="USD", cost="120", usd_rate="40")
-    resp = await client.post("/api/v1/admin/pricing/apply-to-product", headers=h, json={"file_name": "Maliyet", "sheet": sheet})
+    resp = await legacy_save(client, "apply", h, {"file_name": "Maliyet", "sheet": sheet})
     assert resp.status_code == 200, resp.text
     assert await _cost(db_session, variant.id) == (Decimal("100.0000"), "USD")
 

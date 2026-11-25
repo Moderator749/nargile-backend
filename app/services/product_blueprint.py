@@ -43,7 +43,7 @@ from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType
 from app.services import root_slugs, slug_redirects
 from app.services.checkout_engine import CENTRAL_STOCK, stock_on_hand
-from app.services.pricing_engine import erp_text, pick_price_row
+from app.services.pricing_engine import erp_text, excl_from_incl, pick_price_row, whole_lira
 from app.models.order import OrderItem
 from app.schemas import i18n
 from app.schemas.product_sheet import (
@@ -480,7 +480,8 @@ async def _sync_prices(
     rows: list[SheetPriceRow],
     segments: dict[SegmentType, int],
 ) -> None:
-    """Upsert the filled cells of the matrix and drop the ones the admin cleared."""
+    """Upsert the filled cells of the matrix and drop the ones the admin cleared.
+    A retail TL price is kept in whole lira, rounded up (pricing_engine)."""
     existing = {
         (CurrencyType(p.currency), p.segment_id): p
         for p in (await db.execute(select(VariantPrice).where(VariantPrice.variant_id == variant.id))).scalars()
@@ -496,6 +497,12 @@ async def _sync_prices(
             if not cell.filled:
                 continue
             excl, incl, vat = cell.resolved()
+            if segment == SegmentType.RETAIL and CurrencyType(row.currency) == CurrencyType.TRY and incl != whole_lira(incl):
+                # Retail TL is whole lira, rounded up, from whichever side was
+                # typed (7.50 → 8.00); before VAT follows from it. Bayi, Toptan
+                # and Kafe keep their kuruş.
+                incl = whole_lira(incl)
+                excl = excl_from_incl(incl, vat)
             price = existing.get(key)
             if price is None:
                 db.add(

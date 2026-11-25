@@ -50,7 +50,7 @@ from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPri
 from app.models.user import CustomerSegment, SegmentType
 from app.schemas.pricing import AppliedPrice, PricingSheetIn
 from app.schemas.taxonomy import BULK_ERP_DISPLAY
-from app.services.pricing_engine import erp_before_vat, erp_text, excl_from_incl, whole_lira
+from app.services.pricing_engine import ERP_PLACES, ci, erp_before_vat, erp_text, excl_from_incl, whole_lira
 
 CENT = Decimal("0.01")
 COST_PLACES = Decimal("0.0001")
@@ -69,9 +69,9 @@ def _priced(computed: Decimal, erp_price: Decimal | None, desired: Decimal | Non
         # Half a kuruş up, as the panel shows it (1322.50 + 5% = 1388.63).
         auto = _step(base, applied).quantize(CENT, rounding=ROUND_HALF_UP)
     else:
-        auto = base.quantize(CENT)
+        auto = base.quantize(CENT, rounding=ROUND_HALF_UP)
     return {
-        "computed": str(computed.quantize(CENT)),
+        "computed": str(computed.quantize(CENT, rounding=ROUND_HALF_UP)),
         "erp_price": str(erp_price) if erp_price is not None else None,
         "desired": str(desired) if desired is not None else None,
         "price": str(desired if desired is not None else auto),
@@ -102,7 +102,7 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "segment": None,
             "percent": str(extra.percent),
             "vat_rate": str(r.vat_rate),
-            "before_vat": str(extra_before.quantize(CENT)),
+            "before_vat": str(extra_before.quantize(CENT, rounding=ROUND_HALF_UP)),
             # The rate is the classes' only: an extra's price is its base. Its
             # ERP fiyatı is a shelf price, after VAT: taken as typed.
             **_priced(with_vat(extra_before), extra.erp_price, extra.desired, None),
@@ -127,7 +127,7 @@ def compute_sheet(sheet: PricingSheetIn) -> dict:
             "percent": str(r.percent),
             "vat_rate": str(r.vat_rate),
             # After VAT; `before_vat` is the markup step on its own.
-            "before_vat": str(before_vat.quantize(CENT)),
+            "before_vat": str(before_vat.quantize(CENT, rounding=ROUND_HALF_UP)),
             **retail,
         },
         "extras": extras,
@@ -158,8 +158,8 @@ def _both_sides(price: Decimal, vat_mode: str, vat_rate: Decimal) -> tuple[Decim
     """(excl, incl) from a price in the sheet's VAT basis."""
     factor = 1 + vat_rate / 100
     if vat_mode == "INCL":
-        return (price / factor).quantize(CENT), price.quantize(CENT)
-    return price.quantize(CENT), (price * factor).quantize(CENT)
+        return (price / factor).quantize(CENT, rounding=ROUND_HALF_UP), price.quantize(CENT, rounding=ROUND_HALF_UP)
+    return price.quantize(CENT, rounding=ROUND_HALF_UP), (price * factor).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
 def erp_by_group(sheet: PricingSheetIn) -> dict[SegmentType, Decimal | None]:
@@ -177,7 +177,8 @@ def erp_by_group(sheet: PricingSheetIn) -> dict[SegmentType, Decimal | None]:
     def before_vat(price: Decimal | None, after_vat: bool) -> Decimal | None:
         if price is None:
             return None
-        return erp_before_vat(price, vat) if after_vat else price.quantize(CENT, rounding=ROUND_HALF_UP)
+        # Before VAT already: kept as typed, up to four places (0.375 stays 0.375).
+        return erp_before_vat(price, vat) if after_vat else price.quantize(ERP_PLACES, rounding=ROUND_HALF_UP)
 
     erp: dict[SegmentType, Decimal | None] = {}
     for col in sheet.columns:
@@ -228,23 +229,32 @@ def cost_before_vat(cost: Decimal, vat_mode: str, vat_rate: Decimal) -> Decimal:
 
 async def find_product(db: AsyncSession, code: str) -> Product | None:
     """By the product's code, else by one of its colours' SKUs (case-insensitive);
-    a deleted product is not found."""
+    a deleted product is not found. A code two live products answer to (two
+    products' codes, or two products' colours) is refused with ApplyError
+    rather than priced on whichever the database lists first."""
     code = code.strip()
     if not code:
         return None
     options = selectinload(Product.variants)
     live = Product.is_deleted.is_(False)
-    product = await db.scalar(select(Product).where(func.lower(Product.base_code) == code.lower(), live).options(options))
-    if product is None:
+    found = (
+        await db.scalars(select(Product).where(func.lower(Product.base_code) == ci(code), live).options(options))
+    ).all()
+    if not found:
         # A deleted product's code may belong to a new product now: look among live ones only.
-        product = await db.scalar(
-            select(Product)
-            .join(ProductVariant, ProductVariant.product_id == Product.id)
-            .where(func.lower(ProductVariant.sku) == code.lower(), ProductVariant.is_active.is_(True), live)
-            .options(options)
-            .limit(1)
-        )
-    return product
+        found = (
+            await db.scalars(
+                select(Product)
+                .join(ProductVariant, ProductVariant.product_id == Product.id)
+                .where(func.lower(ProductVariant.sku) == ci(code), ProductVariant.is_active.is_(True), live)
+                .options(options)
+                .distinct()
+            )
+        ).all()
+    if len(found) > 1:
+        names = ", ".join(sorted(f"{p.base_code} ({p.name})" for p in found))
+        raise ApplyError(f"“{code}” kodu birden fazla ürüne ait: {names}. Önce kodları ayırın.")
+    return found[0] if found else None
 
 
 async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: dict) -> Applied:

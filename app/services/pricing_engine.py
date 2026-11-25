@@ -32,6 +32,14 @@ def pick_price_row(prices: Iterable[VariantPrice], segment_id: int) -> VariantPr
 CENT = Decimal("0.01")
 
 
+def ci(text: str) -> str:
+    """`text` lower-cased as the database's lower() does it, for comparing
+    with `func.lower(column)`. Python lower-cases the Turkish "İ" to "i̇" (an
+    i with a combining dot); Postgres makes it a plain "i" — so a file named
+    "İlk" was never found again by name and a second one was attempted."""
+    return text.replace("İ", "i").lower()
+
+
 def whole_lira(amount: Decimal) -> Decimal:
     """`amount` rounded up to the next whole lira; a whole amount stays as it is
     (1163.86 → 1164.00, 1164.00 → 1164.00)."""
@@ -39,8 +47,8 @@ def whole_lira(amount: Decimal) -> Decimal:
 
 
 def excl_from_incl(incl_tax: Decimal, vat_rate: Decimal) -> Decimal:
-    """The price before VAT that `incl_tax` is, at `vat_rate` percent."""
-    return (incl_tax / (1 + vat_rate / 100)).quantize(CENT)
+    """The price before VAT that `incl_tax` is, at `vat_rate` percent (half up)."""
+    return (incl_tax / (1 + vat_rate / 100)).quantize(CENT, rounding=ROUND_HALF_UP)
 
 
 def try_price(amount: Decimal, *, retail: bool) -> Decimal:

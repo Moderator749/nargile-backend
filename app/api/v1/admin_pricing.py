@@ -32,7 +32,6 @@ from app.models.pricing import PriceImportAlias, PricingFile, PricingRecord
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.catalog import AdminCatalogRequest, PriceListItem
 from app.schemas.pricing import (
-    ApplyResult,
     CurrentPrice,
     ImportAliasBatch,
     ImportAliasCreate,
@@ -54,14 +53,13 @@ from app.schemas.pricing import (
     RecordsChanged,
     RenameFileRequest,
     SaveApplied,
-    SaveDraftRequest,
     SaveRequest,
     SaveResult,
     SaveTarget,
-    SaveToFileRequest,
 )
 from app.services.price_import import ImportFileError, apply_matches, match_blocks, normalize, parse_workbook
 from app.services import indexnow
+from app.services.pricing_engine import ci
 from app.services.pricing_sheet import ApplyError, apply_to_product, compute_sheet
 from app.services.product_blueprint import erp_catalog
 
@@ -73,8 +71,12 @@ def _read(
     file_name: str | None,
     image_url: str | None = None,
     product_erp: ProductErpCatalog | None = None,
+    site_drift: list[str] | None = None,
 ) -> PricingRecordRead:
+    summary = record.applied_summary or {}
     return PricingRecordRead(
+        superseded=bool(summary.get("superseded_at")) if record.applied_at else False,
+        site_drift=site_drift,
         id=record.id, file_id=record.file_id, file_name=file_name,
         product_code=record.product_code, product_name=record.product_name, image_url=image_url,
         sheet=record.sheet,
@@ -91,11 +93,77 @@ def _write_sheet(record: PricingRecord, sheet: PricingSheetIn) -> None:
     record.sheet = compute_sheet(sheet)
 
 
+async def _site_drift(db: AsyncSession, records: list[PricingRecord]) -> dict[uuid.UUID, list[str]]:
+    """Per record still on the site (applied, not superseded), the groups whose
+    live price is no longer what it applied: changed in the product form, an
+    import, a script. Read in one query for the page's records."""
+    on_site = {
+        r.id: r for r in records
+        if r.applied_at and r.applied_summary and r.applied_summary.get("product_id")
+        and not r.applied_summary.get("superseded_at")
+    }
+    if not on_site:
+        return {}
+    product_ids = {uuid.UUID(r.applied_summary["product_id"]) for r in on_site.values()}
+    live: dict[tuple[str, str, str], set[Decimal]] = {}
+    rows = await db.execute(
+        select(ProductVariant.product_id, CustomerSegment.code, VariantPrice.currency, VariantPrice.price_incl_tax)
+        .join(VariantPrice, VariantPrice.variant_id == ProductVariant.id)
+        .join(CustomerSegment, CustomerSegment.id == VariantPrice.segment_id)
+        .join(Product, Product.id == ProductVariant.product_id)
+        .where(ProductVariant.product_id.in_(product_ids), ProductVariant.is_active.is_(True), Product.is_deleted.is_(False))
+    )
+    for product_id, segment, currency, incl in rows:
+        live.setdefault((str(product_id), SegmentType(segment).value, CurrencyType(currency).value), set()).add(incl)
+    drift: dict[uuid.UUID, list[str]] = {}
+    for record in on_site.values():
+        pid = record.applied_summary["product_id"]
+        changed = [
+            p.get("label") or p["segment"]
+            for p in record.applied_summary.get("prices", [])
+            if live.get((pid, p["segment"], p["currency"])) != {Decimal(p["price_incl_tax"])}
+        ]
+        if changed:
+            drift[record.id] = changed
+    return drift
+
+
+def _supersede_query(product_id: str, but: uuid.UUID):
+    """The product's other applied records not yet marked as replaced."""
+    return select(PricingRecord).where(
+        PricingRecord.applied_summary["product_id"].astext == product_id,
+        PricingRecord.applied_at.is_not(None),
+        PricingRecord.id != but,
+    )
+
+
+async def _mark_applied(db: AsyncSession, record: PricingRecord, done, now: datetime) -> None:
+    """The record is now the product's prices on the site: its summary, and
+    every earlier record applied to the same product marked superseded (kept,
+    with when and by which record), so only one shows "Sitede"."""
+    product_id = str(done.product.id)
+    record.applied_at = now
+    record.applied_summary = {
+        "product_id": product_id,
+        "product_name": done.product.name,
+        "variants": done.variants,
+        "prices": [p.model_dump(mode="json") for p in done.prices],
+        "skipped": done.skipped,
+        "cost": str(done.cost),
+        "cost_currency": done.cost_currency.value,
+    }
+    for older in (await db.scalars(_supersede_query(product_id, record.id))).all():
+        if not (older.applied_summary or {}).get("superseded_at"):
+            older.applied_summary = {
+                **older.applied_summary, "superseded_at": now.isoformat(), "superseded_by": str(record.id),
+            }
+
+
 async def _images(db: AsyncSession, codes: set[str]) -> dict[str, str]:
     """Each code's product photo, by product code or a colour's SKU on sale
     (case-insensitive). A deleted product is not looked at: its code may be a
     new product's now, or nobody's."""
-    wanted = {c.strip().lower() for c in codes if c and c.strip()}
+    wanted = {ci(c.strip()) for c in codes if c and c.strip()}
     if not wanted:
         return {}
     found: dict[str, str] = {}
@@ -123,7 +191,7 @@ async def _erp_catalogs(db: AsyncSession, codes: set[str]) -> dict[str, ProductE
     price table — for the price catalogue. The product's own code wins over a
     SKU. A deleted product is not looked at: a row whose code only a deleted
     product had prices from its own figures, never the deleted one's."""
-    wanted = {c.strip().lower() for c in codes if c and c.strip()}
+    wanted = {ci(c.strip()) for c in codes if c and c.strip()}
     if not wanted:
         return {}
     products: dict[str, Product] = {}
@@ -171,7 +239,7 @@ async def _erp_catalogs(db: AsyncSession, codes: set[str]) -> dict[str, ProductE
 
 
 async def _image_for(db: AsyncSession, code: str) -> str | None:
-    return (await _images(db, {code})).get(code.strip().lower())
+    return (await _images(db, {code})).get(ci(code.strip()))
 
 
 async def _file_for(db: AsyncSession, target: SaveTarget, admin: User) -> PricingFile:
@@ -180,35 +248,13 @@ async def _file_for(db: AsyncSession, target: SaveTarget, admin: User) -> Pricin
         if file is None:
             raise HTTPException(status_code=404, detail="Dosya bulunamadı")
         return file
-    existing = await db.scalar(select(PricingFile).where(func.lower(PricingFile.name) == target.file_name.lower()))
+    existing = await db.scalar(select(PricingFile).where(func.lower(PricingFile.name) == ci(target.file_name)))
     if existing is not None:
         return existing  # the same name again is the same file
     file = PricingFile(name=target.file_name, created_by=admin.id)
     db.add(file)
     await db.flush()
     return file
-
-
-async def _record(
-    db: AsyncSession, sheet: PricingSheetIn, file: PricingFile | None, admin: User, replace_id: uuid.UUID | None = None
-) -> PricingRecord:
-    """The row a save writes: a new one, or — given `replace_id` — that row
-    overwritten ("Kaydet" on a loaded row, "Üzerine Yaz"), moved to where this
-    save goes. An overwritten row keeps its id, its creation and its last
-    application to the site, which its `updated_at` now postdates."""
-    now = datetime.now(timezone.utc)
-    if file is not None:
-        file.updated_at = now  # the file was saved to just now
-    if replace_id is None:
-        record = PricingRecord(created_by=admin.id, created_at=now)
-    else:
-        record = await db.get(PricingRecord, replace_id)
-        if record is None:
-            raise HTTPException(status_code=404, detail="Üzerine yazılacak kayıt bulunamadı; silinmiş olabilir.")
-    record.file_id = file.id if file else None
-    _write_sheet(record, sheet)
-    record.updated_at = now
-    return record
 
 
 def _codes_in_file():
@@ -232,7 +278,7 @@ async def _file_read(db: AsyncSession, file: PricingFile) -> PricingFileRead:
 
 async def _name_taken(db: AsyncSession, name: str, but: int | None = None) -> bool:
     """Another file already has this name (names are compared without case)."""
-    stmt = select(PricingFile.id).where(func.lower(PricingFile.name) == name.lower())
+    stmt = select(PricingFile.id).where(func.lower(PricingFile.name) == ci(name))
     if but is not None:
         stmt = stmt.where(PricingFile.id != but)
     return await db.scalar(stmt.limit(1)) is not None
@@ -391,10 +437,11 @@ async def list_records(
     rows = (await db.execute(stmt.order_by(PricingRecord.updated_at.desc(), PricingRecord.id).limit(limit))).all()
     codes = {r.product_code for r, _ in rows}
     images, erp = await _images(db, codes), await _erp_catalogs(db, codes)
+    drift = await _site_drift(db, [r for r, _ in rows])
     return [
-        _read(r, name, images.get(key), erp.get(key))
+        _read(r, name, images.get(key), erp.get(key), drift.get(r.id))
         for r, name in rows
-        for key in [r.product_code.strip().lower()]
+        for key in [ci(r.product_code.strip())]
     ]
 
 
@@ -410,13 +457,13 @@ async def matching_records(
     """The rows a save of `code` would sit beside in its destination — a file,
     or the drafts — newest first: "Mevcut Dosya Bulundu" asks about them. A
     file named but not yet made holds none; an empty code matches nothing."""
-    wanted = code.strip().lower()
+    wanted = ci(code.strip())
     if not wanted:
         return []
     if everywhere:
         return [_read(r, name) for r, name in await _same_code(db, wanted)]
     if file_id is None and file_name:
-        name = " ".join(file_name.split()).lower()
+        name = ci(" ".join(file_name.split()))
         file_id = await db.scalar(select(PricingFile.id).where(func.lower(PricingFile.name) == name))
         if file_id is None:
             return []
@@ -455,76 +502,17 @@ async def delete_record(
     await db.commit()
 
 
-@router.post("/draft", response_model=PricingRecordRead, status_code=status.HTTP_201_CREATED)
-async def save_draft(
-    payload: SaveDraftRequest,
-    admin: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """"Taslak olarak kaydet": the row joins the drafts, no file needed — or,
-    with `replace_id`, overwrites that row there."""
-    record = await _record(db, payload.sheet, None, admin, payload.replace_id)
-    db.add(record)
-    await db.commit()
-    return _read(record, None, await _image_for(db, record.product_code))
+# The calculator's old save endpoints. They skipped the duplicate-code
+# question and the per-code lock that "/save" takes, so they are retired: every
+# save, draft, file or apply, goes through "/save".
+_RETIRED = "Bu uç kullanımdan kaldırıldı; kayıt ve siteye uygulama için /admin/pricing/save kullanın."
 
 
-@router.post("/file", response_model=PricingRecordRead, status_code=status.HTTP_201_CREATED)
-async def save_to_file(
-    payload: SaveToFileRequest,
-    admin: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """"Dosyaya kaydet": into the chosen file, or a new one by that name — or,
-    with `replace_id`, over that row, in that file."""
-    file = await _file_for(db, payload, admin)
-    record = await _record(db, payload.sheet, file, admin, payload.replace_id)
-    db.add(record)
-    await db.commit()
-    return _read(record, file.name, await _image_for(db, record.product_code))
-
-
-@router.post("/apply-to-product", response_model=ApplyResult)
-async def save_and_apply(
-    payload: SaveToFileRequest,
-    background: BackgroundTasks,
-    sessions: async_sessionmaker = Depends(get_session_factory),
-    admin: User = Depends(get_current_admin_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """"Dosya ve sitede ürüne kaydet": save the row, then write its prices to
-    the product its code names. All or nothing: if the product cannot be
-    priced, nothing is saved either. With `replace_id`, over that row."""
-    if not payload.sheet.product_code:
-        raise HTTPException(status_code=422, detail="Siteye kaydetmek için ürün kodu gerekli")
-    file = await _file_for(db, payload, admin)
-    record = await _record(db, payload.sheet, file, admin, payload.replace_id)
-    try:
-        applied = await apply_to_product(db, payload.sheet, record.sheet)
-    except ApplyError as exc:
-        await db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc))
-    record.applied_at = datetime.now(timezone.utc)
-    record.applied_summary = {
-        "product_id": str(applied.product.id),
-        "product_name": applied.product.name,
-        "variants": applied.variants,
-        "prices": [p.model_dump(mode="json") for p in applied.prices],
-        "skipped": applied.skipped,
-        "cost": str(applied.cost),
-        "cost_currency": applied.cost_currency.value,
-    }
-    db.add(record)
-    await db.commit()
-    background.add_task(indexnow.queue_products, sessions, [applied.product.id])
-    return ApplyResult(
-        record=_read(record, file.name, applied.product.image_url),
-        product_id=applied.product.id,
-        product_name=applied.product.name,
-        variants_updated=applied.variants,
-        prices=applied.prices,
-        skipped=applied.skipped,
-    )
+@router.post("/draft", status_code=status.HTTP_410_GONE, include_in_schema=False)
+@router.post("/file", status_code=status.HTTP_410_GONE, include_in_schema=False)
+@router.post("/apply-to-product", status_code=status.HTTP_410_GONE, include_in_schema=False)
+async def retired_save(_admin: User = Depends(get_current_admin_user)):
+    raise HTTPException(status_code=status.HTTP_410_GONE, detail=_RETIRED)
 
 
 @router.post("/save", response_model=SaveResult)
@@ -547,7 +535,7 @@ async def save(
     all or nothing, as before.
     """
     sheet = payload.sheet
-    wanted = sheet.product_code.strip().lower()
+    wanted = ci(sheet.product_code.strip())
     # Two saves of one code at once (a double click, two tabs) are taken in
     # turn, so the second sees the first's row and asks.
     await db.execute(select(func.pg_advisory_xact_lock(func.hashtext(f"pricing-save:{wanted}"))))
@@ -559,7 +547,7 @@ async def save(
             raise HTTPException(status_code=404, detail="Üzerine yazılacak kayıt bulunamadı; silinmiş olabilir.")
     elif payload.mode == "auto":
         tied = await db.get(PricingRecord, payload.record_id) if payload.record_id else None
-        if tied is not None and tied.product_code.strip().lower() == wanted:
+        if tied is not None and ci(tied.product_code.strip()) == wanted:
             target = tied
         elif wanted:
             same = await _same_code(db, wanted)
@@ -593,16 +581,7 @@ async def save(
         except ApplyError as exc:
             await db.rollback()
             raise HTTPException(status_code=422, detail=str(exc))
-        record.applied_at = now
-        record.applied_summary = {
-            "product_id": str(done.product.id),
-            "product_name": done.product.name,
-            "variants": done.variants,
-            "prices": [p.model_dump(mode="json") for p in done.prices],
-            "skipped": done.skipped,
-            "cost": str(done.cost),
-            "cost_currency": done.cost_currency.value,
-        }
+        await _mark_applied(db, record, done, now)
         applied = SaveApplied(
             product_id=done.product.id,
             product_name=done.product.name,
@@ -613,7 +592,7 @@ async def save(
         image_url = done.product.image_url
     await db.commit()
     if applied is not None:
-        # The panel's "Kaydet ve Siteye Uygula": the same announcement as /apply-to-product.
+        # The panel's "Kaydet ve Siteye Uygula": tell IndexNow the product changed.
         background.add_task(indexnow.queue_products, sessions, [applied.product_id])
     if image_url is None:
         image_url = await _image_for(db, record.product_code)

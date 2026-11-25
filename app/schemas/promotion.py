@@ -2,7 +2,9 @@ import uuid
 from datetime import datetime
 from decimal import Decimal
 
-from pydantic import AwareDatetime, BaseModel, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, Field, field_validator, model_validator
+
+from app.services.pricing_engine import whole_lira
 
 
 class FlashSaleWrite(BaseModel):
@@ -16,6 +18,12 @@ class FlashSaleWrite(BaseModel):
     # stock runs out), as the database allows and the deals backfill wrote.
     ends_at: AwareDatetime | None = None
     is_active: bool = True
+
+    @field_validator("sale_price_incl_tax")
+    @classmethod
+    def _whole_lira(cls, v: Decimal) -> Decimal:
+        # A deal price in TL, as a shopper pays it: whole lira, rounded up.
+        return whole_lira(v)
 
     @model_validator(mode="after")
     def _window(self) -> "FlashSaleWrite":

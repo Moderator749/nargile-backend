@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import async_session, engine
 from app.models.catalog import CurrencyType, Product, ProductVariant
 from app.models.pricing import PricingRecord
-from app.services.pricing_sheet import cost_before_vat, find_product
+from app.services.pricing_sheet import ApplyError, cost_before_vat, find_product
 
 REPORTS = Path(__file__).resolve().parent / "migration_reports"
 
@@ -52,7 +52,10 @@ async def backfill(db: AsyncSession) -> dict:
     for record in records:
         product_id = (record.applied_summary or {}).get("product_id")
         if product_id is None:
-            product = await find_product(db, record.product_code)
+            try:
+                product = await find_product(db, record.product_code)
+            except ApplyError:
+                product = None  # the code is two products' now: not guessed
             product_id = product.id if product else None
         if product_id is None:
             unmatched.append(record.product_code)

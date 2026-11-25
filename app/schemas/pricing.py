@@ -12,6 +12,8 @@ from app.models.user import SegmentType
 from app.schemas.product_sheet import SheetErpCatalog
 
 Money = Decimal
+# The KDV rates the shop uses; the calculator offers these only.
+VAT_RATES = frozenset(Decimal(r) for r in (0, 1, 10, 20))
 VatMode = Literal["EXCL", "INCL"]
 
 
@@ -32,7 +34,7 @@ class PricingColumnIn(BaseModel):
     # "ERP fiyatı": a base price the admin types in place of the calculated one
     # for this column's "uygulanacak fiyat" (on a class, the sheet's
     # `applied_percent` is added to it). Empty: the calculated price is the base.
-    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=4)
 
     @field_validator("label")
     @classmethod
@@ -51,7 +53,14 @@ class PricingRetailIn(BaseModel):
     # "ERP fiyatı": a base price the admin types in place of the calculated one
     # for this column's "uygulanacak fiyat" (on a class, the sheet's
     # `applied_percent` is added to it). Empty: the calculated price is the base.
-    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=4)
+
+    @field_validator("vat_rate")
+    @classmethod
+    def _known_rate(cls, v: Decimal) -> Decimal:
+        if v not in VAT_RATES:
+            raise ValueError("KDV oranı 0, 1, 10 ya da 20 olmalı")
+        return v
 
 
 class PricingExtraIn(BaseModel):
@@ -66,7 +75,7 @@ class PricingExtraIn(BaseModel):
     # "ERP fiyatı": a base price the admin types in place of the calculated one
     # for this column's "uygulanacak fiyat" (on a class, the sheet's
     # `applied_percent` is added to it). Empty: the calculated price is the base.
-    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=2)
+    erp_price: Money | None = Field(default=None, gt=0, le=Decimal("100000000"), decimal_places=4)
 
     @field_validator("label")
     @classmethod
@@ -123,13 +132,6 @@ class SaveTarget(BaseModel):
         return self
 
 
-class SaveDraftRequest(BaseModel):
-    sheet: PricingSheetIn
-    # Overwrite this row ("Kaydet" on a loaded row, "Üzerine Yaz") instead of
-    # adding one; it ends up where this request saves to.
-    replace_id: uuid.UUID | None = None
-
-
 class RecordIds(BaseModel):
     """Rows picked in a list ("Seçilenleri Sil")."""
 
@@ -168,12 +170,6 @@ class DuplicateFileRequest(BaseModel):
     def _clean(cls, value: str | None) -> str | None:
         return " ".join(value.split()) or None if value is not None else None
 
-
-
-class SaveToFileRequest(SaveTarget):
-    sheet: PricingSheetIn
-    # As in SaveDraftRequest: overwrite this row, moved into the file if it was elsewhere.
-    replace_id: uuid.UUID | None = None
 
 
 class SaveRequest(BaseModel):
@@ -263,6 +259,13 @@ class PricingRecordRead(BaseModel):
     # looked up by the code like the photo, for the price catalogue. None when
     # the code names no product.
     product_erp: ProductErpCatalog | None = None
+    # Applied, but a later record was applied to the same product since: its
+    # prices are no longer the site's ("Yerine yenisi uygulandı").
+    superseded: bool = False
+    # Applied and still the product's record, but these groups' live prices
+    # differ from what it applied (changed in the product form, say). None:
+    # not checked (a single row's read) or nothing differs.
+    site_drift: list[str] | None = None
 
 
 class AppliedPrice(BaseModel):
@@ -271,16 +274,6 @@ class AppliedPrice(BaseModel):
     currency: CurrencyType
     price_excl_tax: Decimal
     price_incl_tax: Decimal
-
-
-class ApplyResult(BaseModel):
-    record: PricingRecordRead
-    product_id: uuid.UUID
-    product_name: str
-    variants_updated: int
-    prices: list[AppliedPrice]
-    # Columns left out: no customer group chosen for them.
-    skipped: list[str]
 
 
 class SaveApplied(BaseModel):

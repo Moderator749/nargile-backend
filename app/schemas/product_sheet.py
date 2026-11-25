@@ -26,6 +26,7 @@ from app.core.rich_text import RICH_TEXT_MAX, to_rich_html
 from app.core.slugs import PRODUCT_SLUG, PRODUCT_SLUG_MAX, RESERVED_ROOT_PATHS
 from app.models.catalog import CurrencyType
 from app.models.user import SegmentType
+from app.services.pricing_engine import whole_lira
 from app.schemas.catalog import IMAGE_URL_PATTERN
 from app.schemas.i18n import ProductTranslations
 
@@ -160,6 +161,12 @@ class SheetOpportunity(BaseModel):
     opp_has_volume_discount: bool = True
     opp_gives_points: bool = True
     opp_can_use_points: bool = True
+
+    @field_validator("opportunity_price")
+    @classmethod
+    def _whole_lira(cls, v: Decimal | None) -> Decimal | None:
+        # A shopper's deal price in TL: whole lira, rounded up, as retail is.
+        return None if v is None else whole_lira(v)
 
     @model_validator(mode="after")
     def _runnable(self) -> "SheetOpportunity":

@@ -26,6 +26,7 @@ from app.models.pricing import PricingRecord
 from app.models.user import CustomerSegment, SegmentType, User
 from app.schemas.pricing import PricingSheetIn
 from app.services.pricing_sheet import compute_sheet, erp_by_group
+from tests.pricing_helpers import legacy_save
 from tests.conftest import auth_header
 
 BASE = "/api/v1/admin/pricing"
@@ -212,7 +213,7 @@ def test_cetvel_1_shelf_erp_prices_apply_as_typed_without_vat():
     ],
 )
 async def test_impossible_sheets_are_refused(client: AsyncClient, admin_user: User, change: dict):
-    resp = await client.post(f"{BASE}/draft", headers=auth_header(admin_user), json={"sheet": _sheet(**change)})
+    resp = await legacy_save(client, "draft", auth_header(admin_user), {"sheet": _sheet(**change)})
     assert resp.status_code == 422, resp.text
 
 
@@ -221,19 +222,19 @@ async def test_impossible_sheets_are_refused(client: AsyncClient, admin_user: Us
 
 async def test_drafts_and_files(client: AsyncClient, admin_user: User):
     h = auth_header(admin_user)
-    draft = await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_name="Taslak ürün")})
-    assert draft.status_code == 201, draft.text
+    draft = await legacy_save(client, "draft", h, {"sheet": _sheet(product_name="Taslak ürün")})
+    assert draft.status_code == 200, draft.text
     assert draft.json()["file_id"] is None and draft.json()["sheet"]["retail"]["price"] == "1904.40"
     drafts = (await client.get(f"{BASE}/records", headers=h)).json()
     assert draft.json()["id"] in [r["id"] for r in drafts]
 
-    first = await client.post(f"{BASE}/file", headers=h, json={"file_name": "Ekim 2026 Zam", "sheet": _sheet()})
-    assert first.status_code == 201, first.text
+    first = await legacy_save(client, "file", h, {"file_name": "Ekim 2026 Zam", "sheet": _sheet()})
+    assert first.status_code == 200, first.text
     file_id = first.json()["file_id"]
     # The same name (any case) is the same file, not a second one.
-    again = await client.post(f"{BASE}/file", headers=h, json={"file_name": "ekim 2026 zam", "sheet": _sheet()})
+    again = await legacy_save(client, "file", h, {"file_name": "ekim 2026 zam", "sheet": _sheet()})
     assert again.json()["file_id"] == file_id
-    by_id = await client.post(f"{BASE}/file", headers=h, json={"file_id": file_id, "sheet": _sheet()})
+    by_id = await legacy_save(client, "file", h, {"file_id": file_id, "sheet": _sheet()})
     assert by_id.json()["file_name"] == "Ekim 2026 Zam"
 
     files = {f["id"]: f for f in (await client.get(f"{BASE}/files", headers=h)).json()}
@@ -247,7 +248,7 @@ async def test_drafts_and_files(client: AsyncClient, admin_user: User):
     assert (await client.delete(f"{BASE}/files/{file_id}", headers=h)).status_code == 204
     assert (await client.get(f"{BASE}/records", headers=h, params={"file_id": file_id})).json() == []
 
-    neither = await client.post(f"{BASE}/file", headers=h, json={"sheet": _sheet()})
+    neither = await legacy_save(client, "file", h, {"sheet": _sheet()})
     assert neither.status_code == 422
 
 
@@ -256,10 +257,10 @@ async def test_the_file_list_carries_each_files_product_codes(client: AsyncClien
     h = auth_header(admin_user)
     name = f"Kodlu {uuid.uuid4().hex[:6]}"
     for code in ("Steam 09", "LA92-4", "Steam 09", ""):
-        resp = await client.post(f"{BASE}/file", headers=h, json={"file_name": name, "sheet": _sheet(product_code=code)})
-        assert resp.status_code == 201, resp.text
+        resp = await legacy_save(client, "file", h, {"file_name": name, "sheet": _sheet(product_code=code)})
+        assert resp.status_code == 200, resp.text
     file_id = resp.json()["file_id"]
-    empty = (await client.post(f"{BASE}/file", headers=h, json={"file_name": f"{name} boş", "sheet": _sheet()})).json()
+    empty = (await legacy_save(client, "file", h, {"file_name": f"{name} boş", "sheet": _sheet()})).json()
 
     files = {f["id"]: f for f in (await client.get(f"{BASE}/files", headers=h)).json()}
     # Distinct and without the blank code; a file whose rows have no code lists none.
@@ -275,8 +276,8 @@ async def test_the_file_list_carries_each_files_product_codes(client: AsyncClien
 async def test_a_saved_row_is_overwritten_in_place(client: AsyncClient, admin_user: User):
     h = auth_header(admin_user)
     code = f"OVR-{uuid.uuid4().hex[:6]}"
-    first = (await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_code=code, cost="1000")})).json()
-    other = (await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_name="Başka")})).json()
+    first = (await legacy_save(client, "draft", h, {"sheet": _sheet(product_code=code, cost="1000")})).json()
+    other = (await legacy_save(client, "draft", h, {"sheet": _sheet(product_name="Başka")})).json()
 
     # The drafts hold the code, found whatever its case and spaces; a file does not.
     found = (await client.get(f"{BASE}/records/matching", headers=h, params={"code": f"  {code.lower()} "})).json()
@@ -286,8 +287,8 @@ async def test_a_saved_row_is_overwritten_in_place(client: AsyncClient, admin_us
 
     # "Üzerine Yaz" in the drafts: the same row, its sheet and its time new, nothing added.
     drafts_before = len((await client.get(f"{BASE}/records", headers=h)).json())
-    over = await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_code=code, cost="1200"), "replace_id": first["id"]})
-    assert over.status_code == 201, over.text
+    over = await legacy_save(client, "draft", h, {"sheet": _sheet(product_code=code, cost="1200"), "replace_id": first["id"]})
+    assert over.status_code == 200, over.text
     over = over.json()
     assert over["id"] == first["id"] and over["sheet"]["cost"] == "1200"
     assert over["created_at"] == first["created_at"] and over["updated_at"] > first["updated_at"]
@@ -297,24 +298,23 @@ async def test_a_saved_row_is_overwritten_in_place(client: AsyncClient, admin_us
     assert [r["id"] for r in drafts].index(first["id"]) < [r["id"] for r in drafts].index(other["id"])
 
     # Into a file: a row is overwritten there and the file's count stays.
-    saved = (await client.post(f"{BASE}/file", headers=h, json={"file_name": f"Dosya {code}", "sheet": _sheet(product_code=code)})).json()
+    saved = (await legacy_save(client, "file", h, {"file_name": f"Dosya {code}", "sheet": _sheet(product_code=code)})).json()
     file_id = saved["file_id"]
     by_name = (await client.get(f"{BASE}/records/matching", headers=h, params={"code": code, "file_name": f"dosya {code.lower()}"})).json()
     assert [r["id"] for r in by_name] == [saved["id"]]
-    again = await client.post(
-        f"{BASE}/file", headers=h, json={"file_id": file_id, "sheet": _sheet(product_code=code, cost="1500"), "replace_id": saved["id"]}
+    again = await legacy_save(client, "file", h, {"file_id": file_id, "sheet": _sheet(product_code=code, cost="1500"), "replace_id": saved["id"]}
     )
     assert again.json()["id"] == saved["id"] and again.json()["sheet"]["cost"] == "1500"
     files = {f["id"]: f for f in (await client.get(f"{BASE}/files", headers=h)).json()}
     assert files[file_id]["record_count"] == 1
 
     # A draft saved over into a file moves there.
-    moved = (await client.post(f"{BASE}/file", headers=h, json={"file_id": file_id, "sheet": _sheet(product_code=code), "replace_id": first["id"]})).json()
+    moved = (await legacy_save(client, "file", h, {"file_id": file_id, "sheet": _sheet(product_code=code), "replace_id": first["id"]})).json()
     assert moved["id"] == first["id"] and moved["file_id"] == file_id
     assert first["id"] not in [r["id"] for r in (await client.get(f"{BASE}/records", headers=h)).json()]
 
     # A row deleted meanwhile cannot be written over.
-    gone = await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(), "replace_id": str(uuid.uuid4())})
+    gone = await legacy_save(client, "draft", h, {"sheet": _sheet(), "replace_id": str(uuid.uuid4())})
     assert gone.status_code == 404
 
     # A copied file keeps its rows' times.
@@ -329,8 +329,8 @@ async def test_a_saved_row_is_overwritten_in_place(client: AsyncClient, admin_us
 async def _file_with(client: AsyncClient, h: dict, name: str, n: int) -> tuple[int, list[str]]:
     ids = []
     for i in range(n):
-        resp = await client.post(f"{BASE}/file", headers=h, json={"file_name": name, "sheet": _sheet(product_name=f"{name} {i}")})
-        assert resp.status_code == 201, resp.text
+        resp = await legacy_save(client, "file", h, {"file_name": name, "sheet": _sheet(product_name=f"{name} {i}")})
+        assert resp.status_code == 200, resp.text
         ids.append(resp.json()["id"])
     return resp.json()["file_id"], ids
 
@@ -409,7 +409,7 @@ async def test_a_duplicated_file_copies_every_row_as_new_unapplied_rows(
 
 async def test_only_admins_reach_the_calculator(client: AsyncClient, customer_user: User):
     h = auth_header(customer_user)
-    assert (await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet()})).status_code == 403
+    assert (await legacy_save(client, "draft", h, {"sheet": _sheet()})).status_code == 403
     assert (await client.get(f"{BASE}/files", headers=h)).status_code == 403
 
 
@@ -442,9 +442,7 @@ async def test_apply_writes_every_customer_groups_live_price(
         {"label": "Toptan Fiyatı", "segment": "WHOLESALE", "percent": "15"},
         {"label": "Kafe Fiyatı", "segment": "CAFE", "percent": "0", "desired": "1350"},
     ]
-    resp = await client.post(
-        f"{BASE}/apply-to-product", headers=auth_header(admin_user),
-        json={
+    resp = await legacy_save(client, "apply", auth_header(admin_user), {
             "file_name": "Uygulanan",
             "sheet": _sheet(product_code=code.lower(), columns=columns, extras=[{"label": "Özel Fiyat 1", "percent": "5"}]),
         },
@@ -475,21 +473,19 @@ async def test_a_row_applied_then_saved_over_keeps_its_application(
     normal_v, _ = catalog
     code = await _code(db_session, normal_v)
     h = auth_header(admin_user)
-    applied = (await client.post(f"{BASE}/apply-to-product", headers=h, json={"file_name": f"Uygula {code}", "sheet": _sheet(product_code=code)})).json()
+    applied = (await legacy_save(client, "apply", h, {"file_name": f"Uygula {code}", "sheet": _sheet(product_code=code)})).json()
     row = applied["record"]
     assert row["applied_at"] >= row["updated_at"]
 
     # Overwritten and applied again: the same row, applied after its save.
-    again = await client.post(
-        f"{BASE}/apply-to-product", headers=h,
-        json={"file_id": row["file_id"], "sheet": _sheet(product_code=code, cost="1100"), "replace_id": row["id"]},
+    again = await legacy_save(client, "apply", h, {"file_id": row["file_id"], "sheet": _sheet(product_code=code, cost="1100"), "replace_id": row["id"]},
     )
     assert again.status_code == 200, again.text
     again = again.json()["record"]
     assert again["id"] == row["id"] and again["applied_at"] > row["applied_at"] and again["applied_at"] >= again["updated_at"]
 
     # Overwritten without applying: the application stays, older than the save.
-    plain = (await client.post(f"{BASE}/file", headers=h, json={"file_id": row["file_id"], "sheet": _sheet(product_code=code, cost="1300"), "replace_id": row["id"]})).json()
+    plain = (await legacy_save(client, "file", h, {"file_id": row["file_id"], "sheet": _sheet(product_code=code, cost="1300"), "replace_id": row["id"]})).json()
     assert plain["applied_at"] == again["applied_at"] and plain["applied_summary"] is not None
     assert plain["updated_at"] > plain["applied_at"]
     await client.delete(f"{BASE}/files/{row['file_id']}", headers=h)
@@ -505,7 +501,7 @@ async def test_a_foreign_sheet_replaces_try_rows_and_retail_takes_the_final_deci
         columns=[{"label": "Bayi Fiyatı", "segment": "DEALER", "percent": "10"}],
         retail={"percent": "50", "vat_rate": "20"}, usd_rate="40", final_try="6999.90",
     )
-    resp = await client.post(f"{BASE}/apply-to-product", headers=auth_header(admin_user), json={"file_name": "USD", "sheet": sheet})
+    resp = await legacy_save(client, "apply", auth_header(admin_user), {"file_name": "USD", "sheet": sheet})
     assert resp.status_code == 200, resp.text
 
     prices = await _prices(db_session, normal_v.id)
@@ -516,7 +512,7 @@ async def test_a_foreign_sheet_replaces_try_rows_and_retail_takes_the_final_deci
 
     # And the same sheet without a final decision prices retail in USD, the TRY row gone.
     sheet.pop("final_try")
-    await client.post(f"{BASE}/apply-to-product", headers=auth_header(admin_user), json={"file_name": "USD", "sheet": sheet})
+    await legacy_save(client, "apply", auth_header(admin_user), {"file_name": "USD", "sheet": sheet})
     retail = (await _prices(db_session, normal_v.id))[SegmentType.RETAIL]
     assert [(r.currency, r.price_incl_tax) for r in retail] == [("USD", Decimal("165.00"))]
 
@@ -524,9 +520,7 @@ async def test_a_foreign_sheet_replaces_try_rows_and_retail_takes_the_final_deci
 async def test_an_unknown_product_saves_nothing(client: AsyncClient, db_session: AsyncSession, admin_user: User):
     h = auth_header(admin_user)  # before the request: its rollback expires the shared session's objects
     before = await db_session.scalar(select(func.count()).select_from(PricingRecord))
-    resp = await client.post(
-        f"{BASE}/apply-to-product", headers=h,
-        json={"file_name": "Hiç olmayan", "sheet": _sheet(product_code="YOK-123")},
+    resp = await legacy_save(client, "apply", h, {"file_name": "Hiç olmayan", "sheet": _sheet(product_code="YOK-123")},
     )
     assert resp.status_code == 422 and "YOK-123" in resp.json()["detail"]
     assert await db_session.scalar(select(func.count()).select_from(PricingRecord)) == before
@@ -545,9 +539,9 @@ async def test_rows_carry_their_products_photo(
     code = product.base_code
     await db_session.commit()
 
-    saved = await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_code=code.lower())})
+    saved = await legacy_save(client, "draft", h, {"sheet": _sheet(product_code=code.lower())})
     assert saved.json()["image_url"] == "https://cdn.example.com/urun.jpg"
-    unknown = await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_code="YOK-1")})
+    unknown = await legacy_save(client, "draft", h, {"sheet": _sheet(product_code="YOK-1")})
     assert unknown.json()["image_url"] is None
 
     rows = {r["id"]: r for r in (await client.get(f"{BASE}/records", headers=h)).json()}

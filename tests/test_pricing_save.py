@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.catalog import Product
 from app.models.pricing import PricingRecord
 from app.models.user import SegmentType, User
+from tests.pricing_helpers import legacy_save
 from tests.conftest import auth_header
 from tests.test_pricing_sheet import BASE, _code, _prices, _sheet
 
@@ -59,8 +60,8 @@ async def test_a_code_saved_anywhere_is_asked_about_then_overwritten_or_added(
     h = auth_header(admin_user)
     code = _new_code()
     # Saved before the change: once in a file, once as a draft.
-    in_file = (await client.post(f"{BASE}/file", headers=h, json={"file_name": f"Ekim {code}", "sheet": _sheet(product_code=code)})).json()
-    draft = (await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_code=code, cost="900")})).json()
+    in_file = (await legacy_save(client, "file", h, {"file_name": f"Ekim {code}", "sheet": _sheet(product_code=code)})).json()
+    draft = (await legacy_save(client, "draft", h, {"sheet": _sheet(product_code=code, cost="900")})).json()
 
     asked = await client.post(f"{BASE}/save", headers=h, json={"sheet": _sheet(product_code=f"  {code.lower()} ", cost="1200")})
     assert asked.status_code == 409, asked.text
@@ -167,8 +168,8 @@ async def test_an_unknown_product_saves_nothing(client: AsyncClient, db_session:
 async def test_one_list_and_matching_across_folders(client: AsyncClient, admin_user: User):
     h = auth_header(admin_user)
     code = _new_code()
-    in_file = (await client.post(f"{BASE}/file", headers=h, json={"file_name": f"Liste {code}", "sheet": _sheet(product_code=code)})).json()
-    draft = (await client.post(f"{BASE}/draft", headers=h, json={"sheet": _sheet(product_code=code)})).json()
+    in_file = (await legacy_save(client, "file", h, {"file_name": f"Liste {code}", "sheet": _sheet(product_code=code)})).json()
+    draft = (await legacy_save(client, "draft", h, {"sheet": _sheet(product_code=code)})).json()
     listed = {r["id"] for r in (await client.get(f"{BASE}/records", headers=h, params={"all": "true"})).json()}
     assert {in_file["id"], draft["id"]} <= listed
     found = (await client.get(f"{BASE}/records/matching", headers=h, params={"code": code.lower(), "everywhere": "true"})).json()
