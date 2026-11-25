@@ -274,8 +274,11 @@ def apply_catalog_filters(
     return stmt
 
 
-def _price_for(variant: ProductVariant, segment_id: int, rates: Rates | None) -> tuple[CatalogPrice | None, CatalogPrice | None]:
-    """(price in TRY, the foreign price it came from).
+def _price_for(
+    variant: ProductVariant, segment_id: int, rates: Rates | None, *, retail: bool
+) -> tuple[CatalogPrice | None, CatalogPrice | None]:
+    """(price in TRY, the foreign price it came from). `retail`: this is the
+    RETAIL list, whose converted price is whole lira (pricing_engine.try_price).
 
     The second is None whenever the admin priced this segment in TRY, which is the
     usual case; the storefront shows both when it is set.
@@ -286,7 +289,7 @@ def _price_for(variant: ProductVariant, segment_id: int, rates: Rates | None) ->
     entered = CatalogPrice.model_validate(row, from_attributes=True)
     if CurrencyType(row.currency) == CurrencyType.TRY:
         return entered, None
-    converted = row_in_try(row, rates)  # whole lira, rounded up
+    converted = row_in_try(row, rates, retail=retail)
     if converted is None:
         return None, entered  # TCMB unreachable: show the foreign figure only
     excl, incl = converted
@@ -362,7 +365,7 @@ async def _catalog_view(
         for v in sorted(
             (v for v in product.variants if v.is_active), key=lambda v: (v.position, v.sku)
         ):
-            price, origin = _price_for(v, segment_id, rates)
+            price, origin = _price_for(v, segment_id, rates, retail=segment_id == retail_id)
             # The central pool: the same stock for every buyer, whatever their price list.
             available = stock_on_hand(v.inventory)
             variants.append(
@@ -373,7 +376,7 @@ async def _catalog_view(
                     attributes=v.attributes,
                     price=price,
                     origin_price=origin,
-                    list_price=_price_for(v, retail_id, rates)[0],
+                    list_price=_price_for(v, retail_id, rates, retail=True)[0],
                     flash_sale=_flash_sale_for(price, sales.get(v.id)),
                     in_stock=available > 0,
                     # The count for a firm's account only (`shows_stock_count`).
@@ -524,9 +527,9 @@ async def catalog_summary(
         if not live:
             continue
         shown = next((v for v in live if stock_on_hand(v.inventory) > 0), live[0])
-        own, _ = _price_for(shown, segment_id, rates)
+        own, _ = _price_for(shown, segment_id, rates, retail=segment_id == retail_id)
         sale = _flash_sale_for(own, sales.get(shown.id))
-        price = sale.price if sale else (own or _price_for(shown, retail_id, rates)[0])
+        price = sale.price if sale else (own or _price_for(shown, retail_id, rates, retail=True)[0])
         if price is not None and price.currency == CurrencyType.TRY:
             prices.append(price.price_incl_tax)
     return CatalogSummary(
@@ -692,9 +695,10 @@ def _erp_for(
     as the admin's price catalogue picks it (lib/erpCatalog.ts `erpPriceFor`).
 
     A TL line whose group has its ERP price only in USD or EUR (a USD
-    worksheet applied) takes it in TL at the day's rate, after VAT and in
-    whole lira as every TL price (0.375 USD + 20% = 0.45 USD → 23 TL), its
-    figure before VAT derived from that; the foreign figure without a rate."""
+    worksheet applied) takes it in TL at the day's rate, after VAT — in whole
+    lira for retail (0.375 USD + 20% = 0.45 USD → 23 TL), to the kuruş for a
+    business group — its figure before VAT derived from that; the foreign
+    figure without a rate."""
     matrix = product.erp_prices or {}
     for code in dict.fromkeys((CurrencyType(listed.currency).value, "TRY", "USD", "EUR")):
         value = (matrix.get(code) or {}).get(group.value)
@@ -703,7 +707,10 @@ def _erp_for(
         price, currency = Decimal(value), CurrencyType(code)
         if CurrencyType(listed.currency) == CurrencyType.TRY and currency != CurrencyType.TRY:
             factor = 1 + listed.vat_rate / 100
-            incl = to_try((price * factor).quantize(CENT, rounding=ROUND_HALF_UP), currency, rates)
+            incl = to_try(
+                (price * factor).quantize(CENT, rounding=ROUND_HALF_UP), currency, rates,
+                retail=group == SegmentType.RETAIL,
+            )
             if incl is not None:
                 return (incl / factor).quantize(ERP_PLACES, rounding=ROUND_HALF_UP), CurrencyType.TRY
         return price, currency
@@ -747,7 +754,7 @@ async def build_price_list(
         prices = {}
         if variant is not None:
             for group in groups:
-                price, entered = _price_for(variant, segments[group], rates)
+                price, entered = _price_for(variant, segments[group], rates, retail=group == SegmentType.RETAIL)
                 if entered is not None and group != SegmentType.RETAIL:
                     listed = entered  # the foreign figure, as entered
                 elif price is not None and price.currency == CurrencyType.TRY:

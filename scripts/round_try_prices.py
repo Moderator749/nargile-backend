@@ -6,7 +6,8 @@
 
 What it touches, TRY only (a USD/EUR row is converted at the day's rate and
 rounded then, by pricing_engine.to_try):
-- variant_prices: every segment's row whose after-VAT price has kuruş. The
+- variant_prices: the RETAIL (Perakende) row whose after-VAT price has kuruş —
+  never Bayi, Toptan or Kafe, which keep their kuruş (2026-11-25). The
   price after VAT goes up to the next whole lira and the one before VAT is
   derived from it at the row's own VAT rate, as pricing_engine does.
 - flash_sales.sale_price_incl_tax and products.opportunity_price with kuruş.
@@ -35,6 +36,7 @@ from sqlalchemy import select, text  # noqa: E402
 from app.core.database import async_session, engine  # noqa: E402
 from app.models.catalog import CurrencyType, Product, VariantPrice  # noqa: E402
 from app.models.promotion import FlashSale  # noqa: E402
+from app.models.user import CustomerSegment, SegmentType  # noqa: E402
 from app.services.pricing_engine import excl_from_incl, whole_lira  # noqa: E402
 
 REPORTS = Path(__file__).resolve().parent / "migration_reports"
@@ -50,7 +52,11 @@ async def run(apply: bool, refresh: bool) -> dict:
         prices = [
             row
             for row in (
-                await db.scalars(select(VariantPrice).where(VariantPrice.currency == CurrencyType.TRY))
+                await db.scalars(
+                    select(VariantPrice)
+                    .join(CustomerSegment, CustomerSegment.id == VariantPrice.segment_id)
+                    .where(VariantPrice.currency == CurrencyType.TRY, CustomerSegment.code == SegmentType.RETAIL)
+                )
             ).all()
             if _fractional(row.price_incl_tax)
         ]

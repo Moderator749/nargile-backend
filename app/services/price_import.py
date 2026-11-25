@@ -433,6 +433,6 @@ async def apply_matches(db: AsyncSession, preview: Preview) -> int:
             for seg, (excl, incl) in new_prices(match).items()
             if seg in segments
         ]
-        await write_prices(db, active, rows, match.vat_rate)
+        await write_prices(db, active, rows, match.vat_rate, retail_id=segments.get(SegmentType.RETAIL))
         variants += len(active)
     return variants

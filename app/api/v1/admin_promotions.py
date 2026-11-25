@@ -49,7 +49,7 @@ def _regular(variant: ProductVariant, retail_id: int, rates: Rates | None) -> De
     price is: the row the pricing engine picks (TRY, else USD, else EUR) at the
     day's TCMB rate. None with no RETAIL price, or its rate not at hand."""
     row = pick_price_row(variant.prices, retail_id)
-    return None if row is None else to_try(row.price_incl_tax, row.currency, rates)
+    return None if row is None else to_try(row.price_incl_tax, row.currency, rates, retail=True)
 
 
 def _read(sale: FlashSale, retail_id: int, now: datetime, rates: Rates | None) -> FlashSaleRead:

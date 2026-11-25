@@ -835,8 +835,12 @@ class CheckoutEngine:
             if price_row is None:
                 raise ValueError(f"{variant.sku} bu müşteri grubuna satılmıyor")
             # The cart is always TRY: a price entered in USD/EUR is converted at
-            # the day's TCMB rate and locked in here.
-            unit_price = to_try(price_row.price_incl_tax, price_row.currency, rates)
+            # the day's TCMB rate and locked in here — whole lira for retail,
+            # to the kuruş for a business group (pricing_engine.try_price).
+            unit_price = to_try(
+                price_row.price_incl_tax, price_row.currency, rates,
+                retail=segment_code in (None, SegmentType.RETAIL),
+            )
             if unit_price is None:
                 raise ValueError(f"{variant.sku} için güncel döviz kuru alınamadı, lütfen sonra deneyin")
 

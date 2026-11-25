@@ -300,8 +300,8 @@ async def test_applying_a_sheet_writes_its_erp_row_to_the_product(
     assert applied.status_code == 200, applied.text
     prices = await _prices(db_session, normal_v.id)
     assert (prices[SegmentType.DEALER][0].price_excl_tax, prices[SegmentType.CAFE][0].price_excl_tax) == (
-        # The green row, for the site, in whole lira after VAT (132.62 → 133, 157.90 → 158).
-        Decimal("110.83"), Decimal("131.67"),
+        # The green row, for the site, to the kuruş: only retail is whole lira.
+        Decimal("110.52"), Decimal("131.58"),
     )
     # Retail's ERP 180 is a shelf price, after VAT: the shelf gets 180 as it is.
     assert (prices[SegmentType.RETAIL][0].price_excl_tax, prices[SegmentType.RETAIL][0].price_incl_tax) == (
@@ -353,13 +353,13 @@ async def test_cetvel_2_takes_its_erp_row_after_vat_and_shows_vat_included(
     assert applied.status_code == 200, applied.text
     prices = await _prices(db_session, normal_v.id)
     assert {seg: rows[0].price_incl_tax for seg, rows in prices.items() if seg in SITE} == {
-        # 120.75 and 138.60 on the sheet; whole lira, rounded up, on the shelf.
-        SegmentType.DEALER: Decimal("121.00"),
-        SegmentType.WHOLESALE: Decimal("121.00"),
-        SegmentType.CAFE: Decimal("139.00"),
+        # Business groups keep the sheet's kuruş; only retail is whole lira.
+        SegmentType.DEALER: Decimal("120.75"),
+        SegmentType.WHOLESALE: Decimal("120.75"),
+        SegmentType.CAFE: Decimal("138.60"),
         SegmentType.RETAIL: Decimal("138.00"),  # retail never takes the rate
     }
-    assert prices[SegmentType.CAFE][0].price_excl_tax == Decimal("115.83")  # 139.00 after VAT
+    assert prices[SegmentType.CAFE][0].price_excl_tax == Decimal("115.50")
     await db_session.refresh(product)
     assert product.erp_prices == {"TRY": {"DEALER": "95.83", "WHOLESALE": "95.83", "CAFE": "110.00", "RETAIL": "115.00"}}
     assert (

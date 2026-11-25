@@ -289,16 +289,17 @@ async def apply_to_product(db: AsyncSession, sheet: PricingSheetIn, computed: di
         if segment_id is None:
             raise ApplyError(f"Müşteri grubu tanımlı değil: {segment.value}")
         excl, incl = _both_sides(price, basis, vat_rate)
-        if currency == CurrencyType.TRY:
-            # A TRY price is charged in whole lira: rounded up after VAT, and
-            # the figure before VAT follows from it (pricing_engine).
+        if currency == CurrencyType.TRY and segment == SegmentType.RETAIL:
+            # A retail TRY price is charged in whole lira: rounded up after
+            # VAT, and the figure before VAT follows from it (pricing_engine).
+            # A business group keeps its kuruş (3.16 + 20% stays 3.16 / 3.79).
             incl = whole_lira(incl)
             excl = excl_from_incl(incl, vat_rate)
         rows.append((segment_id, currency, excl, incl))
         applied.append(AppliedPrice(
             label=label, segment=segment, currency=currency, price_excl_tax=excl, price_incl_tax=incl,
         ))
-    await write_prices(db, variants, rows, vat_rate)
+    await write_prices(db, variants, rows, vat_rate, retail_id=segments.get(SegmentType.RETAIL))
     write_erp(product, sheet)
     cost = cost_before_vat(sheet.cost, sheet.vat_mode, sheet.retail.vat_rate)
     for variant in variants:
@@ -321,11 +322,16 @@ async def write_prices(
     variants: list[ProductVariant],
     prices: list[tuple[int, CurrencyType, Decimal, Decimal]],
     vat_rate: Decimal,
+    *,
+    retail_id: int | None,
 ) -> None:
     """Give every one of these colours each (segment, currency, excl, incl)
     price: the group's row in that currency is updated or added, and its rows
     in the other currencies are removed — checkout charges a TRY row whenever
-    there is one, so an old one would quietly win over the new price."""
+    there is one, so an old one would quietly win over the new price.
+
+    The RETAIL segment (`retail_id`) is kept in whole lira in TRY; a business
+    group's TRY price is written to the kuruş, as given."""
     # Read fresh rather than through `variant.prices`: a collection loaded
     # earlier in the session would not show rows written since.
     rows_by_variant: dict = {v.id: [] for v in variants}
@@ -339,9 +345,10 @@ async def write_prices(
         rows_by_variant[row.variant_id].append(row)
 
     for segment_id, currency, excl, incl in prices:
-        if currency == CurrencyType.TRY and incl != whole_lira(incl):
-            # Whole lira in TRY, whoever computed the figure (a worksheet, an
-            # imported sheet): rounded up after VAT, before VAT derived from it.
+        if segment_id == retail_id and currency == CurrencyType.TRY and incl != whole_lira(incl):
+            # Retail is whole lira in TRY, whoever computed the figure (a
+            # worksheet, an imported sheet): rounded up after VAT, before VAT
+            # derived from it. Bayi, Toptan and Kafe keep their kuruş.
             incl = whole_lira(incl)
             excl = excl_from_incl(incl, vat_rate)
         for variant in variants:
