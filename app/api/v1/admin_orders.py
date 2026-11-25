@@ -2,6 +2,7 @@
 
 import re
 import uuid
+from typing import Literal
 from collections.abc import Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -52,6 +53,19 @@ def order_number_matches(reference: str):
     return func.upper(Order.order_number) == ref
 
 
+# "Normal Siparişler" / "Şube / Test" / "Tümü" on the order list: a branch's or
+# test account's orders stay listed (Order.exclude_from_stock_and_reports).
+OrderKind = Literal["all", "normal", "internal"]
+
+
+def _kind_filter(kind: str) -> list:
+    if kind == "normal":
+        return [Order.exclude_from_stock_and_reports.is_(False)]
+    if kind == "internal":
+        return [Order.exclude_from_stock_and_reports.is_(True)]
+    return []
+
+
 @router.get("/orders", response_model=list[AdminOrderListItem])
 async def list_orders(
     response: Response,
@@ -64,6 +78,7 @@ async def list_orders(
         max_length=40,
         description="An order number, or its last six characters (\"#A1B2C3\"), as Ekip Kanalı links them",
     ),
+    kind: OrderKind = Query("all", description="all | normal | internal (Şube / Test)"),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
     _admin: User = Depends(get_current_admin_user),
@@ -86,6 +101,7 @@ async def list_orders(
         filters.append(Order.created_at <= date_to)
     if number is not None:
         filters.append(order_number_matches(number))
+    filters.extend(_kind_filter(kind))
     stmt = stmt.where(*filters)
     # Total matches, for page controls.
     response.headers["X-Total-Count"] = str(await db.scalar(select(func.count()).select_from(Order).where(*filters)))
@@ -101,13 +117,14 @@ async def list_orders(
 @router.get("/orders/status-counts", response_model=dict[OrderStatus, int])
 async def order_status_counts(
     shipping_method: ShippingMethod | None = Query(None),
+    kind: OrderKind = Query("all", description="all | normal | internal (Şube / Test)"),
     _admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
     """How many orders each status tab holds (every status, zeros included),
     under the same İstanbul filter as the list. Declared before
     ``/orders/{order_id}``, which would otherwise take "status-counts" for an id."""
-    stmt = select(Order.status, func.count()).group_by(Order.status)
+    stmt = select(Order.status, func.count()).where(*_kind_filter(kind)).group_by(Order.status)
     if shipping_method is not None:
         stmt = stmt.where(Order.shipping_method == shipping_method)
     counts = dict((await db.execute(stmt)).all())
@@ -324,6 +341,7 @@ def _list_item(
         store_approved_by_name=order.store_approved_by_name,
         items=[_line(item, catalog) for item in order.items],
         payment_failure=(failures or {}).get(order.id),
+        exclude_from_stock_and_reports=order.exclude_from_stock_and_reports,
     )
 
 
@@ -523,7 +541,9 @@ async def ship_order(
         (catalog.get(item.variant_id, (None, None, None, None))[2] or "Ürün", item.quantity)
         for item in order.items
     ]
-    await mailer.send(order_emails.order_shipped(order, user.full_name, user.email, lines))
+    if not order.exclude_from_stock_and_reports:
+        # A branch's or test account's order tells nobody it shipped (order_sms does the same).
+        await mailer.send(order_emails.order_shipped(order, user.full_name, user.email, lines))
     background.add_task(order_sms.notify, factory, order.id, sms_settings.ORDER_SHIPPED)
     return _list_item(order, user, catalog)
 

@@ -148,7 +148,8 @@ async def calculate_cart(
                 havale_eligible=i.havale_eligible,
                 havale_discount=i.havale_discount,
                 available_quantity=i.available if counts else None,
-                stock_short=i.quantity > i.available,
+                # A branch or test account ("Şube / Test") is not held to the online stock.
+                stock_short=i.quantity > i.available and not user.exclude_from_stock_and_reports,
             )
             for i in cart.items
         ],

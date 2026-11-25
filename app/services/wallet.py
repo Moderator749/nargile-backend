@@ -168,6 +168,8 @@ async def milestone_progress(
     stmt = select(func.coalesce(func.sum(Order.total_amount), 0)).where(
         Order.user_id == user_id,
         Order.status.in_(PAID_STATUSES),
+        # A branch's or test account's order is no spending (Order.counts_as_sale).
+        Order.counts_as_sale(),
         Order.paid_at > since,
         Order.paid_at <= now,
     )
@@ -204,6 +206,9 @@ async def award_for_paid_order(db: AsyncSession, order: Order, now: datetime) ->
         select(User).where(User.id == order.user_id).options(selectinload(User.segment))
     )
     if buyer is None or not loyalty_perks(buyer, buyer.segment.code if buyer.segment else None):
+        return 0, 0
+    if order.exclude_from_stock_and_reports or order.is_quote:
+        # A branch's or test account's order earns nothing, and counts toward no bonus.
         return 0, 0
 
     already = await db.scalar(

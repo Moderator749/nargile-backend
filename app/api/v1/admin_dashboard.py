@@ -45,7 +45,12 @@ async def _totals(db: AsyncSession, since: datetime) -> PeriodTotals:
                 func.coalesce(func.sum(paid), 0),
                 func.coalesce(func.sum(case((Order.payment_method == PaymentMethod.CREDIT_CARD, paid), else_=0)), 0),
                 func.coalesce(func.sum(case((Order.payment_method == PaymentMethod.BANK_TRANSFER, paid), else_=0)), 0),
-            ).where(Order.status.in_(PAID), Order.paid_at.is_not(None), Order.paid_at >= since)
+            ).where(
+                Order.status.in_(PAID),
+                Order.paid_at.is_not(None),
+                Order.paid_at >= since,
+                Order.counts_as_sale(),  # no quote, no branch's or test account's order
+            )
         )
     ).one()
     count, total, card, transfer = row

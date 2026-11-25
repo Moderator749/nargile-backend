@@ -31,6 +31,9 @@ class UserMe(UserRead):
     """Authenticated user's own profile, including their pricing segment."""
 
     segment_code: SegmentType | None = None
+    # "Şube / Test": the storefront does not hold this account to the online
+    # stock (a branch sells from its own shelf; checkout takes none).
+    exclude_from_stock_and_reports: bool = False
     loyalty_balance: int = 0  # usable Sultan Puan (worth `conversion_rate` TRY each)
     # Campaign consent on file, and whether the one-time card should ask for it.
     marketing_email_consent: bool = False

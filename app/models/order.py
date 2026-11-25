@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy import Boolean, and_, DateTime, Enum, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -121,6 +121,14 @@ class ShippingPayer(str, enum.Enum):
 class Order(Base):
     __tablename__ = "orders"
 
+    @classmethod
+    def counts_as_sale(cls):
+        """An order the shop counts in its sales — the dashboard, the reports,
+        the bestsellers, the loyalty sums: not an export request (a quote) and
+        not a branch's or test account's ("Şube / Test"). Status is the
+        caller's to add (paid, placed…)."""
+        return and_(cls.is_quote.is_(False), cls.exclude_from_stock_and_reports.is_(False))
+
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
@@ -216,6 +224,14 @@ class Order(Base):
     # being taken out of the warehouse — so these never reach the sales
     # figures as a sale until an admin turns one into one.
     is_quote: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # A branch's or a test account's order ("Şube / Test"): the buyer's
+    # User.exclude_from_stock_and_reports when it was placed, kept here so the
+    # order stays what it was if the account's flag changes. It took no
+    # online stock (its lines have no stock_warehouse), puts none back, and
+    # is not a sale anywhere the shop counts sales (`counts_as_sale`).
+    exclude_from_stock_and_reports: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
     # "Delivery information": road, air or sea, on an export request only.

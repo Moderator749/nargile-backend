@@ -58,6 +58,11 @@ async def notify(factory: async_sessionmaker, order_id: uuid.UUID, event: str) -
             user = await db.get(User, order.user_id) if order else None
             if order is None or user is None:
                 return
+            if order.exclude_from_stock_and_reports:
+                # A branch's or test account's order: the customer at the
+                # counter gets no online "siparişiniz alındı / kargolandı" SMS.
+                logger.info("%s SMS skipped for Şube / Test order %s", event, order.order_number)
+                return
             config = await sms_settings.load(db)
             template = config.templates[event]
             if not template.enabled:

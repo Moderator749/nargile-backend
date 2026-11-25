@@ -87,7 +87,7 @@ async def _sales(db: AsyncSession, product_ids: list[uuid.UUID]) -> dict[uuid.UU
         .where(
             ProductVariant.product_id.in_(product_ids),
             Order.status.in_(PAID_STATUSES),
-            Order.is_quote.is_(False),
+            Order.counts_as_sale(),  # a branch's or test account's sales are not demand
             when >= now - timedelta(days=max(WINDOWS)),
         )
         .group_by(ProductVariant.product_id)

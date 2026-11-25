@@ -238,6 +238,9 @@ class AdminOrderListItem(BaseModel):
     # no stock taken. The panel shows it as a request until someone agrees a
     # freight price with the customer and turns it into an order.
     is_quote: bool = False
+    # "Şube / Test": placed by a branch's or test account, out of the stock and
+    # the reports (Order.exclude_from_stock_and_reports); shown with a badge.
+    exclude_from_stock_and_reports: bool = False
     transport_mode: TransportMode | None = None
     agreements_accepted_at: datetime | None = None
     paid_at: datetime | None = None

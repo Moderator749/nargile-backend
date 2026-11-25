@@ -35,6 +35,7 @@ from app.schemas.admin import SortDirection
 from app.schemas.b2b import B2BApplicationRead, B2BApprove, B2BReject
 from app.schemas.customer import (
     AccountTypeEdit,
+    StockExclusion,
     CustomerOrder,
     CustomerOrderHistory,
     CustomerOrderLine,
@@ -178,6 +179,7 @@ async def list_customers(
             is_guest=u.is_guest,
             # Told to a Sistem Yöneticisi only: to the rest of the team it is an account like any.
             is_superadmin=u.is_superadmin and admin.is_superadmin,
+            exclude_from_stock_and_reports=u.exclude_from_stock_and_reports,
             city=city,
             district=district,
             country=country,
@@ -247,6 +249,7 @@ async def _detail(db: AsyncSession, user_id: uuid.UUID, viewer: User) -> AdminCu
         is_verified=user.is_verified,
         # Told to a Sistem Yöneticisi only; the rest of the team learns no more than `can_manage`.
         is_superadmin=user.is_superadmin and viewer.is_superadmin,
+        exclude_from_stock_and_reports=user.exclude_from_stock_and_reports,
         can_manage=may_change(viewer, user),
         created_at=user.created_at,
         segment=user.segment.code if user.segment else None,
@@ -381,6 +384,24 @@ async def customer_orders(
         paid_count=len(paid),
         total_spent=sum((o.total_amount for o in paid), Decimal("0.00")),
     )
+
+
+@router.put("/customers/{user_id}/stock-exclusion", response_model=AdminCustomerDetail)
+async def set_stock_exclusion(
+    user_id: uuid.UUID,
+    payload: StockExclusion,
+    admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Stok ve Raporlardan Hariç Tut (Şube / Test Hesabı)": from the account's
+    next order on, it takes no online stock (and may order what the site has
+    none of), puts none back, and is left out of the dashboard, the reports,
+    the bestsellers, the loyalty sums and the order SMS / e-mails. Orders
+    already placed keep what they were placed as."""
+    user = await _customer(db, user_id, changed_by=admin)
+    user.exclude_from_stock_and_reports = payload.enabled
+    await db.commit()
+    return await _detail(db, user_id, admin)
 
 
 @router.get("/customers/{user_id}/wallet", response_model=WalletRead)

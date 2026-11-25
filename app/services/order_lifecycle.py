@@ -232,7 +232,8 @@ async def _take_stock_again(db: AsyncSession, order: Order) -> None:
     whatever the lines before it took."""
     short: list[str] = []
     for item in order.items:
-        if item.stock_warehouse is None and order.is_quote:
+        # A request, or a branch's / test account's order, never took stock.
+        if item.stock_warehouse is None and (order.is_quote or order.exclude_from_stock_and_reports):
             continue
         rows = (
             await db.scalars(
@@ -267,10 +268,11 @@ async def _line_name(db: AsyncSession, variant_id) -> str:
 async def _put_back(db: AsyncSession, order: Order) -> None:
     """Every line's goods back to the central pool."""
     for item in order.items:
-        # A request took nothing out of stock. Every other line goes back to the
-        # central pool — one taken from a since-retired segment quota included,
-        # as the shop now has a single stock.
-        if item.stock_warehouse is None and order.is_quote:
+        # A request, and a branch's or test account's order ("Şube / Test"),
+        # took nothing out of stock, so put nothing back. Every other line goes
+        # back to the central pool — one taken from a since-retired segment
+        # quota included, as the shop now has a single stock.
+        if item.stock_warehouse is None and (order.is_quote or order.exclude_from_stock_and_reports):
             continue
         # Locked like checkout's read, so a sale at the same moment cannot
         # overwrite what is put back.

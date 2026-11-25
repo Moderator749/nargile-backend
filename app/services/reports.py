@@ -163,7 +163,7 @@ def sold_lines(f: ReportFilters, rates: dict[str, Decimal]):
         .join(Product, Product.id == ProductVariant.product_id)
         .where(
             Order.status.in_(PAID_STATUSES),
-            Order.is_quote.is_(False),
+            Order.counts_as_sale(),  # not a quote, not a branch's or test account's
             Order.paid_at >= f.start,
             Order.paid_at < f.end,
             *_catalog_filters(f),
@@ -468,7 +468,7 @@ async def payment_methods(db: AsyncSession, f: ReportFilters) -> list[PaymentMet
         # The goods after discounts, as everywhere in these reports: shipping left out.
         func.sum(Order.total_amount - Order.discount_amount).filter(paid),
     ).where(
-        Order.is_quote.is_(False),
+        Order.counts_as_sale(),  # not a quote, not a branch's or test account's
         Order.payment_method.in_(SALE_METHODS),
         Order.created_at >= f.start,
         Order.created_at < f.end,
@@ -534,7 +534,7 @@ def _last_sold():
         select(ProductVariant.product_id.label("product_id"), func.max(Order.paid_at).label("last_sold_at"))
         .join(OrderItem, OrderItem.variant_id == ProductVariant.id)
         .join(Order, Order.id == OrderItem.order_id)
-        .where(Order.status.in_(PAID_STATUSES), Order.is_quote.is_(False))
+        .where(Order.status.in_(PAID_STATUSES), Order.counts_as_sale())
         .group_by(ProductVariant.product_id)
         .subquery("last_sold")
     )

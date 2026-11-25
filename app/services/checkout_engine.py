@@ -514,7 +514,11 @@ class CheckoutEngine:
         # question about quantities the shop may or may not be able to meet;
         # answering it is the admin's job, and taking the goods out of the
         # warehouse before anyone has agreed a price would be the wrong answer.
-        if not quote:
+        # Nor for a branch or test account ("Şube / Test"): a branch sells from
+        # its own shelf, so the online stock is neither checked (it may be 0)
+        # nor taken, and the Fırsat quota is left to online buyers.
+        internal = bool(user.exclude_from_stock_and_reports)
+        if not quote and not internal:
             await self._deduct_inventory(cart.items, user.segment.code if user.segment else None)
             self._spend_offer_stock(cart.items)
 
@@ -527,8 +531,8 @@ class CheckoutEngine:
                 unit_price=item.unit_price,
                 line_total=item.line_total,
                 # Where its stock came from, for a cancellation to put it back;
-                # a request took none.
-                stock_warehouse=None if quote else item.stock_warehouse,
+                # a request, and a branch's or test account's order, took none.
+                stock_warehouse=None if quote or internal else item.stock_warehouse,
                 vat_rate=item.vat_rate,
                 unit_cost=item.unit_cost,
             )
@@ -570,6 +574,8 @@ class CheckoutEngine:
             save_card=save_card,
             order_note=order_note,
             is_quote=quote,
+            # The account's "Şube / Test" flag as it stands now, kept with the order.
+            exclude_from_stock_and_reports=internal,
             transport_mode=transport_mode,
             # The list it was priced from: Perakende for an account in no group.
             segment_code=user.segment.code if user.segment else SegmentType.RETAIL,

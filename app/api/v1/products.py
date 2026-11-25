@@ -873,7 +873,7 @@ async def list_bestsellers(
         select(ProductVariant.product_id, func.sum(OrderItem.quantity).label("sold"))
         .join(OrderItem, OrderItem.variant_id == ProductVariant.id)
         .join(Order, Order.id == OrderItem.order_id)
-        .where(Order.status.in_(SOLD_STATUSES), Order.is_quote.is_(False))
+        .where(Order.status.in_(SOLD_STATUSES), Order.counts_as_sale())
         .group_by(ProductVariant.product_id)
         .subquery()
     )

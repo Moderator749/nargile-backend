@@ -44,6 +44,8 @@ class AdminCustomerRead(BaseModel):
     is_guest: bool = False
     # The Sistem Yöneticisi's account — said to a Sistem Yöneticisi only.
     is_superadmin: bool = False
+    # "Şube / Test": out of the stock and the reports; the grid shows a badge.
+    exclude_from_stock_and_reports: bool = False
     # Where they are, from their invoice address: a Turkish row carries its
     # şehir and ilçe, a foreign one its country. Structured rather than
     # pre-formatted, so the grid decides how to say it.
@@ -111,6 +113,8 @@ class AdminCustomerDetail(BaseModel):
     segment: SegmentType | None
     order_count: int
     loyalty_balance: int
+    # "Stok ve Raporlardan Hariç Tut (Şube / Test Hesabı)".
+    exclude_from_stock_and_reports: bool = False
     # Sultan Puan / Sultan Kumbara: an account on the Perakende price list has
     # them, Bireysel or Kurumsal; Kafe, Toptan and Bayi do not.
     # Without them the panel shows a notice instead of the points controls,
@@ -204,6 +208,12 @@ class AccountTypeEdit(BaseModel):
             if missing:
                 raise ValueError("Kurumsal hesap için gerekli: " + ", ".join(missing))
         return self
+
+
+class StockExclusion(BaseModel):
+    """"Stok ve Raporlardan Hariç Tut (Şube / Test Hesabı)": on or off, from now on."""
+
+    enabled: bool
 
 
 class SegmentAssign(BaseModel):

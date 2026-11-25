@@ -207,6 +207,17 @@ class User(Base):
     is_superadmin: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false"), index=True
     )
+    # "Stok ve Raporlardan Hariç Tut (Şube / Test Hesabı)": the shop's own
+    # branches (Esenyurt, Bahçelievler…) selling from their own shelves, and
+    # internal test accounts. Their orders take nothing from the online stock
+    # (and may be placed when it has none), put nothing back, and stay out of
+    # the dashboard, the reports, the bestsellers, the loyalty sums and the
+    # order SMS / e-mails. Each order records the flag it was placed under
+    # (Order.exclude_from_stock_and_reports), so turning it off later changes
+    # no past order.
+    exclude_from_stock_and_reports: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
     )
