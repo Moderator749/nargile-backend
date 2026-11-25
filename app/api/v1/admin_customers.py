@@ -1,8 +1,11 @@
 """Admin: customers — the grid, one customer in full, their price list and their
 point wallet — plus the company bank accounts (havale/EFT) and the B2B queue."""
 
+import re
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
+from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import case, func, or_, select
@@ -16,7 +19,8 @@ from app.core.database import get_db
 from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
-from app.models.order import Order
+from app.models.catalog import Product, ProductVariant
+from app.models.order import PAID_STATUSES, Order, OrderItem, OrderStatus, PaymentMethod
 from app.models.user import (
     AccountType,
     AddressKind,
@@ -31,6 +35,9 @@ from app.schemas.admin import SortDirection
 from app.schemas.b2b import B2BApplicationRead, B2BApprove, B2BReject
 from app.schemas.customer import (
     AccountTypeEdit,
+    CustomerOrder,
+    CustomerOrderHistory,
+    CustomerOrderLine,
     AdminCustomerDetail,
     AdminCustomerRead,
     CustomerAddressRead,
@@ -40,6 +47,7 @@ from app.schemas.customer import (
 )
 from app.schemas.wallet import BankAccountRead, BankAccountWrite, PointAdjustment, WalletRead
 from app.services.loyalty_service import get_user_loyalty_balance
+from app.services.perks import LOYALTY_OFF_FOR_B2B, perks_for
 from app.services.wallet import POINT_LIFETIME, get_wallet
 
 router = APIRouter(prefix="/admin", tags=["admin-customers"])
@@ -51,7 +59,7 @@ router = APIRouter(prefix="/admin", tags=["admin-customers"])
 @router.get("/customers", response_model=list[AdminCustomerRead])
 async def list_customers(
     response: Response,
-    q: str | None = Query(None, max_length=100, description="Email, name or company title"),
+    q: str | None = Query(None, max_length=100, description="Email, name, company title or phone"),
     account_type: AccountType | None = Query(None),
     segment: SegmentType | None = Query(None),
     city: str | None = Query(None, max_length=80, description="Şehir, as the grid shows it"),
@@ -99,6 +107,13 @@ async def list_customers(
                 User.email.ilike(pattern),
                 User.full_name.ilike(pattern),
                 CustomerProfile.company_title.ilike(pattern),
+                # A phone as typed ("0532 444 55 66") or by its digits alone.
+                User.phone.ilike(pattern),
+                *(
+                    [func.regexp_replace(User.phone, r"\D", "", "g").like(f"%{digits}%")]
+                    if len(digits := re.sub(r"\D", "", q)) >= 4
+                    else []
+                ),
             )
         )
     if account_type is not None:
@@ -237,6 +252,8 @@ async def _detail(db: AsyncSession, user_id: uuid.UUID, viewer: User) -> AdminCu
         segment=user.segment.code if user.segment else None,
         order_count=order_count or 0,
         loyalty_balance=await get_user_loyalty_balance(db, user_id),
+        loyalty_eligible=await perks_for(db, user),
+        loyalty_history=await db.scalar(select(LoyaltyLedger.id).where(LoyaltyLedger.user_id == user_id).limit(1)) is not None,
         profile=CustomerProfileRead.model_validate(user.profile) if user.profile else None,
         addresses=[CustomerAddressRead.model_validate(a) for a in user.addresses],
         application_status=(
@@ -316,12 +333,62 @@ async def edit_account_type(
     return await _detail(db, user_id, admin)
 
 
+ISTANBUL = ZoneInfo("Europe/Istanbul")
+
+
+@router.get("/customers/{user_id}/orders", response_model=CustomerOrderHistory)
+async def customer_orders(
+    user_id: uuid.UUID,
+    date_from: date | None = Query(None, description="From this day (İstanbul), inclusive"),
+    date_to: date | None = Query(None, description="To this day (İstanbul), inclusive"),
+    _admin: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Sipariş / Alışveriş Geçmişi": every order the customer placed, newest
+    first, each with what was in it; and over the same days, how many orders
+    and how much was paid (approved, shipped or delivered; quotes aside)."""
+    await _customer(db, user_id)
+    filters = [Order.user_id == user_id]
+    if date_from is not None:
+        filters.append(Order.created_at >= datetime.combine(date_from, time.min, ISTANBUL))
+    if date_to is not None:
+        filters.append(Order.created_at < datetime.combine(date_to + timedelta(days=1), time.min, ISTANBUL))
+    orders = (await db.scalars(select(Order).where(*filters).order_by(Order.created_at.desc(), Order.id))).all()
+    lines: dict[uuid.UUID, list[CustomerOrderLine]] = {}
+    if orders:
+        rows = await db.execute(
+            select(OrderItem.order_id, Product.name, ProductVariant.color_name, ProductVariant.sku, OrderItem.quantity)
+            .join(ProductVariant, ProductVariant.id == OrderItem.variant_id)
+            .join(Product, Product.id == ProductVariant.product_id)
+            .where(OrderItem.order_id.in_([o.id for o in orders]))
+            .order_by(OrderItem.id)
+        )
+        for order_id, name, color, sku, quantity in rows:
+            lines.setdefault(order_id, []).append(
+                CustomerOrderLine(product_name=name, variant=color or sku, sku=sku, quantity=quantity)
+            )
+    paid = [o for o in orders if OrderStatus(o.status) in PAID_STATUSES and not o.is_quote]
+    return CustomerOrderHistory(
+        orders=[
+            CustomerOrder(
+                id=o.id, order_number=o.order_number, created_at=o.created_at, total_amount=o.total_amount,
+                payment_method=PaymentMethod(o.payment_method).value, status=OrderStatus(o.status).value,
+                is_quote=o.is_quote, lines=lines.get(o.id, []),
+            )
+            for o in orders
+        ],
+        order_count=len(orders),
+        paid_count=len(paid),
+        total_spent=sum((o.total_amount for o in paid), Decimal("0.00")),
+    )
+
+
 @router.get("/customers/{user_id}/wallet", response_model=WalletRead)
 async def customer_wallet(
     user_id: uuid.UUID, _admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
 ):
-    await _customer(db, user_id)
-    return await wallet_read(db, user_id)
+    user = await _customer(db, user_id)
+    return await wallet_read(db, user_id, await perks_for(db, user))
 
 
 @router.post("/customers/{user_id}/points", response_model=WalletRead)
@@ -331,8 +398,11 @@ async def adjust_points(
     admin: User = Depends(get_current_admin_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Add (expires in 1 year) or remove points, with a reason. Can't go below zero."""
-    await _customer(db, user_id, changed_by=admin)
+    """Add (expires in 1 year) or remove points, with a reason. Can't go below
+    zero. Not for an account without the program (Kafe, Toptan, Bayi)."""
+    customer = await _customer(db, user_id, changed_by=admin)
+    if not await perks_for(db, customer):
+        raise HTTPException(status_code=422, detail=LOYALTY_OFF_FOR_B2B)
     now = datetime.now(timezone.utc)
     if payload.amount < 0:
         balance = (await get_wallet(db, user_id, now)).balance

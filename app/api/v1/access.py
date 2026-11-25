@@ -12,17 +12,19 @@
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+import uuid
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_admin_user, get_optional_user
 from app.core.database import get_db
-from app.models.access import AccessTarget, AccessTier, TierAccessRule
+from app.models.access import AccessTarget, AccessTier, CustomerAccessRule, TierAccessRule
 from app.models.brand import Brand
 from app.models.catalog import Category, Product
-from app.models.user import User
+from app.models.user import CustomerProfile, CustomerSegment, User
 from app.services import tier_access
 from app.services.tier_access import RESTRICTED_MESSAGE, normalize_route, restrictions_for, restrictions_for_tier
 
@@ -159,3 +161,104 @@ async def replace_rules(
     await db.commit()
     tier_access.invalidate()
     return await _read(db)
+
+
+# ── Per customer ("Cari bazında") ────────────────────────────────────────────
+
+
+class RuleCustomer(BaseModel):
+    id: uuid.UUID
+    email: str
+    full_name: str | None
+    company_title: str | None
+    phone: str | None
+    segment: str | None
+    rule_count: int = 0
+
+
+class CustomerRulesRead(BaseModel):
+    customer: RuleCustomer
+    rules: TierRules
+
+
+def _rules_of(rows) -> TierRules:
+    rules = TierRules()
+    for rule in rows:
+        if rule.target_type == AccessTarget.CATEGORY.value and rule.target.isdigit():
+            rules.category_ids.append(int(rule.target))
+        elif rule.target_type == AccessTarget.BRAND.value and rule.target.isdigit():
+            rules.brand_ids.append(int(rule.target))
+        elif rule.target_type == AccessTarget.PAGE_ROUTE.value:
+            rules.routes.append(rule.target)
+    return rules
+
+
+async def _customer(db: AsyncSession, user_id: uuid.UUID, count: int = 0) -> RuleCustomer:
+    row = (
+        await db.execute(
+            select(User, CustomerProfile.company_title, CustomerSegment.code)
+            .outerjoin(CustomerProfile, CustomerProfile.user_id == User.id)
+            .outerjoin(CustomerSegment, CustomerSegment.id == User.segment_id)
+            .where(User.id == user_id)
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı")
+    user, title, segment = row
+    return RuleCustomer(
+        id=user.id, email=user.email, full_name=user.full_name, company_title=title, phone=user.phone,
+        segment=segment.value if segment is not None else None, rule_count=count,
+    )
+
+
+@admin.get("/customers", response_model=list[RuleCustomer])
+async def customers_with_rules(_admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)):
+    """The customers that have rules of their own, most rules first."""
+    counts = (
+        await db.execute(
+            select(CustomerAccessRule.user_id, func.count())
+            .group_by(CustomerAccessRule.user_id)
+            .order_by(func.count().desc())
+        )
+    ).all()
+    return [await _customer(db, user_id, count) for user_id, count in counts]
+
+
+async def _customer_rules_read(db: AsyncSession, user_id: uuid.UUID) -> CustomerRulesRead:
+    rows = (
+        await db.scalars(select(CustomerAccessRule).where(CustomerAccessRule.user_id == user_id).order_by(CustomerAccessRule.id))
+    ).all()
+    return CustomerRulesRead(customer=await _customer(db, user_id, len(rows)), rules=_rules_of(rows))
+
+
+@admin.get("/customers/{user_id}", response_model=CustomerRulesRead)
+async def customer_rules(
+    user_id: uuid.UUID, _admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
+):
+    return await _customer_rules_read(db, user_id)
+
+
+@admin.put("/customers/{user_id}", response_model=CustomerRulesRead)
+async def replace_customer_rules(
+    user_id: uuid.UUID,
+    payload: TierRules,
+    admin_user: User = Depends(get_current_admin_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """One customer's own set, as the editor holds it: hidden from them on top
+    of their group's rules. Takes effect on their next request."""
+    await _customer(db, user_id)  # 404 for an unknown account
+    known_categories = set((await db.scalars(select(Category.id).where(Category.id.in_(payload.category_ids)))).all())
+    known_brands = set((await db.scalars(select(Brand.id).where(Brand.id.in_(payload.brand_ids)))).all())
+    await db.execute(delete(CustomerAccessRule).where(CustomerAccessRule.user_id == user_id))
+    now = datetime.now(timezone.utc)
+    targets = (
+        [(AccessTarget.CATEGORY, str(i)) for i in dict.fromkeys(payload.category_ids) if i in known_categories]
+        + [(AccessTarget.BRAND, str(i)) for i in dict.fromkeys(payload.brand_ids) if i in known_brands]
+        + [(AccessTarget.PAGE_ROUTE, r) for r in payload.routes]
+    )
+    for kind, target in targets:
+        db.add(CustomerAccessRule(user_id=user_id, target_type=kind.value, target=target, created_at=now, created_by=admin_user.id))
+    await db.commit()
+    tier_access.invalidate()
+    return await _customer_rules_read(db, user_id)

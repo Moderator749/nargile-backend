@@ -22,6 +22,7 @@ from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
 from app.models.loyalty import LoyaltyLedger, TransactionType
 from app.models.order import VOID_STATUSES, Order
+from app.services.perks import perks_for
 from app.models.user import (
     AccountType,
     AddressKind,
@@ -47,7 +48,7 @@ from app.services.wallet import get_wallet, milestone_progress
 router = APIRouter(tags=["account"])
 
 
-async def wallet_read(db: AsyncSession, user_id) -> WalletRead:
+async def wallet_read(db: AsyncSession, user_id, eligible: bool = True) -> WalletRead:
     now = datetime.now(timezone.utc)
     wallet = await get_wallet(db, user_id, now)
     loyalty = (await load_parameters(db)).loyalty
@@ -71,6 +72,7 @@ async def wallet_read(db: AsyncSession, user_id) -> WalletRead:
         balance=wallet.balance,
         expiring_soon=wallet.expiring_soon,
         enabled=loyalty.enabled,
+        eligible=eligible,
         conversion_rate=loyalty.conversion_rate,
         lots=[
             WalletLot(source=l.source, amount=l.amount, remaining=l.remaining, earned_at=l.created_at, expires_at=l.expires_at)
@@ -105,8 +107,10 @@ async def wallet_read(db: AsyncSession, user_id) -> WalletRead:
 
 @router.get("/me/wallet", response_model=WalletRead)
 async def my_wallet(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """Sultan Puan balance, expiry, annual-bonus progress and history."""
-    return await wallet_read(db, user.id)
+    """Sultan Puan balance, expiry, annual-bonus progress and history.
+    `eligible` false for an account without the program (Kafe, Toptan, Bayi):
+    the account page then leaves the wallet out."""
+    return await wallet_read(db, user.id, await perks_for(db, user))
 
 
 @router.get("/me/last-address", response_model=dict | None)

@@ -9,6 +9,7 @@ registration plus :class:`SegmentAssign`.
 import enum
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -110,6 +111,11 @@ class AdminCustomerDetail(BaseModel):
     segment: SegmentType | None
     order_count: int
     loyalty_balance: int
+    # Sultan Puan / Sultan Kumbara: only a bireysel Perakende account has them.
+    # Without them the panel shows a notice instead of the points controls,
+    # and their history (when there is one from before) read-only.
+    loyalty_eligible: bool = True
+    loyalty_history: bool = False
     profile: CustomerProfileRead | None
     addresses: list[CustomerAddressRead]
     # Their standing Kafe/Toptan/Bayi request, if they made one from their
@@ -203,3 +209,35 @@ class SegmentAssign(BaseModel):
     """Which price list this customer buys from, from now on."""
 
     segment: SegmentType
+
+
+class CustomerOrderLine(BaseModel):
+    product_name: str
+    # The colour, else the stock code: what tells two lines of one product apart.
+    variant: str | None
+    sku: str
+    quantity: int
+
+
+class CustomerOrder(BaseModel):
+    id: uuid.UUID
+    order_number: str
+    created_at: datetime
+    total_amount: Decimal
+    currency: str = "TRY"
+    payment_method: str
+    status: str
+    is_quote: bool = False
+    lines: list[CustomerOrderLine]
+
+
+class CustomerOrderHistory(BaseModel):
+    """"Sipariş / Alışveriş Geçmişi": a customer's orders, newest first, and
+    their totals over the same range."""
+
+    orders: list[CustomerOrder]
+    order_count: int
+    # Orders paid for (approved, shipped, delivered), not quotes: what they spent.
+    paid_count: int
+    total_spent: Decimal
+    currency: str = "TRY"

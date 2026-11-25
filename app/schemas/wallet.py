@@ -52,6 +52,10 @@ class WalletRead(BaseModel):
     # The program's switch and a point's worth in TRY, so the wallet can say
     # what the balance is worth — and say nothing about earning while it is off.
     enabled: bool
+    # Whether this account has Sultan Puan and Sultan Kumbara at all: only a
+    # bireysel Perakende account does (app.services.perks). False for Kafe,
+    # Toptan and Bayi — the wallet is then not shown to them.
+    eligible: bool = True
     conversion_rate: Decimal
     lots: list[WalletLot]
     milestone: MilestoneRead

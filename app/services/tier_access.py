@@ -1,8 +1,10 @@
 """Group access rules ("Grup Erişim Kısıtlamaları"), enforced by the API.
 
 A viewer is a tier: GUEST when not signed in, else their customer group
-(RETAIL, CAFE, WHOLESALE, DEALER). An admin is never restricted, so the
-panel and its previews always see everything. A tier's rules hide:
+(RETAIL, CAFE, WHOLESALE, DEALER) — plus, for a signed-in customer, any rules
+made for their account alone ("Cari bazında"); what either hides is hidden.
+An admin is never restricted, so the panel and its previews always see
+everything. The rules hide:
 
 - categories, each with everything under it: a product listed under any of
   them (primary category or any other) is hidden, whatever else it is in;
@@ -22,7 +24,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import and_, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.access import AccessTarget, AccessTier, TierAccessRule
+from app.models.access import AccessTarget, AccessTier, CustomerAccessRule, TierAccessRule
 from app.models.catalog import Category, Product
 from app.models.user import CustomerSegment, SegmentType, User, UserRole
 from app.services.categories import products_in
@@ -54,11 +56,14 @@ class Restrictions:
 NONE = Restrictions(tier=AccessTier.GUEST)
 
 _cache: dict[AccessTier, tuple[float, Restrictions]] = {}
+# Per account: its own rules' rows (usually none), kept like the tiers'.
+_customer_cache: dict = {}
 
 
 def invalidate() -> None:
     """Forget the cached rules: an admin changed them."""
     _cache.clear()
+    _customer_cache.clear()
 
 
 def normalize_route(path: str) -> str:
@@ -107,6 +112,13 @@ async def _subtrees(db: AsyncSession, roots: set[int]) -> frozenset[int]:
     return frozenset(found)
 
 
+async def _built(db: AsyncSession, tier: AccessTier, rows) -> Restrictions:
+    cats = {int(t) for k, t in rows if k == AccessTarget.CATEGORY.value and t.isdigit()}
+    brands = {int(t) for k, t in rows if k == AccessTarget.BRAND.value and t.isdigit()}
+    routes = {normalize_route(t) for k, t in rows if k == AccessTarget.PAGE_ROUTE.value}
+    return Restrictions(tier=tier, category_ids=await _subtrees(db, cats), brand_ids=frozenset(brands), routes=frozenset(routes))
+
+
 async def restrictions_for_tier(db: AsyncSession, tier: AccessTier | None) -> Restrictions:
     if tier is None:
         return NONE
@@ -116,17 +128,44 @@ async def restrictions_for_tier(db: AsyncSession, tier: AccessTier | None) -> Re
     rows = (
         await db.execute(select(TierAccessRule.target_type, TierAccessRule.target).where(TierAccessRule.tier == tier.value))
     ).all()
-    cats = {int(t) for k, t in rows if k == AccessTarget.CATEGORY.value and t.isdigit()}
-    brands = {int(t) for k, t in rows if k == AccessTarget.BRAND.value and t.isdigit()}
-    routes = {normalize_route(t) for k, t in rows if k == AccessTarget.PAGE_ROUTE.value}
-    found = Restrictions(tier=tier, category_ids=await _subtrees(db, cats), brand_ids=frozenset(brands), routes=frozenset(routes))
+    found = await _built(db, tier, rows)
     _cache[tier] = (time.monotonic() + CACHE_SECONDS, found)
     return found
 
 
+async def _customer_rules(db: AsyncSession, user_id) -> list:
+    hit = _customer_cache.get(user_id)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+    rows = list(
+        (
+            await db.execute(
+                select(CustomerAccessRule.target_type, CustomerAccessRule.target).where(CustomerAccessRule.user_id == user_id)
+            )
+        ).all()
+    )
+    _customer_cache[user_id] = (time.monotonic() + CACHE_SECONDS, rows)
+    return rows
+
+
+def merged(a: Restrictions, b: Restrictions) -> Restrictions:
+    return Restrictions(
+        tier=a.tier,
+        category_ids=a.category_ids | b.category_ids,
+        brand_ids=a.brand_ids | b.brand_ids,
+        routes=a.routes | b.routes,
+    )
+
+
 async def restrictions_for(db: AsyncSession, user: User | None) -> Restrictions:
-    """The viewer's restrictions: by their customer group, GUEST when not signed in."""
-    return await restrictions_for_tier(db, await tier_of(db, user))
+    """The viewer's restrictions: their customer group's (GUEST when not signed
+    in), together with any rules made for their account alone ("Cari bazında")."""
+    tier = await tier_of(db, user)
+    found = await restrictions_for_tier(db, tier)
+    if tier is None or user is None:
+        return found
+    own = await _customer_rules(db, user.id)
+    return merged(found, await _built(db, tier, own)) if own else found
 
 
 def visible(r: Restrictions):

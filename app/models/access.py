@@ -47,3 +47,22 @@ class TierAccessRule(Base):
     created_by: Mapped[str | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
     )
+
+
+class CustomerAccessRule(Base):
+    """A rule for one customer ("Cari bazında"): hides a target from that
+    account on top of its group's rules. Gone with the account."""
+
+    __tablename__ = "customer_access_rules"
+    __table_args__ = (UniqueConstraint("user_id", "target_type", "target", name="uq_customer_access_rule"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    target_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    target: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+    created_by: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
