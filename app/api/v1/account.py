@@ -22,7 +22,7 @@ from app.models.b2b import ApplicationStatus, B2BApplication
 from app.models.bank_account import BankAccount
 from app.models.loyalty import LoyaltyLedger, TransactionType
 from app.models.order import VOID_STATUSES, Order
-from app.services.perks import perks_for
+from app.services.perks import loyalty_for
 from app.models.user import (
     AccountType,
     AddressKind,
@@ -110,7 +110,7 @@ async def my_wallet(user: User = Depends(get_current_user), db: AsyncSession = D
     """Sultan Puan balance, expiry, annual-bonus progress and history.
     `eligible` false for an account without the program (Kafe, Toptan, Bayi):
     the account page then leaves the wallet out."""
-    return await wallet_read(db, user.id, await perks_for(db, user))
+    return await wallet_read(db, user.id, await loyalty_for(db, user))
 
 
 @router.get("/me/last-address", response_model=dict | None)

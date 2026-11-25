@@ -47,7 +47,7 @@ from app.schemas.customer import (
 )
 from app.schemas.wallet import BankAccountRead, BankAccountWrite, PointAdjustment, WalletRead
 from app.services.loyalty_service import get_user_loyalty_balance
-from app.services.perks import LOYALTY_OFF_FOR_B2B, perks_for
+from app.services.perks import LOYALTY_OFF_FOR_B2B, loyalty_for
 from app.services.wallet import POINT_LIFETIME, get_wallet
 
 router = APIRouter(prefix="/admin", tags=["admin-customers"])
@@ -252,7 +252,7 @@ async def _detail(db: AsyncSession, user_id: uuid.UUID, viewer: User) -> AdminCu
         segment=user.segment.code if user.segment else None,
         order_count=order_count or 0,
         loyalty_balance=await get_user_loyalty_balance(db, user_id),
-        loyalty_eligible=await perks_for(db, user),
+        loyalty_eligible=await loyalty_for(db, user),
         loyalty_history=await db.scalar(select(LoyaltyLedger.id).where(LoyaltyLedger.user_id == user_id).limit(1)) is not None,
         profile=CustomerProfileRead.model_validate(user.profile) if user.profile else None,
         addresses=[CustomerAddressRead.model_validate(a) for a in user.addresses],
@@ -388,7 +388,7 @@ async def customer_wallet(
     user_id: uuid.UUID, _admin: User = Depends(get_current_admin_user), db: AsyncSession = Depends(get_db)
 ):
     user = await _customer(db, user_id)
-    return await wallet_read(db, user_id, await perks_for(db, user))
+    return await wallet_read(db, user_id, await loyalty_for(db, user))
 
 
 @router.post("/customers/{user_id}/points", response_model=WalletRead)
@@ -401,7 +401,7 @@ async def adjust_points(
     """Add (expires in 1 year) or remove points, with a reason. Can't go below
     zero. Not for an account without the program (Kafe, Toptan, Bayi)."""
     customer = await _customer(db, user_id, changed_by=admin)
-    if not await perks_for(db, customer):
+    if not await loyalty_for(db, customer):
         raise HTTPException(status_code=422, detail=LOYALTY_OFF_FOR_B2B)
     now = datetime.now(timezone.utc)
     if payload.amount < 0:

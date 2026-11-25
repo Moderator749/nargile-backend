@@ -69,7 +69,7 @@ from app.models.order import (
 )
 from app.models.user import AccountType, SegmentType, User
 from app.services.delivery import delivers_in_istanbul
-from app.services.perks import PERKS_REFUSED, retail_perks
+from app.services.perks import LOYALTY_OFF_FOR_B2B, loyalty_perks, retail_perks
 from app.services.shop_settings import ISTANBUL_FREE_MIN_DEFAULT, istanbul_free_minimum
 from app.services.store_parameters import (
     DEFAULT_LOYALTY,
@@ -286,6 +286,8 @@ class CartResult:
     # Whether this account gets the retail promotions at all. False means every
     # discount above is zero by rule, not by arithmetic.
     perks_eligible: bool = True
+    # Whether it has Sultan Puan (earns, may spend): the Perakende price list.
+    loyalty_eligible: bool = True
     # The parameters this cart was priced with, so the response can state them.
     params: StoreParameters = DEFAULT_PARAMETERS
 
@@ -317,6 +319,8 @@ class CheckoutEngine:
                 "İstanbul içi ücretsiz teslimat yalnızca İstanbul'daki kayıtlı adresler için geçerlidir"
             )
         perks = retail_perks(user, segment_code)
+        # Sultan Puan / Kumbara go by the price list alone: Perakende, Bireysel or Kurumsal.
+        loyalty = loyalty_perks(user, segment_code)
         params = await load_parameters(self._db)
 
         segment_id = user.segment_id or 1  # default to RETAIL
@@ -360,14 +364,14 @@ class CheckoutEngine:
             discount_rate, discount_amount = self.apply_segment_havale(
                 items, segment_code, subtotal, payment_method, params
             )
-        loyalty_points = self.calculate_loyalty_earnings(subtotal, params.loyalty) if perks else 0
+        loyalty_points = self.calculate_loyalty_earnings(subtotal, params.loyalty) if loyalty else 0
 
         # Points redemption: validate and cap
         points_discount = Decimal("0.00")
         actual_redeemed = 0
         if points_to_redeem > 0:
-            if not perks:
-                raise ValueError(PERKS_REFUSED)
+            if not loyalty:
+                raise ValueError(LOYALTY_OFF_FOR_B2B)
             if not params.loyalty.enabled:
                 raise ValueError(LOYALTY_OFF)
             balance = await get_user_loyalty_balance(self._db, user.id)
@@ -399,6 +403,7 @@ class CheckoutEngine:
             points_redeemed=actual_redeemed,
             payment_method=payment_method,
             perks_eligible=perks,
+            loyalty_eligible=loyalty,
             params=params,
         )
 

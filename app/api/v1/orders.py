@@ -83,6 +83,7 @@ async def calculate_cart(
     return CartCalculateResponse(
         subtotal=cart.subtotal,
         perks_eligible=cart.perks_eligible,
+        loyalty_eligible=cart.loyalty_eligible,
         cargo_cost=cart.cargo_cost,
         shipping=ShippingBreakdown(
             free=s.free,

@@ -175,6 +175,8 @@ async def test_everyone_else_pays_their_tier_price_net(
 
     quote = await _quote(client, user, variant)
     assert quote["perks_eligible"] is False
+    # Sultan Puan alone goes by the price list: a firm on Perakende keeps it.
+    assert quote["loyalty_eligible"] is (segment == SegmentType.RETAIL and account_type != AccountType.INTERNATIONAL)
     assert Decimal(quote["volume_discount_amount"]) == Decimal("0.00")
     assert Decimal(quote["discount_amount"]) == Decimal("0.00")
     assert Decimal(quote["points_discount"]) == Decimal("0.00")
@@ -208,7 +210,7 @@ async def test_a_b2b_account_asking_to_spend_points_is_refused(
         json=_body(variant, points_to_redeem=500),
     )
     assert resp.status_code == 422, resp.text
-    assert "bireysel" in resp.json()["detail"]
+    assert "Perakende fiyat grubundaki" in resp.json()["detail"]
 
 
 async def test_points_a_b2b_account_already_had_stay_in_the_wallet(
@@ -228,6 +230,10 @@ async def test_points_a_b2b_account_already_had_stay_in_the_wallet(
         pytest.param(
             AccountType.INDIVIDUAL, SegmentType.DEALER, False, id="a bireysel on the bayi list earns nothing"
         ),
+        # Sultan Puan goes by the price list alone (2026-11-25): a Kurumsal account on Perakende earns.
+        pytest.param(AccountType.CAFE, SegmentType.RETAIL, True, id="a kurumsal kafe on the retail list earns"),
+        pytest.param(AccountType.TOBACCO_SHOP, SegmentType.RETAIL, True, id="a kurumsal shop on the retail list earns"),
+        pytest.param(AccountType.TOBACCO_SHOP, SegmentType.WHOLESALE, False, id="a shop on the toptan list earns nothing"),
     ],
 )
 async def test_points_are_granted_on_approval_only_to_a_retail_buyer(
@@ -864,3 +870,18 @@ async def test_shipping_to_a_saved_address_does_not_change_what_is_on_file(
 
 async def test_saved_addresses_need_a_login(client: AsyncClient):
     assert (await client.get("/api/v1/me/addresses")).status_code == 401
+
+
+@pytest.mark.parametrize("account_type", [AccountType.CAFE, AccountType.TOBACCO_SHOP], ids=["kafe", "shop"])
+async def test_a_kurumsal_account_on_perakende_spends_its_points(
+    client: AsyncClient, db_session: AsyncSession, segments, account_type: AccountType
+):
+    """Kurumsal, but on the Perakende price list: Sultan Puan is theirs to spend."""
+    user = await _buyer(db_session, segments, account_type, SegmentType.RETAIL)
+    variant = await _variant(db_session, segments)
+    await _grant_points(db_session, user, 500)
+    resp = await client.post("/api/v1/orders/calculate-cart", headers=auth_header(user), json=_body(variant, points_to_redeem=500))
+    assert resp.status_code == 200, resp.text
+    quote = resp.json()
+    assert quote["loyalty_eligible"] is True
+    assert Decimal(quote["points_discount"]) > 0

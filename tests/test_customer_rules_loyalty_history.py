@@ -108,7 +108,22 @@ async def test_the_customer_search_finds_a_phone_by_its_digits(
     assert str(customer_user.id) in {c["id"] for c in found.json()}
 
 
-# ── Sultan Puan / Sultan Kumbara: bireysel Perakende only ────────────────────
+# ── Sultan Puan / Sultan Kumbara: the Perakende price list only ──────────────
+
+
+async def test_a_kurumsal_account_on_perakende_keeps_its_wallet(
+    client: AsyncClient, db_session: AsyncSession, segments, admin_user: User
+):
+    """The price list decides, not Bireysel or Kurumsal (2026-11-25)."""
+    firm = await _firm(client, db_session, segments, SegmentType.RETAIL)  # a Nargile & Tobacco Shop account
+    me = (await client.get("/api/v1/auth/me", headers=firm)).json()
+    assert me["account_type"] != "INDIVIDUAL"
+    assert (await client.get("/api/v1/me/wallet", headers=firm)).json()["eligible"] is True
+    h = auth_header(admin_user)
+    detail = (await client.get(f"/api/v1/admin/customers/{me['id']}", headers=h)).json()
+    assert detail["loyalty_eligible"] is True
+    given = await client.post(f"/api/v1/admin/customers/{me['id']}/points", headers=h, json={"amount": 250, "note": "kurumsal perakende"})
+    assert given.status_code == 200 and given.json()["balance"] == 250
 
 
 async def test_b2b_accounts_have_no_wallet_and_no_points(
@@ -125,7 +140,7 @@ async def test_b2b_accounts_have_no_wallet_and_no_points(
         detail = (await client.get(f"/api/v1/admin/customers/{me['id']}", headers=h)).json()
         assert detail["loyalty_eligible"] is False and detail["loyalty_history"] is False
         refused = await client.post(f"/api/v1/admin/customers/{me['id']}/points", headers=h, json={"amount": 500, "note": "deneme"})
-        assert refused.status_code == 422 and "Perakende" in refused.json()["detail"]
+        assert refused.status_code == 422 and "Perakende fiyat grubundaki" in refused.json()["detail"]
 
     # A bireysel account put on Kafe loses them too, and its old points stay readable.
     h = auth_header(admin_user)

@@ -114,6 +114,9 @@ class CartCalculateResponse(BaseModel):
     # discounts). False means the amounts below are zero by rule: a B2B account
     # pays its tier price net. See app.services.perks.
     perks_eligible: bool = True
+    # Whether it has Sultan Puan — earns on this cart, may spend — which goes by
+    # the price list alone: Perakende, Bireysel or Kurumsal (perks.loyalty_perks).
+    loyalty_eligible: bool = True
     cargo_cost: Decimal
     shipping: ShippingBreakdown
     # Volume discount ("ciro indirimi"), on the subtotal.

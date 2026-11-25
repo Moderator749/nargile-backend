@@ -111,7 +111,8 @@ class AdminCustomerDetail(BaseModel):
     segment: SegmentType | None
     order_count: int
     loyalty_balance: int
-    # Sultan Puan / Sultan Kumbara: only a bireysel Perakende account has them.
+    # Sultan Puan / Sultan Kumbara: an account on the Perakende price list has
+    # them, Bireysel or Kurumsal; Kafe, Toptan and Bayi do not.
     # Without them the panel shows a notice instead of the points controls,
     # and their history (when there is one from before) read-only.
     loyalty_eligible: bool = True

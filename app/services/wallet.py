@@ -27,7 +27,7 @@ from app.core.money import format_tl
 from app.models.loyalty import LoyaltyLedger, PointSource, TransactionType
 from app.models.order import PAID_STATUSES, VOID_STATUSES, Order
 from app.models.user import User
-from app.services.perks import retail_perks
+from app.services.perks import loyalty_perks
 from app.services.store_parameters import DEFAULT_LOYALTY, LoyaltyParameters, load_parameters
 
 POINT_LIFETIME = timedelta(days=365)
@@ -193,8 +193,8 @@ async def award_for_paid_order(db: AsyncSession, order: Order, now: datetime) ->
     is switched off; the standard award for an order inside the band; and the
     annual bonus when this order brings the rolling spend to the target.
 
-    Points are a retail promotion, so a B2B account earns none — see
-    ``app.services.perks``. Loading the buyer here rather than taking it as an
+    Points belong to the Perakende price list, Bireysel or Kurumsal; a Kafe,
+    Toptan or Bayi account earns none — see ``app.services.perks.loyalty_perks``. Loading the buyer here rather than taking it as an
     argument keeps every caller (the admin API, the SLA job) out of the rule.
     """
     loyalty = (await load_parameters(db)).loyalty
@@ -203,7 +203,7 @@ async def award_for_paid_order(db: AsyncSession, order: Order, now: datetime) ->
     buyer = await db.scalar(
         select(User).where(User.id == order.user_id).options(selectinload(User.segment))
     )
-    if buyer is None or not retail_perks(buyer, buyer.segment.code if buyer.segment else None):
+    if buyer is None or not loyalty_perks(buyer, buyer.segment.code if buyer.segment else None):
         return 0, 0
 
     already = await db.scalar(
