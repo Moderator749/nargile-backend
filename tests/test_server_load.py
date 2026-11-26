@@ -1,5 +1,6 @@
-"""What keeps the 1 GB server answering: a small connection pool, and bcrypt
-worked off the event loop so a login never stalls everyone else's request."""
+"""What keeps the server answering: a bounded connection pool sized for the
+4-core / 8 GB VDS (within Postgres' 60), and bcrypt worked off the event loop
+so a login never stalls everyone else's request."""
 
 import asyncio
 import time
@@ -17,10 +18,12 @@ LOGIN = "/api/v1/auth/login"
 PASSWORD = "dogru-sifre-1"
 
 
-def test_the_pool_is_sized_for_a_small_server():
+def test_the_pool_is_sized_for_the_vds():
     pool = engine.sync_engine.pool
-    assert pool.size() == 5
-    assert pool._max_overflow == 5
+    assert pool.size() == 15
+    assert pool._max_overflow == 15
+    # 30 at most, plus price-intel's 8 and a few for backups/psql: under Postgres' 60.
+    assert pool.size() + pool._max_overflow <= 30
     assert pool._timeout == 10
     assert pool._recycle == 300
     assert pool._pre_ping is True

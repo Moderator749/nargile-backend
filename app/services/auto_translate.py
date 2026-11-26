@@ -14,12 +14,22 @@ Two ways in: the admin's save schedules the row (FastAPI background task), and
 a sweep every 15 minutes catches whatever that missed — a restart, an outage
 of the API, a product added by a script. Off entirely without
 ANTHROPIC_API_KEY.
+
+A circuit breaker stops the calls no retry can fix: the key refused (401/403)
+or the account out of credit. The first such answer pauses the feature, says
+so once in the panel's team channel ("Ekip" — sender "Sistem") and in the log,
+and stores the pause in shop_settings so a restart neither forgets it nor
+announces it again. Every COOLDOWN one row is tried; its success lifts the
+pause (and says so), its failure keeps it, with a reminder at most daily.
+Before the breaker, the November 2026 key and credit outages logged some
+7,500 tracebacks over four days and told nobody.
 """
 
 import hashlib
 import json
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -29,9 +39,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.core.config import settings
 from app.core.database import async_session
+from app.models.admin_chat import AdminMessage
 from app.models.catalog import Category, Product
 from app.schemas.i18n import TRANSLATED_LOCALES, CategoryTranslation, ProductTranslation
 from app.services import storefront_cache
+from app.services.shop_settings import read_setting, save_setting
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +60,110 @@ _busy: set[str] = set()
 
 def enabled() -> bool:
     return bool(settings.ANTHROPIC_API_KEY)
+
+
+# ── Circuit breaker ──
+
+#: shop_settings key holding the pause: {"reason", "error", "since", "retry_at", "alerted_at"}.
+BREAKER_KEY = "auto_translate_breaker"
+#: How long a pause lasts before one row is tried again.
+COOLDOWN = timedelta(hours=1)
+#: The longest the team goes without a reminder while the pause holds.
+REMIND_EVERY = timedelta(hours=24)
+#: Who the team channel names as the sender.
+SYSTEM_SENDER = "Sistem"
+
+#: The pause as last read or written (None = running); loaded once per process.
+_breaker: dict | None = None
+_breaker_loaded = False
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def fatal_reason(exc: BaseException) -> str | None:
+    """Why no retry can help, in Turkish for the team, or None for an error worth retrying.
+
+    Read off the exception's HTTP status and message, so the anthropic package
+    need not be imported here."""
+    status = getattr(exc, "status_code", None)
+    text = str(exc).lower()
+    if "credit balance" in text or "billing" in text:
+        return "Anthropic hesabında kredi kalmadı"
+    if status in (401, 403):
+        return f"Anthropic API anahtarı reddedildi (HTTP {status})"
+    return None
+
+
+async def _load_breaker(factory: async_sessionmaker | None) -> dict | None:
+    global _breaker, _breaker_loaded
+    if not _breaker_loaded:
+        async with (factory or async_session)() as db:
+            raw = await read_setting(db, BREAKER_KEY)
+        try:
+            _breaker = json.loads(raw) if raw else None
+        except ValueError:
+            _breaker = None
+        _breaker_loaded = True
+    return _breaker
+
+
+async def paused(factory: async_sessionmaker | None = None) -> bool:
+    """True while the breaker holds; False once its cooldown is over (the next call is the trial)."""
+    state = await _load_breaker(factory)
+    return bool(state) and _now() < datetime.fromisoformat(state["retry_at"])
+
+
+async def _store_breaker(db, state: dict | None) -> None:
+    global _breaker, _breaker_loaded
+    await save_setting(db, BREAKER_KEY, json.dumps(state) if state else "")
+    _breaker, _breaker_loaded = state, True
+
+
+def _post(db, body: str) -> None:
+    db.add(AdminMessage(sender_id=None, sender_name=SYSTEM_SENDER, body=body, created_at=_now()))
+
+
+async def _trip(reason: str, exc: BaseException, factory: async_sessionmaker | None) -> None:
+    """Pause after a fatal answer; tell the team the first time, then at most daily."""
+    now = _now()
+    state = await _load_breaker(factory)
+    first = not state
+    remind = not first and now - datetime.fromisoformat(state["alerted_at"]) >= REMIND_EVERY
+    state = {
+        "reason": reason,
+        "error": str(exc)[:300],
+        "since": state["since"] if state else now.isoformat(),
+        "retry_at": (now + COOLDOWN).isoformat(),
+        "alerted_at": now.isoformat() if first or remind else state["alerted_at"],
+    }
+    async with (factory or async_session)() as db:
+        await _store_breaker(db, state)
+        if first or remind:
+            _post(
+                db,
+                f"⚠️ Otomatik çeviri durduruldu: {reason}. "
+                f"İngilizce/Arapça taslaklar yazılmıyor; sorun giderilince kendiliğinden devam eder "
+                f"(saatte bir deneniyor). Kontrol: console.anthropic.com → API Keys / Billing, "
+                f"sunucuda ANTHROPIC_API_KEY (değiştirince nargile servisini yeniden başlatın).",
+            )
+        await db.commit()
+    if first:
+        logger.error("Auto-translation paused: %s (%s). Retrying hourly; the team was told.", reason, str(exc)[:200])
+    else:
+        logger.warning("Auto-translation still paused: %s.", reason)
+
+
+async def _close_breaker(factory: async_sessionmaker | None) -> None:
+    """A call went through: lift the pause, if there was one, and say so."""
+    if not await _load_breaker(factory):
+        return
+    async with (factory or async_session)() as db:
+        await _store_breaker(db, None)
+        _post(db, "✅ Otomatik çeviri yeniden çalışıyor; bekleyen taslaklar sırayla yazılacak.")
+        await db.commit()
+    logger.info("Auto-translation resumed.")
 
 
 def fingerprint(fields: dict[str, Any]) -> str:
@@ -153,7 +269,7 @@ async def _write(kind: str, source: dict[str, Any], languages: list[str]) -> dic
 
 async def translate(kind: str, row_id: Any, factory: async_sessionmaker | None = None) -> list[str]:
     """Write the missing languages of one product or category. Returns the languages written."""
-    if not enabled():
+    if not enabled() or await paused(factory):
         return []
     key = f"{kind}:{row_id}"
     if key in _busy:
@@ -172,6 +288,7 @@ async def translate(kind: str, row_id: Any, factory: async_sessionmaker | None =
                 return []
         # The call is slow; no session is held open across it.
         written = await _write(kind, source, languages)
+        await _close_breaker(factory)  # Claude answered: whatever paused it is over
         if not written:
             return []
         async with (factory or async_session)() as db:
@@ -195,8 +312,12 @@ async def translate(kind: str, row_id: Any, factory: async_sessionmaker | None =
             logger.info("Auto-translated %s %s into %s", kind, row_id, ", ".join(written))
             _refresh_storefront()
         return list(written)
-    except Exception:
-        logger.exception("Auto-translation of %s %s failed", kind, row_id)
+    except Exception as exc:
+        reason = fatal_reason(exc)
+        if reason:
+            await _trip(reason, exc, factory)
+        else:
+            logger.exception("Auto-translation of %s %s failed", kind, row_id)
         return []
     finally:
         _busy.discard(key)
@@ -204,7 +325,7 @@ async def translate(kind: str, row_id: Any, factory: async_sessionmaker | None =
 
 async def sweep(limit: int | None = None, factory: async_sessionmaker | None = None) -> int:
     """Translate what still lacks a language: published products, active categories. Returns rows done."""
-    if not enabled():
+    if not enabled() or await paused(factory):
         return 0
     limit = limit or settings.AUTO_TRANSLATE_SWEEP_LIMIT
     todo: list[tuple[str, Any]] = []
@@ -218,6 +339,8 @@ async def sweep(limit: int | None = None, factory: async_sessionmaker | None = N
                     todo.append((kind, row.id))
     done = 0
     for kind, row_id in todo[:limit]:
+        if await paused(factory):  # a fatal answer midway: stop, rather than try every row
+            break
         if await translate(kind, row_id, factory):
             done += 1
     return done
