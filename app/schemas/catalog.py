@@ -75,6 +75,14 @@ class ProductRead(BaseModel):
     # "Sepet Kuralı": it counts as coal for the cargo rule, so a cart of it
     # may not ship free — what the storefront's shipping markup must not promise.
     is_cart_rule_applied: bool = False
+    # "Kargo Bedava" on the product sheet (and the Fırsat block's own, which
+    # applies while the deal's price does): a retail cart holding it, at least
+    # the "Adet şartı" units of it (null = any), ships free at any total
+    # (CheckoutEngine.quote_shipping). The storefront shows its badge from these.
+    is_free_shipping: bool = False
+    free_shipping_min_quantity: int | None = None
+    opp_is_free_shipping: bool = False
+    opp_free_shipping_min_quantity: int | None = None
 
     @model_validator(mode="after")
     def _gallery_always_has_the_cover(self) -> "ProductRead":

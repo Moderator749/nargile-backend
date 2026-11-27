@@ -203,6 +203,16 @@ class ResolvedCartItem:
     unit_cost: Decimal | None = None
 
     @property
+    def ships_free(self) -> bool:
+        """The product's "Kargo Bedava" holds for this line: its switch is on
+        (the Fırsat block's while the line is at the deal price) and the line
+        has at least the "Adet şartı" units (none set = any)."""
+        prefix = "opp_" if self.offer_applied else ""
+        on = getattr(self.product, f"{prefix}is_free_shipping", False)
+        minimum = getattr(self.product, f"{prefix}free_shipping_min_quantity", None)
+        return bool(on) and self.quantity >= (minimum or 1)
+
+    @property
     def line_total_excl_tax(self) -> Decimal:
         """The line before VAT: prices are stored and charged VAT-inclusive."""
         return (self.line_total / (1 + self.vat_rate / 100)).quantize(Decimal("0.01"))
@@ -708,6 +718,9 @@ class CheckoutEngine:
         other, never both. Below the ratio the minimum doesn't matter. The
         reason is "coal_weight" either way.
 
+        A product with "Kargo Bedava" on (ResolvedCartItem.ships_free) makes a
+        retail parcel free at any total, coal or not.
+
         Free shipping is one of the retail promotions, so ``perks=False`` — a
         B2B account — never reaches that threshold: a tier price does not
         include carriage, and Yurtiçi Kargo is then the same deal as a nakliye
@@ -741,6 +754,11 @@ class CheckoutEngine:
         elif not perks:
             # A tier price does not include carriage, at any cart value.
             reason = "tier_price"
+        elif any(i.ships_free for i in items):
+            # A product the admin ships free ("Kargo Bedava", with its "Adet
+            # şartı"): the whole parcel goes on the shop, at any total and
+            # whatever coal is in it — the promise its badge makes.
+            reason = "free"
         elif subtotal < params.free_shipping_threshold:
             reason = "below_threshold"
         elif subtotal > 0 and coal_total / subtotal > params.coal_max_ratio and short_of_minimum:

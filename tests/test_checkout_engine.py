@@ -394,3 +394,50 @@ async def test_checkout_records_all_discounts(
     order = resp.json()
     # 55,000: ciro 8% = 4,400; havale 7% of 50,600 = 3,542 → 7,942
     assert Decimal(order["discount_amount"]) == Decimal("7942.00")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# "KARGO BEDAVA" PRODUCT SWITCH (2026-11-27)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _flagged(line_total: str, *, qty: int = 1, minimum: int | None = None, offer: bool = False,
+             normal: bool = True, opp: bool = False, coal: bool = False, kg: str | None = None) -> ResolvedCartItem:
+    return ResolvedCartItem(
+        variant=MagicMock(),
+        product=SimpleNamespace(
+            tags=[], is_free_shipping=normal, free_shipping_min_quantity=minimum,
+            opp_is_free_shipping=opp, opp_free_shipping_min_quantity=minimum,
+        ),
+        unit_price=Decimal(line_total) / qty, quantity=qty, offer_applied=offer,
+        is_coal=coal, unit_weight_kg=Decimal(kg) if kg else None,
+    )
+
+
+class TestFreeShippingSwitch:
+    def quote(self, *items, method=ShippingMethod.YURTICI_DOOR, perks=True):
+        return CheckoutEngine.quote_shipping(
+            sum((i.line_total for i in items), Decimal("0")), list(items), method, perks=perks
+        )
+
+    def test_a_flagged_product_ships_free_below_the_threshold(self):
+        assert self.quote(_flagged("500"), _item("200")).reason == "free"
+
+    def test_even_a_coal_dominant_cart_ships_free(self):
+        assert self.quote(_flagged("100"), _item("900", coal=True, kg="1", qty=3)).reason == "free"
+
+    def test_the_minimum_quantity_must_be_met(self):
+        assert self.quote(_flagged("500", qty=2, minimum=3)).reason == "below_threshold"
+        assert self.quote(_flagged("750", qty=3, minimum=3)).reason == "free"
+
+    def test_the_deal_uses_its_own_switch(self):
+        assert self.quote(_flagged("500", offer=True, normal=True, opp=False)).reason == "below_threshold"
+        assert self.quote(_flagged("500", offer=True, normal=False, opp=True)).reason == "free"
+        assert self.quote(_flagged("500", offer=False, normal=False, opp=True)).reason == "below_threshold"
+
+    def test_never_for_a_b2b_list(self):
+        assert self.quote(_flagged("500"), perks=False).reason == "tier_price"
+
+    def test_never_by_nakliye_or_abroad(self):
+        assert self.quote(_flagged("500"), method=ShippingMethod.NAKLIYE_AMBARI).reason == "freight"
+        assert self.quote(_flagged("500"), method=ShippingMethod.INTERNATIONAL_FREIGHT).reason == "international"
