@@ -16,7 +16,7 @@ Left out unless --all:
 - PayTR test-mode payments.
 
 Read-only: it changes no order. The message offers Havale/EFT at the
-"WhatsApp ile Kurtar" discount (5%, order_lifecycle.RECOVERY_DISCOUNT_RATE);
+"WhatsApp ile Kurtar" discount (the store's havale tier, order_lifecycle.recovery_rate);
 when the customer takes it, press "WhatsApp ile Kurtar" on the order in the
 admin panel, which makes it a transfer at that price and holds its stock again.
 """
@@ -30,7 +30,7 @@ import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
@@ -45,7 +45,8 @@ from app.models.order import Order, OrderItem, OrderStatus, PaymentMethod  # noq
 from app.models.payment import PaymentTransaction  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.services import payment_failures  # noqa: E402
-from app.services.order_lifecycle import RECOVERY_DISCOUNT_RATE, payable  # noqa: E402
+from app.services.order_lifecycle import payable, recovery_discount_for, recovery_rate  # noqa: E402
+from app.services.store_parameters import StoreParameters, load_parameters  # noqa: E402
 
 ISTANBUL = ZoneInfo("Europe/Istanbul")
 MONTHS = ["Ocak", "Şubat", "Mart", "Nisan", "Mayıs", "Haziran", "Temmuz", "Ağustos", "Eylül", "Ekim", "Kasım", "Aralık"]
@@ -129,11 +130,11 @@ class Row:
         return f"{label} ({f.code})" if f.code else label
 
 
-def message(row: Row, now: datetime) -> str:
+def message(row: Row, now: datetime, params: StoreParameters) -> str:
     """The WhatsApp text: what happened, in the customer's terms, and two ways on."""
     first = row.name.split()[0] if row.name and row.name != "-" else ""
     before = row.amount
-    after = before - (before * RECOVERY_DISCOUNT_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    after = before - recovery_discount_for(row.order, recovery_rate(params, row.order))
     when = placed_when(row.order.created_at, now)
     number = row.order.order_number
     if row.kind == "abandoned":
@@ -245,13 +246,15 @@ def main() -> None:
     parser.add_argument("--mask", action="store_true", help="mask names and phones, print no links")
     args = parser.parse_args()
 
-    async def go() -> list[Row]:
+    async def go() -> tuple[list[Row], StoreParameters]:
         try:
-            return await load(args.days)
+            async with async_session() as db:
+                params = await load_parameters(db)
+            return await load(args.days), params
         finally:
             await engine.dispose()
 
-    rows = asyncio.run(go())
+    rows, params = asyncio.run(go())
     now = datetime.now(timezone.utc)
     test = [r for r in rows if r.test_mode]
     bought = [r for r in rows if not r.test_mode and r.bought_later]
@@ -285,9 +288,9 @@ def main() -> None:
         if not number:
             print(f"  {n}. {r.order.order_number}: — (WhatsApp'a uygun telefon yok)")
         elif args.mask:
-            print(f"  {n}. {r.order.order_number}: https://wa.me/{number[:4]}…  [{r.kind}]")
+            print(f"  {n}. {r.order.order_number}: https://api.whatsapp.com/send?phone={number[:4]}…  [{r.kind}]")
         else:
-            print(f"  {n}. {r.order.order_number}: https://wa.me/{number}?text={quote(message(r, now))}")
+            print(f"  {n}. {r.order.order_number}: https://api.whatsapp.com/send?phone={number}&text={quote(message(r, now, params), safe='')}")
         if r.failure and not args.mask:
             print(f"     ekip notu: {r.failure.advice}")
     print(

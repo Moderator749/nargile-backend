@@ -344,3 +344,64 @@ async def test_the_order_list_carries_the_same_facts(
     assert Decimal(row["loyalty_percent"]) == Decimal("10")
     assert row["recovery_earns_points"] is True
     assert row["customer_is_guest"] is False
+
+
+# ── The havale rate is the store's tier, and the percent always matches the amount ──
+# Default tiers: 5% from ₺1, 7% from ₺30,000 (judged on the goods subtotal).
+
+
+async def test_below_30000_the_offer_is_five_percent_and_matches_the_amount(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _failed_card_order(db_session, customer_user, variant, total="5999.00")
+    data = (await client.post(_url(order.id), headers=auth_header(admin_user))).json()
+    assert Decimal(data["recovery_discount_percent"]) == Decimal("5")
+    assert Decimal(data["recovery_discount"]) == Decimal("299.95")  # 5.999,00 → 5.699,05
+    # Never the Sultan Puan rate (10%) in the havale's place.
+    assert Decimal(data["loyalty_percent"]) == Decimal("10")
+
+
+async def test_from_30000_the_offer_is_seven_percent_and_matches_the_amount(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _failed_card_order(db_session, customer_user, variant, total="30000.00")
+    # Before the recovery, the row already says what will be offered.
+    resp = await client.get(f"/api/v1/admin/orders/{order.id}", headers=auth_header(admin_user))
+    assert Decimal(resp.json()["recovery_discount_percent"]) == Decimal("7")
+
+    data = (await client.post(_url(order.id), headers=auth_header(admin_user))).json()
+    assert Decimal(data["recovery_discount_percent"]) == Decimal("7")
+    assert Decimal(data["recovery_discount"]) == Decimal("2100.00")  # 30.000,00 → 27.900,00
+    payable = Decimal(data["total_amount"]) + Decimal(data["shipping_cost"]) - Decimal(data["discount_amount"])
+    assert payable == Decimal("27900.00")
+
+
+async def test_a_recovered_order_keeps_the_rate_it_was_given(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    from app.models.settings import ShopSetting
+    from app.services.store_parameters import BANK_TRANSFER_TIERS_KEY
+
+    variant, _ = catalog
+    order = await _failed_card_order(db_session, customer_user, variant, total="5999.00")
+    await client.post(_url(order.id), headers=auth_header(admin_user))
+    # The tiers change afterwards: the saved 5% discount is still said as 5%.
+    row = await db_session.get(ShopSetting, BANK_TRANSFER_TIERS_KEY)
+    saved = row.value if row else None
+    if row is None:
+        row = ShopSetting(key=BANK_TRANSFER_TIERS_KEY, value="")
+        db_session.add(row)
+    row.value = '[{"threshold": "1.00", "rate": "0.08"}]'
+    await db_session.commit()
+    try:
+        data = (await client.get(f"/api/v1/admin/orders/{order.id}", headers=auth_header(admin_user))).json()
+        assert Decimal(data["recovery_discount_percent"]) == Decimal("5")
+        assert Decimal(data["recovery_discount"]) == Decimal("299.95")
+    finally:
+        if saved is None:
+            await db_session.delete(row)
+        else:
+            row.value = saved
+        await db_session.commit()

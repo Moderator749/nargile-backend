@@ -10,6 +10,7 @@ from app.models.catalog import Inventory, Product, ProductVariant
 from app.models.order import Carrier, Order, OrderStatus, PaymentMethod
 from app.models.user import User
 from app.services.checkout_engine import CENTRAL_STOCK, stock_on_hand
+from app.services.store_parameters import StoreParameters, load_parameters
 from app.services.wallet import award_for_paid_order
 
 
@@ -166,7 +167,20 @@ async def recover(db: AsyncSession, order: Order, now: datetime, *, paid: bool) 
 
 # "WhatsApp ile Kurtar": what the shop gives up of a failed card payment's
 # total — the virtual POS commission it no longer pays — to have it by transfer.
+# The store's havale tiers decide it (by default 5%, 7% from ₺30,000); this is
+# the rate when no tier is reached (no tiers set at all).
 RECOVERY_DISCOUNT_RATE = Decimal("0.05")
+
+
+def recovery_rate(params: StoreParameters, order: Order) -> Decimal:
+    """The havale discount "WhatsApp ile Kurtar" offers this order: the store's
+    bank-transfer tier its goods subtotal reaches, as checkout judges it."""
+    return params.bank_transfer_rate(order.total_amount) or RECOVERY_DISCOUNT_RATE
+
+
+def recovery_discount_for(order: Order, rate: Decimal) -> Decimal:
+    """That rate of what the customer was to pay, rounded half up to the kuruş."""
+    return (payable(order) * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def payable(order: Order) -> Decimal:
@@ -176,18 +190,18 @@ def payable(order: Order) -> Decimal:
 
 async def recover_to_transfer(db: AsyncSession, order: Order, now: datetime) -> Decimal:
     """"WhatsApp ile Kurtar": a failed card order (PAYMENT_FAILED) back as a
-    bank transfer at 5% off — the "Kurtarma İndirimi" — waiting for the money
-    (AWAITING_TRANSFER) with a fresh 48 hours.
+    bank transfer at the store's havale rate (`recovery_rate`) — the "Kurtarma
+    İndirimi" — waiting for the money (AWAITING_TRANSFER) with a fresh 48 hours.
 
     Its stock is taken again first; when a line's goods have been sold since,
-    nothing changes and StockShortage says which. The discount is 5% of what
-    the customer was to pay, rounded half up to the kuruş, and goes into
+    nothing changes and StockShortage says which. The discount is that rate of
+    what the customer was to pay, rounded half up to the kuruş, and goes into
     `discount_amount` (which every total reads) as well as `recovery_discount`.
     Its points count again by themselves, as on "Siparişi Kurtar". Returns the
     discount. `order.items` must be loaded; the caller checks the status.
     """
     await _take_stock_again(db, order)
-    discount = (payable(order) * RECOVERY_DISCOUNT_RATE).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    discount = recovery_discount_for(order, recovery_rate(await load_parameters(db), order))
     order.discount_amount += discount
     order.recovery_discount = discount
     order.payment_method = PaymentMethod.BANK_TRANSFER

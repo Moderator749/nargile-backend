@@ -36,7 +36,7 @@ from app.schemas.order import OrderItemRead, OrderRead
 from app.services import mailer, order_emails, order_lifecycle, order_sms, payment_failures, shipping, sms_settings
 from app.services.perks import loyalty_perks
 from app.services.pricing_engine import CURRENCY_PREFERENCE
-from app.services.store_parameters import LoyaltyParameters, load_parameters
+from app.services.store_parameters import LoyaltyParameters, StoreParameters, load_parameters
 
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 
@@ -118,8 +118,8 @@ async def list_orders(
     orders = [order for order, _ in rows]
     catalog = await _line_catalog(db, orders)
     failures = await _payment_failures(db, orders)
-    loyalty = (await load_parameters(db)).loyalty
-    return [_list_item(order, user, catalog, failures, loyalty) for order, user in rows]
+    params = await load_parameters(db)
+    return [_list_item(order, user, catalog, failures, params) for order, user in rows]
 
 
 @router.get("/orders/status-counts", response_model=dict[OrderStatus, int])
@@ -339,6 +339,20 @@ def _percent(rate: Decimal) -> Decimal:
     return Decimal(f"{rate * 100:.2f}".rstrip("0").rstrip("."))
 
 
+def _recovery_discount_percent(order: Order, params: StoreParameters | None) -> Decimal:
+    """The havale discount of "WhatsApp ile Kurtar", in percent. A recovered
+    order says the rate its saved discount is (so the message's percent and
+    its amounts always agree, whatever the tiers say since); one not yet
+    recovered, the store's tier it would get (`order_lifecycle.recovery_rate`)."""
+    if order.recovery_discount:
+        base = order_lifecycle.payable(order) + order.recovery_discount
+        if base > 0:
+            return Decimal(f"{order.recovery_discount / base * 100:.1f}".rstrip("0").rstrip("."))
+    if params is None:
+        return _percent(order_lifecycle.RECOVERY_DISCOUNT_RATE)
+    return _percent(order_lifecycle.recovery_rate(params, order))
+
+
 def _loyalty_percent(order: Order, user: User, loyalty: LoyaltyParameters | None) -> Decimal | None:
     """The Sultan Puan rate this buyer has, in percent — by the rule `wallet`
     grants points by: Sultan Puan on, a retail (Perakende) buyer, not a test
@@ -357,10 +371,11 @@ def _list_item(
     user: User,
     catalog: LineCatalog,
     failures: dict[uuid.UUID, PaymentFailureRead] | None = None,
-    loyalty: LoyaltyParameters | None = None,
+    params: StoreParameters | None = None,
 ) -> AdminOrderListItem:
-    """`loyalty` (the live Sultan Puan rules, with `user.segment` loaded) only
+    """`params` (the live store parameters, with `user.segment` loaded) only
     where the "WhatsApp ile Kurtar" message is written from the answer."""
+    loyalty = params.loyalty if params else None
     rate = _loyalty_percent(order, user, loyalty)
     return AdminOrderListItem(
         **OrderRead.model_validate(order).model_dump(exclude={"items"}),
@@ -368,7 +383,7 @@ def _list_item(
         customer_name=user.full_name,
         customer_phone=user.phone,
         customer_is_guest=user.is_guest,
-        recovery_discount_percent=_percent(order_lifecycle.RECOVERY_DISCOUNT_RATE),
+        recovery_discount_percent=_recovery_discount_percent(order, params),
         loyalty_percent=rate,
         # `points_for` is what `wallet` grants: nothing outside the band.
         recovery_earns_points=rate is not None and loyalty is not None and loyalty.points_for(order.total_amount) > 0,
@@ -402,7 +417,7 @@ async def get_order(
         user,
         await _line_catalog(db, [order]),
         await _payment_failures(db, [order]),
-        (await load_parameters(db)).loyalty,
+        await load_parameters(db),
     )
 
 
@@ -773,7 +788,7 @@ async def recover_to_transfer(
         raise HTTPException(status_code=409, detail=f"Stok yetersiz, bu sipariş kurtarılamaz — {exc}") from exc
     await db.commit()
     await db.refresh(order, attribute_names=["items"])
-    return _list_item(order, user, await _line_catalog(db, [order]), loyalty=(await load_parameters(db)).loyalty)
+    return _list_item(order, user, await _line_catalog(db, [order]), params=await load_parameters(db))
 
 
 @router.post("/orders/{order_id}/revert-recovery", response_model=AdminOrderListItem)
