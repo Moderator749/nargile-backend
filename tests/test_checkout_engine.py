@@ -9,6 +9,7 @@ Covers:
 - Full calculate-cart HTTP endpoint integration
 """
 
+import uuid
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -441,3 +442,45 @@ class TestFreeShippingSwitch:
     def test_never_by_nakliye_or_abroad(self):
         assert self.quote(_flagged("500"), method=ShippingMethod.NAKLIYE_AMBARI).reason == "freight"
         assert self.quote(_flagged("500"), method=ShippingMethod.INTERNATIONAL_FREIGHT).reason == "international"
+
+
+async def test_calculate_cart_ships_a_flagged_product_free_below_the_threshold(
+    client: AsyncClient, db_session, admin_user: User, segments, catalog
+):
+    """End to end: the same 500 TL product ships "below_threshold" with its
+    switch off and "free" with it on; a 3,000 TL+ cart is free without one."""
+    from app.models.catalog import Inventory, VariantPrice, WarehouseType
+    from app.models.user import SegmentType
+
+    prod = Product(base_code=f"FS-{uuid.uuid4().hex[:6]}", name="Kargo Bedava Lüle", tags=[])
+    db_session.add(prod)
+    await db_session.flush()
+    v = ProductVariant(product_id=prod.id, sku=prod.base_code)
+    db_session.add(v)
+    await db_session.flush()
+    db_session.add(VariantPrice(
+        variant_id=v.id, segment_id=segments[SegmentType.RETAIL].id, currency="TRY",
+        price_excl_tax=Decimal("416.67"), price_incl_tax=Decimal("500.00"), vat_rate=Decimal("20.00"),
+    ))
+    db_session.add(Inventory(variant_id=v.id, warehouse_type=WarehouseType.RETAIL_STOCK, quantity=50))
+    await db_session.commit()
+
+    async def reason(variant_id, qty=1) -> str:
+        resp = await client.post(
+            "/api/v1/orders/calculate-cart", headers=auth_header(admin_user),
+            json={"payment_method": "BANK_TRANSFER", "items": [{"variant_id": str(variant_id), "quantity": qty}]},
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()["shipping"]["reason"]
+
+    assert await reason(v.id) == "below_threshold"
+    prod.is_free_shipping = True
+    await db_session.commit()
+    assert await reason(v.id) == "free"
+    prod.free_shipping_min_quantity = 2
+    await db_session.commit()
+    assert await reason(v.id, 1) == "below_threshold"
+    assert await reason(v.id, 2) == "free"
+    # 5,000 TL set without any switch: free by the threshold, as before.
+    normal_v, _ = catalog
+    assert await reason(normal_v.id) == "free"
