@@ -43,7 +43,9 @@ from app.models.promotion import FlashSale
 from app.models.user import CustomerSegment, SegmentType
 from app.services import root_slugs, slug_redirects
 from app.services.checkout_engine import CENTRAL_STOCK, stock_on_hand
-from app.services.pricing_engine import erp_text, excl_from_incl, pick_price_row, whole_lira
+from app.services.pricing_engine import (
+    NonPositivePrice, erp_text, excl_from_incl, pick_price_row, require_positive, whole_lira,
+)
 from app.models.order import OrderItem
 from app.schemas import i18n
 from app.schemas.product_sheet import (
@@ -510,6 +512,10 @@ async def _sync_prices(
                 # and Kafe keep their kuruş.
                 incl = whole_lira(incl)
                 excl = excl_from_incl(incl, vat)
+            try:
+                require_positive(excl, incl, what=f"{segment.value} {CurrencyType(row.currency).value} fiyatı")
+            except NonPositivePrice as exc:
+                raise SheetError(str(exc)) from exc
             price = existing.get(key)
             if price is None:
                 db.add(

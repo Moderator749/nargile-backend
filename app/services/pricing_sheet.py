@@ -50,7 +50,9 @@ from app.models.catalog import CurrencyType, Product, ProductVariant, VariantPri
 from app.models.user import CustomerSegment, SegmentType
 from app.schemas.pricing import AppliedPrice, PricingSheetIn
 from app.schemas.taxonomy import BULK_ERP_DISPLAY
-from app.services.pricing_engine import ERP_PLACES, ci, erp_before_vat, erp_text, excl_from_incl, whole_lira
+from app.services.pricing_engine import (
+    ERP_PLACES, NonPositivePrice, ci, erp_before_vat, erp_text, excl_from_incl, require_positive, whole_lira,
+)
 
 CENT = Decimal("0.01")
 COST_PLACES = Decimal("0.0001")
@@ -363,6 +365,10 @@ async def write_prices(
             # derived from it. Bayi, Toptan and Kafe keep their kuruş.
             incl = whole_lira(incl)
             excl = excl_from_incl(incl, vat_rate)
+        try:
+            require_positive(excl, incl, what=f"Müşteri grubu #{segment_id} ({CurrencyType(currency).value})")
+        except NonPositivePrice as exc:
+            raise ApplyError(str(exc)) from exc
         for variant in variants:
             kept = None
             for row in [p for p in rows_by_variant[variant.id] if p.segment_id == segment_id]:

@@ -638,7 +638,11 @@ async def import_excel(
     preview = await match_blocks(db, parsed)
     variants = 0
     if not dry_run and preview.matched:
-        variants = await apply_matches(db, preview)
+        try:
+            variants = await apply_matches(db, preview)
+        except ApplyError as exc:
+            await db.rollback()
+            raise HTTPException(status_code=422, detail=str(exc))
         await db.commit()
         background.add_task(indexnow.queue_products, sessions, [m.product.id for m in preview.matched])
 

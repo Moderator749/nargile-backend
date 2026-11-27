@@ -403,6 +403,10 @@ class VariantPrice(Base):
             "currency",
             unique=True,
         ),
+        # No group is ever sold at 0: an empty cell is "not sold", not "free".
+        CheckConstraint(
+            "price_excl_tax > 0 AND price_incl_tax > 0", name="ck_variant_prices_positive"
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

@@ -866,12 +866,16 @@ class CheckoutEngine:
                 raise ValueError(f"{variant.sku} için güncel döviz kuru alınamadı, lütfen sonra deneyin")
 
             sale_price = discounted_price(unit_price, sales.get(vid))
+            charged = sale_price if sale_price is not None else unit_price
+            if charged <= 0:
+                # A 0 TL (or negative) row is a data error, never a free item.
+                raise ValueError(f"{variant.sku} için geçerli bir fiyat yok, lütfen bizimle iletişime geçin")
             available = stock_on_hand(variant.inventory)
             items.append(
                 ResolvedCartItem(
                     variant=variant,
                     product=variant.product,
-                    unit_price=sale_price if sale_price is not None else unit_price,
+                    unit_price=charged,
                     quantity=qty,
                     offer_applied=sale_price is not None,
                     is_coal=variant.product.is_cart_rule_applied,

@@ -32,6 +32,21 @@ def pick_price_row(prices: Iterable[VariantPrice], segment_id: int) -> VariantPr
 CENT = Decimal("0.01")
 
 
+class NonPositivePrice(ValueError):
+    """A price row that would be 0 or below: never written, never charged."""
+
+
+def require_positive(excl: Decimal, incl: Decimal, *, what: str) -> None:
+    """Refuse a price whose figure before or after VAT is 0 or negative.
+
+    An empty cell means "not sold to this group"; a 0 would mean "free", and a
+    shop never sells free by accident. Every writer of `variant_prices` calls
+    this (the table's CHECK constraint backs it up), so a worksheet, an import
+    or the product form cannot leave a 0 TL price behind."""
+    if excl is None or incl is None or excl <= 0 or incl <= 0:
+        raise NonPositivePrice(f"{what}: fiyat 0 veya negatif olamaz ({excl} / {incl}).")
+
+
 def ci(text: str) -> str:
     """`text` lower-cased as the database's lower() does it, for comparing
     with `func.lower(column)`. Python lower-cases the Turkish "İ" to "i̇" (an
