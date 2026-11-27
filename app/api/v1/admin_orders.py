@@ -28,13 +28,15 @@ from app.models.order import (
     ShippingMethod,
 )
 from app.models.payment import PaymentTransaction
-from app.models.user import AddressKind, User
+from app.models.user import AddressKind, SegmentType, User
 from app.core.countries import TURKEY, country_name
 from app.schemas.address import address_line, international_line
 from app.schemas.admin import AdminOrderItemDetail, AdminOrderListItem, OrderApproveResponse, PaymentFailureRead
 from app.schemas.order import OrderItemRead, OrderRead
 from app.services import mailer, order_emails, order_lifecycle, order_sms, payment_failures, shipping, sms_settings
+from app.services.perks import loyalty_perks
 from app.services.pricing_engine import CURRENCY_PREFERENCE
+from app.services.store_parameters import LoyaltyParameters, load_parameters
 
 router = APIRouter(prefix="/admin", tags=["admin-orders"])
 
@@ -87,7 +89,12 @@ async def list_orders(
     stmt = (
         select(Order, User)
         .join(User, Order.user_id == User.id)
-        .options(selectinload(Order.items), selectinload(User.profile), selectinload(User.addresses))
+        .options(
+            selectinload(Order.items),
+            selectinload(User.segment),
+            selectinload(User.profile),
+            selectinload(User.addresses),
+        )
     )
     filters = []
 
@@ -111,7 +118,8 @@ async def list_orders(
     orders = [order for order, _ in rows]
     catalog = await _line_catalog(db, orders)
     failures = await _payment_failures(db, orders)
-    return [_list_item(order, user, catalog, failures) for order, user in rows]
+    loyalty = (await load_parameters(db)).loyalty
+    return [_list_item(order, user, catalog, failures, loyalty) for order, user in rows]
 
 
 @router.get("/orders/status-counts", response_model=dict[OrderStatus, int])
@@ -326,14 +334,44 @@ def _billing_address(order: Order, user: User) -> dict | None:
     }
 
 
+def _percent(rate: Decimal) -> Decimal:
+    """A 0..1 rate as a plain percent: 0.05 → 5, 0.10 → 10, 0.025 → 2.5."""
+    return Decimal(f"{rate * 100:.2f}".rstrip("0").rstrip("."))
+
+
+def _loyalty_percent(order: Order, user: User, loyalty: LoyaltyParameters | None) -> Decimal | None:
+    """The Sultan Puan rate this buyer has, in percent — by the rule `wallet`
+    grants points by: Sultan Puan on, a retail (Perakende) buyer, not a test
+    or export order. A guest is asked as the retail member they would become.
+    `user.segment` must be loaded."""
+    if loyalty is None or not loyalty.enabled or order.exclude_from_stock_and_reports or order.is_quote:
+        return None
+    segment = SegmentType(user.segment.code) if user.segment else None
+    if not loyalty_perks(user, segment) or not loyalty.base_rate:
+        return None
+    return _percent(loyalty.base_rate)
+
+
 def _list_item(
-    order: Order, user: User, catalog: LineCatalog, failures: dict[uuid.UUID, PaymentFailureRead] | None = None
+    order: Order,
+    user: User,
+    catalog: LineCatalog,
+    failures: dict[uuid.UUID, PaymentFailureRead] | None = None,
+    loyalty: LoyaltyParameters | None = None,
 ) -> AdminOrderListItem:
+    """`loyalty` (the live Sultan Puan rules, with `user.segment` loaded) only
+    where the "WhatsApp ile Kurtar" message is written from the answer."""
+    rate = _loyalty_percent(order, user, loyalty)
     return AdminOrderListItem(
         **OrderRead.model_validate(order).model_dump(exclude={"items"}),
         customer_email=user.email,
         customer_name=user.full_name,
         customer_phone=user.phone,
+        customer_is_guest=user.is_guest,
+        recovery_discount_percent=_percent(order_lifecycle.RECOVERY_DISCOUNT_RATE),
+        loyalty_percent=rate,
+        # `points_for` is what `wallet` grants: nothing outside the band.
+        recovery_earns_points=rate is not None and loyalty is not None and loyalty.points_for(order.total_amount) > 0,
         company_title=user.profile.company_title if user.profile else None,
         billing_address=_billing_address(order, user),
         internal_note=order.internal_note,
@@ -359,7 +397,13 @@ async def get_order(
     before the customer's note was written, before an address was corrected.
     """
     order, user = await _order_with_user(db, order_id)
-    return _list_item(order, user, await _line_catalog(db, [order]), await _payment_failures(db, [order]))
+    return _list_item(
+        order,
+        user,
+        await _line_catalog(db, [order]),
+        await _payment_failures(db, [order]),
+        (await load_parameters(db)).loyalty,
+    )
 
 
 # Pending orders, plus a paid one the shop decides not to ship after all.
@@ -729,7 +773,7 @@ async def recover_to_transfer(
         raise HTTPException(status_code=409, detail=f"Stok yetersiz, bu sipariş kurtarılamaz — {exc}") from exc
     await db.commit()
     await db.refresh(order, attribute_names=["items"])
-    return _list_item(order, user, await _line_catalog(db, [order]))
+    return _list_item(order, user, await _line_catalog(db, [order]), loyalty=(await load_parameters(db)).loyalty)
 
 
 @router.post("/orders/{order_id}/revert-recovery", response_model=AdminOrderListItem)

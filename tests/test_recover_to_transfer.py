@@ -279,3 +279,68 @@ async def test_only_an_admin_reverts(
     assert (await client.post(_url(order_id), headers=auth_header(admin_user))).status_code == 200
     assert (await client.post(_revert(order_id), headers=auth_header(customer_user))).status_code == 403
     assert (await client.post(_revert(order_id))).status_code == 401
+
+
+# ── What the WhatsApp message is written from ────────────────────────────────
+# Default Sultan Puan: 10% on a single order of ₺20,000–29,999.99.
+
+
+async def test_a_member_in_the_band_is_promised_the_sultan_puan_rate(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _failed_card_order(db_session, customer_user, variant, total="25000.00")
+    data = (await client.post(_url(order.id), headers=auth_header(admin_user))).json()
+    assert data["customer_is_guest"] is False
+    assert Decimal(data["recovery_discount_percent"]) == Decimal("5")
+    assert Decimal(data["loyalty_percent"]) == Decimal("10")
+    assert data["recovery_earns_points"] is True
+
+
+async def test_outside_the_band_no_points_are_promised(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _failed_card_order(db_session, customer_user, variant)  # ₺3,000
+    data = (await client.post(_url(order.id), headers=auth_header(admin_user))).json()
+    assert Decimal(data["loyalty_percent"]) == Decimal("10")
+    assert data["recovery_earns_points"] is False
+
+
+async def test_a_guest_is_told_the_rate_as_a_member_would_have_it(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    customer_user.is_guest = True
+    await db_session.commit()
+    order = await _failed_card_order(db_session, customer_user, variant)
+    data = (await client.post(_url(order.id), headers=auth_header(admin_user))).json()
+    assert data["customer_is_guest"] is True
+    assert Decimal(data["loyalty_percent"]) == Decimal("10")
+
+
+async def test_a_b2b_buyer_has_no_sultan_puan_to_offer(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog, segments
+):
+    from app.models.user import SegmentType
+
+    variant, _ = catalog
+    customer_user.segment_id = segments[SegmentType.WHOLESALE].id
+    await db_session.commit()
+    order = await _failed_card_order(db_session, customer_user, variant, total="25000.00")
+    data = (await client.post(_url(order.id), headers=auth_header(admin_user))).json()
+    assert data["loyalty_percent"] is None
+    assert data["recovery_earns_points"] is False
+
+
+async def test_the_order_list_carries_the_same_facts(
+    client: AsyncClient, db_session: AsyncSession, admin_user: User, customer_user: User, catalog
+):
+    variant, _ = catalog
+    order = await _failed_card_order(db_session, customer_user, variant, total="25000.00")
+    resp = await client.get("/api/v1/admin/orders", params={"number": order.order_number}, headers=auth_header(admin_user))
+    assert resp.status_code == 200, resp.text
+    row = next(r for r in resp.json() if r["id"] == str(order.id))
+    assert Decimal(row["loyalty_percent"]) == Decimal("10")
+    assert row["recovery_earns_points"] is True
+    assert row["customer_is_guest"] is False

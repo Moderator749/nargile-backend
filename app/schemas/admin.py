@@ -190,6 +190,16 @@ class AdminOrderListItem(BaseModel):
     customer_email: str
     customer_name: str | None
     customer_phone: str | None = None
+    # A guest checkout's buyer ("Üye olmadan devam et"), not a registered account.
+    customer_is_guest: bool = False
+    # "WhatsApp ile Kurtar": the havale discount it offers, in percent; the
+    # Sultan Puan rate (percent) of this buyer's price list — a guest's as the
+    # retail member they would become — null when they have none (Sultan Puan
+    # off, B2B, a test or export order); and whether this order's total earns
+    # it (inside the band). Filled on the list, the detail and the recovery.
+    recovery_discount_percent: Decimal = Decimal("5")
+    loyalty_percent: Decimal | None = None
+    recovery_earns_points: bool = False
     # From the customer's company profile (B2B); null for retail buyers, who are
     # invoiced at the delivery address.
     company_title: str | None = None
